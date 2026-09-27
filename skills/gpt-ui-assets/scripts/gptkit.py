@@ -6314,7 +6314,7 @@ def write_animation(vec, out, name, seconds=1.6, fps=30, size=512, ease="linear"
         tiles = [np.asarray(film.crop((i * film.width // strip, 0, (i + 1) * film.width // strip, film.height)), np.float32)
                  for i in range(strip)]
         report["lottie_frame_delta"] = [round(float(np.abs(tiles[i] - tiles[i - 1]).mean()), 2) for i in range(1, strip)]
-        report["lottie_rendered"] = bool(np.asarray(film)[..., :3].std() > 3)
+        report["lottie_rendered"] = bool(np.asarray(film)[..., :3].reshape(-1, 3).std(0).max() > 3)
     (out / "animation_report.json").write_text(json.dumps(report, indent=2))
     return report
 

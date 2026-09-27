@@ -107,6 +107,19 @@ def test_animate_traced_file_without_chrome():
         g._chrome.cache_clear()
 
 
+def test_blank_filmstrip_is_not_rendered():
+    import tempfile
+    vec = g.animate_layers(g.layers_vec(g.trace_image(synthetic(), "illustration", work=64)), g._parse_motions("art=bob"), 4)
+    saved = g.lottie_filmstrip, g._tr_render_svgs
+    g.lottie_filmstrip = lambda lot, frames, size=256, bg="#1b1d33": Image.new("RGB", (size * len(frames), size), bg)
+    g._tr_render_svgs = lambda svgs, sizes: None
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            assert g.write_animation(vec, td, "t", 1.0, 24, 128)["lottie_rendered"] is False
+    finally:
+        g.lottie_filmstrip, g._tr_render_svgs = saved
+
+
 def test_render_fidelity():
     if not g._chrome():
         print("  (skip: no Chrome)")
