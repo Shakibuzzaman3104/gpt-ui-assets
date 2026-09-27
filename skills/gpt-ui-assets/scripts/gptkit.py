@@ -27,7 +27,7 @@ from pathlib import Path
 
 import numpy as np
 import requests
-from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageStat
+from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont, ImageStat
 
 SVG_NS = "{http://www.w3.org/2000/svg}"
 
@@ -299,6 +299,59 @@ MOCKUP_WRAP = ("High-fidelity production UI design render of a single app screen
                "Flat, pixel-crisp screen render at 1:1, no device frame, no hands, no perspective, no watermark. "
                "Real, legible UI text. Consistent spacing grid and one cohesive icon style.")
 
+STYLE_REF_PROMPT = ("The attached image is an APPROVED screen of this app. Design a DIFFERENT screen of the same app on a "
+                    "{aspect} canvas: {prompt} Use the attached screen ONLY as the style guide: the same design language "
+                    "(palette, typefaces and weights, text colours, eyebrow/label treatment, corner radii, surfaces, "
+                    "borders, glow, icon style, illustration style, spacing rhythm) and the same shared chrome (app name, "
+                    "navigation bar with the same items and icons) where this screen has it. Do NOT copy its layout, "
+                    "sections, cards or copy: compose a new layout for this screen's purpose, with new content. "
+                    "Flat, pixel-crisp screen render at 1:1, no device frame. Real, legible UI text.")
+
+CRITIQUE_PROMPT = """Do design QA on this app UI mockup ({W}x{H} px; the screen is {dp}dp wide, so 1dp = {k:.2f}px;
+target platform: {platform}). It will be built in code. Report only real defects a developer or user would hit, most
+severe first:
+- text: every string that is garbled, misspelled, nonsense, truncated or oddly cased (quote it exactly).
+- alignment/spacing: misaligned edges or baselines, uneven gaps between repeated items, inconsistent margins.
+- icons: mixed icon styles (outline vs filled, stroke weight, corners), ambiguous or malformed glyphs.
+- contrast/accessibility: text or icons below WCAG AA (4.5:1 body, 3:1 large text and icons), text under 11dp,
+  controls that cannot get a {touch}dp touch target (a smaller visible pill or icon with room around it is fine).
+- platform: {platform} guideline problems (navigation pattern, tab count, safe areas, standard controls).
+- implementability: what code can't build cleanly (text baked into artwork, impossible overlaps, inconsistent radii,
+  content cut off).{ref_rule}
+Report each root cause ONCE: group repeated instances (e.g. several labels with the same size problem) into one
+issue. Per issue: severity (high = broken, illegible or blocks the build; medium = visible defect; low = nit),
+category, a bbox around the problem (or its first instance) in this image's pixels, the problem in one sentence, and
+ONE edit instruction (<= 30 words) that fixes only that issue. No taste preferences. A clean design gets few or no
+issues."""
+
+CRITIQUE_REF_RULE = """
+- consistency: the SECOND image is an approved screen of the same app. Flag differences in app name, navigation
+  items/icons, typefaces, palette and component styling (bbox refers to the first image)."""
+
+ISSUE_ITEM = {"type": "object", "additionalProperties": False,
+              "required": ["severity", "category", "bbox", "problem", "edit"],
+              "properties": {
+                  "severity": {"type": "string", "enum": ["high", "medium", "low"]},
+                  "category": {"type": "string", "enum": ["text", "alignment", "icons", "contrast", "accessibility",
+                                                          "platform", "implementability", "consistency"]},
+                  "bbox": {"type": "object", "additionalProperties": False, "required": ["x", "y", "w", "h"],
+                           "properties": {k: {"type": "integer"} for k in "xywh"}},
+                  "problem": {"type": "string"}, "edit": {"type": "string"}}}
+
+CRITIQUE_SCHEMA = {"type": "object", "additionalProperties": False, "required": ["issues"],
+                   "properties": {"issues": {"type": "array", "items": ISSUE_ITEM}}}
+
+VERIFY_SCHEMA = {"type": "object", "additionalProperties": False, "required": ["checks", "new_issues"],
+                 "properties": {
+                     "checks": {"type": "array", "items": {"type": "object", "additionalProperties": False,
+                                                           "required": ["id", "fixed"],
+                                                           "properties": {"id": {"type": "integer"},
+                                                                          "fixed": {"type": "boolean"}}}},
+                     "new_issues": {"type": "array", "items": ISSUE_ITEM}}}
+
+SEVERITY = {"high": 3, "medium": 2, "low": 1}
+
+
 ASSET_PROMPT = ("The attached image is a zoomed, low-resolution screenshot region from an APPROVED app design. "
                 "Recreate ONLY the {kind} \"{name}\" ({description}) from scratch as a clean, high-resolution "
                 "standalone production asset that matches the design 1:1: identical silhouette, proportions, "
@@ -426,28 +479,155 @@ def _aspect_ok(img_bytes, size):
     return (w > h) == (tw > th) and (w < h) == (tw < th)
 
 
+def _layout_diff(a, b):
+    return round(_mean_diff(a.convert("L").resize((64, 96)), b.convert("L").resize((64, 96))), 1)
+
+
 def cmd_mockup(a):
+    if a.edit and a.style_ref:
+        sys.exit("gptkit: use --edit (revise a screen) or --style-ref (new screen in its style), not both")
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
     aspect = ASPECTS.get(a.size, a.size)
     prompt = a.prompt if a.raw else MOCKUP_WRAP.format(prompt=a.prompt, aspect=aspect)
     edit_prompt = f"{a.prompt} Keep the {aspect} canvas and everything not mentioned exactly as it is."
+    style_prompt = a.prompt if a.raw else STYLE_REF_PROMPT.format(prompt=a.prompt, aspect=aspect)
+    ref = _rgba(a.style_ref) if a.style_ref else None
 
     def one(i):
-        # the backend picks aspect from the wording, not from `size`, so verify and retry once
+        # the backend picks aspect from the wording, not from `size`, and a style-ref edit can return the reference
         for _ in range(2):
             if a.edit:
                 img, meta = edit(Path(a.edit).read_bytes(), edit_prompt, a.size, model=a.model)
+            elif ref is not None:
+                img, meta = edit(Path(a.style_ref).read_bytes(), style_prompt, a.size, model=a.model)
             else:
                 img, meta = generate(prompt, a.size, model=a.model)
-            if _aspect_ok(img, a.size):
+            meta["layout_diff"] = _layout_diff(ref, Image.open(io.BytesIO(img))) if ref is not None else None
+            copied = ref is not None and meta["layout_diff"] < 10
+            if copied:
+                print(f"  ! variant {i + 1} copied the style reference (layout_diff {meta['layout_diff']}), retrying")
+            if _aspect_ok(img, a.size) and not copied:
                 break
         p = out / f"{a.name}_v{i + 1}.png"
         p.write_bytes(img)
         return p, meta
     with cf.ThreadPoolExecutor(a.variants) as ex:
         for p, meta in ex.map(one, range(a.variants)):
-            print(f"{p}  quality={meta['quality']} size={meta['size']}")
+            extra = f" layout_diff={meta['layout_diff']}" if ref is not None else ""
+            print(f"{p}  quality={meta['quality']} size={meta['size']}{extra}")
+
+
+def _lum(rgb):
+    c = np.asarray(rgb, float) / 255
+    c = np.where(c <= 0.03928, c / 12.92, ((c + 0.055) / 1.055) ** 2.4)
+    return c @ [0.2126, 0.7152, 0.0722]
+
+
+def measured_contrast(img, bbox):
+    """WCAG ratio estimate inside bbox: perimeter median as background vs the most distinct 5% of pixels."""
+    x0, y0 = min(max(0, bbox["x"]), img.width - 2), min(max(0, bbox["y"]), img.height - 2)
+    x1, y1 = min(img.width, max(x0 + 2, bbox["x"] + bbox["w"])), min(img.height, max(y0 + 2, bbox["y"] + bbox["h"]))
+    px = np.asarray(img.convert("RGB").crop((x0, y0, x1, y1)), float)
+    edge = np.concatenate([px[0], px[-1], px[:, 0], px[:, -1]])
+    bg = _lum(np.median(edge, 0))
+    lum = _lum(px.reshape(-1, 3))
+    far = np.abs(lum - bg)
+    fg = np.median(lum[far >= np.quantile(far, 0.95)])
+    hi, lo = max(fg, bg), min(fg, bg)
+    return round((hi + 0.05) / (lo + 0.05), 1)
+
+
+def critique(img, dp=390, platform="android", style_ref=None, note=None):
+    rule = CRITIQUE_REF_RULE if style_ref is not None else ""
+    touch = 48 if platform == "android" else 44
+    text = CRITIQUE_PROMPT.format(W=img.width, H=img.height, dp=dp, k=img.width / dp, platform=platform, touch=touch,
+                                  ref_rule=rule) + (f"\nThe user also says: {note}" if note else "")
+    parts = [text, img.convert("RGB")] + ([style_ref.convert("RGB")] if style_ref is not None else [])
+    issues = ask(parts, CRITIQUE_SCHEMA, "design_qa")["issues"]
+    for i, x in enumerate(issues):
+        x["id"] = i + 1
+        if x["category"] == "contrast" and x["bbox"]["w"] > 2 and x["bbox"]["h"] > 2:
+            x["measured_contrast"] = measured_contrast(img, x["bbox"])
+    return issues
+
+
+def _weight(issues):
+    return sum(SEVERITY[x["severity"]] for x in issues)
+
+
+def _issue_overlay(img, issues, out):
+    ov = img.convert("RGB")
+    d = ImageDraw.Draw(ov)
+    col = {"high": "#ff2d55", "medium": "#ff9f0a", "low": "#0a84ff"}
+    try:
+        font = ImageFont.load_default(size=28)
+    except TypeError:  # Pillow < 10.1
+        font = ImageFont.load_default()
+    for x in issues:
+        b = x["bbox"]
+        d.rectangle([b["x"], b["y"], b["x"] + b["w"], b["y"] + b["h"]], outline=col[x["severity"]], width=4)
+        ty = max(0, b["y"] - 36)
+        d.rectangle([b["x"], ty, b["x"] + 40, ty + 36], fill=col[x["severity"]])
+        d.text((b["x"] + 6, ty + 3), str(x["id"]), fill="white", font=font)
+    ov.save(out)
+
+
+def _print_issues(issues):
+    for x in issues:
+        mc = f"  [measured {x['measured_contrast']}:1]" if "measured_contrast" in x else ""
+        print(f"  {x['id']:>3}. {x['severity']:6s} {x['category']:16s} {x['problem']}{mc}\n      edit: {x['edit']}")
+
+
+def cmd_critique(a):
+    src = Path(a.mockup)
+    out = Path(a.out) if a.out else src.parent
+    out.mkdir(parents=True, exist_ok=True)
+    ref = _rgba(a.style_ref) if a.style_ref else None
+    cur_path, cur = src, _rgba(src)
+    issues = critique(cur, a.screen_dp, a.platform, ref, a.note)
+    log = {"mockup": str(src), "rounds": [{"image": str(src), "issues": issues, "weight": _weight(issues)}]}
+    print(f"{src.name}: {len(issues)} issues, weight {_weight(issues)}")
+    _print_issues(issues)
+    _issue_overlay(cur, issues, out / f"{src.stem}_critique.png")
+    min_w = SEVERITY[a.min_severity]
+    for rnd in range(a.rounds if a.apply else 0):
+        todo = [x for x in issues if SEVERITY[x["severity"]] >= min_w]
+        if not todo:
+            print("nothing at or above --min-severity to apply")
+            break
+        aspect = ASPECTS.get(_size_for(*cur.size), "same")
+        fixes = "\n".join(f"{i + 1}. {x['edit']}" for i, x in enumerate(todo))
+        prompt = (f"Revise the attached app UI design. Apply ONLY these fixes:\n{fixes}\nKeep everything else exactly as "
+                  f"it is: layout, content, copy, colours, typefaces, illustrations, icons and the {aspect} canvas.")
+        raw, _ = edit(_png_bytes(cur.convert("RGB")), prompt, _size_for(*cur.size), model=a.model)
+        p = out / f"{src.stem}_qa{rnd + 1}.png"
+        p.write_bytes(raw)
+        new = _rgba(p)
+        listing = "\n".join(f"{x['id']}. [{x['severity']}] {x['problem']}" for x in todo)
+        res = ask([f"FIRST image: a UI design. SECOND image: its revision, which was asked to fix these issues:\n{listing}\n"
+                   "For each id say whether the SECOND image fixed it. Then list NEW defects the revision introduced "
+                   "(changed layout or copy, garbled text, lost elements, style drift) in the same issue format, "
+                   "bbox in the SECOND image's pixels. Do not re-list issues that exist in both.", cur.convert("RGB"),
+                   new.convert("RGB")], VERIFY_SCHEMA, "design_qa_verify")
+        fixed = {c["id"] for c in res["checks"] if c["fixed"]}
+        left = [x for x in todo if x["id"] not in fixed]
+        before, after = _weight(todo), _weight(left) + _weight(res["new_issues"])
+        drift = round(_mean_diff(cur.resize((128, 192)), new.resize((128, 192))), 1)
+        kept = after < before
+        print(f"round {rnd + 1}: fixed {len(fixed)}/{len(todo)}, new {len(res['new_issues'])}, weight {before} -> {after}, "
+              f"drift {drift} -> {'KEPT' if kept else 'discarded'}  ({p})")
+        _print_issues([dict(x, id=f"n{i + 1}") for i, x in enumerate(res["new_issues"])])
+        log["rounds"].append({"image": str(p), "fixed": sorted(fixed), "new_issues": res["new_issues"],
+                              "weight_before": before, "weight_after": after, "drift": drift, "kept": kept})
+        if not kept:
+            break
+        rest = [x for x in issues if SEVERITY[x["severity"]] < min_w]
+        issues = [dict(x, id=i + 1) for i, x in enumerate(left + res["new_issues"] + rest)]
+        cur_path, cur = p, new
+    log["best"] = str(cur_path)
+    (out / f"{src.stem}_critique.json").write_text(json.dumps(log, indent=2))
+    print(f"-> {out / (src.stem + '_critique.json')}, overlay {out / (src.stem + '_critique.png')}, best: {cur_path}")
 
 
 def cmd_manifest(a):
@@ -1391,7 +1571,17 @@ def main():
     p.add_argument("prompt"); p.add_argument("--out", required=True); p.add_argument("--name", default="mockup")
     p.add_argument("--size", default="1024x1536"); p.add_argument("--variants", type=int, default=1)
     p.add_argument("--edit", help="existing mockup PNG to revise with the prompt"); p.add_argument("--raw", action="store_true")
+    p.add_argument("--style-ref", help="approved screen PNG: design a NEW screen in its exact design language")
     p.add_argument("--model", default=None); p.set_defaults(fn=cmd_mockup)
+    p = sub.add_parser("critique", help="vision design QA of a mockup; --apply edits the fixes in, kept only if better")
+    p.add_argument("mockup"); p.add_argument("--out", help="output dir (default: the mockup's dir)")
+    p.add_argument("--style-ref", help="approved screen of the same app: also check consistency with it")
+    p.add_argument("--platform", choices=["android", "ios", "web"], default="android")
+    p.add_argument("--screen-dp", type=float, default=390); p.add_argument("--note", help="extra focus for the review")
+    p.add_argument("--apply", action="store_true", help="edit the issues' fixes into the mockup, verify, keep if better")
+    p.add_argument("--min-severity", choices=["high", "medium", "low"], default="medium")
+    p.add_argument("--rounds", type=int, default=1); p.add_argument("--model", default=None)
+    p.set_defaults(fn=cmd_critique)
     p = sub.add_parser("manifest", help="inventory assets of an approved mockup -> DIR/assets.json")
     p.add_argument("mockup"); p.add_argument("--out", required=True)
     p.add_argument("--screen-dp", type=float, default=390, help="logical screen width the mockup represents")
