@@ -2272,9 +2272,12 @@ def cmd_trace(a):
         m = chosen["metrics"]
         report["advice"] = vector_advice(m, res["layers"], dp) if m else None
         try:
-            vd = svg_to_vd(chosen["svg"], round(dp[0], 1) if dp else None)
+            vd_w = round(dp[0], 1) if dp else round(48 * src.width / max(src.size), 1)
+            vd = svg_to_vd(chosen["svg"], vd_w)
             (out / f"{a.prefix}{name}.xml").write_text(vd)
-            report["vd"] = {"file": str(out / f"{a.prefix}{name}.xml"), "bytes": len(vd), "aapt2": aapt2_check(vd, a.prefix + name)}
+            report["vd"] = {"file": str(out / f"{a.prefix}{name}.xml"), "bytes": len(vd), "width_dp": vd_w,
+                            "width_from": "dp" if dp else "default 48dp long side (pass --dp)",
+                            "aapt2": aapt2_check(vd, a.prefix + name)}
             vr = render_svgs([vd_to_svg(vd)], [src.size])
             if vr and chosen.get("render") is not None:
                 report["vd"]["vs_svg_diff"] = trace_metrics(chosen["render"], vr[0])["diff"]
