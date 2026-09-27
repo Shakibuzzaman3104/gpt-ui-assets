@@ -959,6 +959,8 @@ def cmd_manifest(a):
 
 
 def cmd_spec(a):
+    if a.recalibrate:
+        return cmd_recalibrate(a.dir, a.scale)
     d, m, mock = _load(a.dir)
     platform = m.get("platform")
     target = (f" Target platform: {PLATFORMS[platform]['label']}. For every component set 'native' to the native "
@@ -972,8 +974,63 @@ def cmd_spec(a):
                "corner radii, key spacings, and the component list with pixel bboxes." + target, mock], SPEC_SCHEMA, "design_spec")
     res["platform"] = platform
     res["px_to_dp"] = round(m["screen_dp"] / mock.width, 5)
+    _calibrate(d, res, m, mock.width, a.scale)
     (d / "design_spec.json").write_text(json.dumps(res, indent=2))
     print(f"-> {d / 'design_spec.json'}  (multiply px values by px_to_dp={res['px_to_dp']} for dp/pt)")
+
+
+# native widgets whose platform size is fixed: (pattern on spec 'native', dp, measured bbox side)
+NATIVE_ANCHORS = {
+    "android": [(r"navigation ?bar", 80, "h"), (r"extended ?(fab|floating)", 56, "h"),
+                (r"^(?!.*extended).*(\bfab\b|floating ?action)", 56, "h"),
+                (r"top ?app ?bar(?!.*(medium|large))", 64, "h"), (r"search ?bar", 56, "h"), (r"navigation ?rail", 80, "w")],
+    "ios": [(r"toggle|switch", 31, "h"), (r"segmented|picker \(segmented", 32, "h")],
+}
+
+
+def _calibrate(d, spec, m, width, scale="auto"):
+    """Scale px -> dp from native widgets of known size; GPT draws them smaller than the platform does."""
+    design_k = round(m["screen_dp"] / width, 5)
+    spec["px_to_dp_design"] = design_k
+    spec["px_to_dp"] = design_k
+    anchors = []
+    for c in spec.get("components", []):
+        for pat, dp, side in NATIVE_ANCHORS.get(m.get("platform") or "", []):
+            px = c["bbox"][side]
+            if px > 4 and re.search(pat, c.get("native", ""), re.I):
+                anchors.append({"component": c["name"], "native": c["native"], "px": px, "dp": dp, "k": dp / px})
+                break
+    if not anchors:
+        spec["native_scale"] = {"factor": 1.0, "anchors": [], "applied": False}
+        if scale == "native":
+            print("  ! --scale native: no native anchor widgets (nav bar, FAB, app bar...) found; kept the design scale")
+        return
+    k = float(np.median([x["k"] for x in anchors]))
+    factor = k / design_k
+    apply = scale == "native" or (scale == "auto" and abs(factor - 1) > 0.12)
+    spec["native_scale"] = {"factor": round(factor, 3), "px_to_dp_native": round(k, 5), "anchors": anchors, "applied": apply}
+    if apply:
+        spec["px_to_dp"] = round(k, 5)
+        spec["effective_width_dp"] = round(width * k)
+        for x in m["assets"]:
+            x["dp"] = {"w": round(x["bbox"]["w"] * k, 1), "h": round(x["bbox"]["h"] * k, 1)}
+        m["px_to_dp"] = spec["px_to_dp"]
+        m["effective_width_dp"] = spec["effective_width_dp"]
+        (d / "assets.json").write_text(json.dumps(m, indent=2))
+        print(f"  native scale: GPT drew {', '.join(a['component'] for a in anchors[:3])} at {1 / factor:.2f}x platform size; "
+              f"px_to_dp {design_k} -> {spec['px_to_dp']} (design depicts a ~{spec['effective_width_dp']}dp-wide screen; "
+              "asset dp estimates updated). `spec --scale design` keeps the proportional scale.")
+    else:
+        print(f"  native scale: design matches platform sizes (factor {factor:.2f}); kept px_to_dp {design_k}")
+
+
+def cmd_recalibrate(d, scale):
+    d = Path(d)
+    spec = json.loads((d / "design_spec.json").read_text())
+    m = json.loads((d / "assets.json").read_text())
+    _calibrate(d, spec, m, m["width"], scale)
+    (d / "design_spec.json").write_text(json.dumps(spec, indent=2))
+    print(f"-> {d / 'design_spec.json'}  px_to_dp={spec['px_to_dp']}")
 
 
 def _forge_job(mock, asset, cand, model, vary=True):
@@ -2625,35 +2682,79 @@ def _placed_alpha(size, frame, s, org):
     return np.asarray(m)
 
 
+def _box_gap(a, b):
+    return max(0, a[0] - b[2], b[0] - a[2], a[1] - b[3], b[1] - a[3])
+
+
+def _target_clusters(target, size):
+    """Spatial clusters of the target's components (e.g. coin + rays vs slivers the static redraw left behind)."""
+    lab, n = _label(target)
+    if n < 2:
+        return []
+    areas = np.bincount(lab.ravel(), minlength=n + 1)[1:]
+    keep = [i + 1 for i in np.argsort(-areas)[:40] if areas[i] >= 0.01 * target.sum()]
+    boxes = {}
+    for i in keep:
+        ys, xs = np.nonzero(lab == i)
+        boxes[i] = (xs.min(), ys.min(), xs.max() + 1, ys.max() + 1)
+    clusters = [[i] for i in keep]
+    merged = True
+    while merged:
+        merged = False
+        for x in range(len(clusters)):
+            for y in range(x + 1, len(clusters)):
+                if min(_box_gap(boxes[i], boxes[j]) for i in clusters[x] for j in clusters[y]) < 0.06 * max(size):
+                    clusters[x] += clusters.pop(y)
+                    merged = True
+                    break
+            if merged:
+                break
+    if len(clusters) < 2:
+        return []
+    return [m for m in (np.isin(lab, c) for c in clusters) if m.sum() >= 0.03 * target.sum()]
+
+
 def _placement(src, static, frames):
     """One scale + origin for every frame: silhouette fit of the middle frame or extent fit of any frame, by IoU."""
-    target = (np.asarray(src.getchannel("A")) > 60) & _moving_mask(static)
+    raw = (np.asarray(src.getchannel("A")) > 60) & _moving_mask(static)
+    # an opening drops slivers the static redraw leaves along its edges; thin moving parts keep the raw mask
+    k = max(3, round(max(src.size) * 0.015)) | 1
+    opened = np.asarray(Image.fromarray((raw * 255).astype(np.uint8)).filter(ImageFilter.MinFilter(k))
+                        .filter(ImageFilter.MaxFilter(k))) > 127
+    target = opened if opened.sum() >= 0.3 * raw.sum() else raw
     if not target.any():
         return None
-    ys, xs = np.nonzero(target)
-    tb = (xs.min(), ys.min(), xs.max() + 1, ys.max() + 1)
-    cands = []
     mid = len(frames) // 2
     fit = _fit_moving(src, static, frames[mid])
-    if fit:
-        s, cx, by, fb = fit
-        cands.append(("silhouette", mid, s, (cx - (fb[0] + fb[2]) / 2 * s, by - fb[3] * s)))
-    for i, f in enumerate(frames):
-        b = content_box(f, 60)
-        if b:
-            s = math.sqrt((tb[2] - tb[0]) / (b[2] - b[0]) * (tb[3] - tb[1]) / (b[3] - b[1]))
-            org = ((tb[0] + tb[2] - (b[0] + b[2]) * s) / 2, (tb[1] + tb[3] - (b[1] + b[3]) * s) / 2)
-            cands.append(("extent", i, s, org))
-    if not cands:
-        return None
 
-    def iou(c):
-        m = _placed_alpha(src.size, frames[c[1]], c[2], c[3]) > 60
-        return (m & target).sum() / max(1, (m | target).sum())
-    scored = [(iou(c), c) for c in cands]
-    v, (how, i, s, org) = max(scored, key=lambda t: t[0])
+    def best_for(t, silhouette):
+        ys, xs = np.nonzero(t)
+        tb = (xs.min(), ys.min(), xs.max() + 1, ys.max() + 1)
+        cands = []
+        if silhouette and fit:
+            s, cx, by, fb = fit
+            cands.append(("silhouette", mid, s, (cx - (fb[0] + fb[2]) / 2 * s, by - fb[3] * s)))
+        for i, f in enumerate(frames):
+            b = content_box(f, 60)
+            if b:
+                s = math.sqrt((tb[2] - tb[0]) / (b[2] - b[0]) * (tb[3] - tb[1]) / (b[3] - b[1]))
+                cands.append(("extent", i, s, ((tb[0] + tb[2] - (b[0] + b[2]) * s) / 2,
+                                               (tb[1] + tb[3] - (b[1] + b[3]) * s) / 2)))
+
+        def iou(c):
+            m = _placed_alpha(src.size, frames[c[1]], c[2], c[3]) > 60
+            return (m & t).sum() / max(1, (m | t).sum())
+        return max(((iou(c), c) for c in cands), key=lambda x: x[0], default=None)
+    best = best_for(target, True)
+    if best is None:
+        return None
+    for cl in _target_clusters(target, src.size):
+        alt = best_for(cl, False)
+        if alt and alt[0] > best[0] + 0.15:
+            best = (alt[0], (alt[1][0] + " (cluster)",) + alt[1][1:])
+    v, (how, i, s, org) = best
     print(f"  registered by {how} fit of f{i + 1} (IoU {v:.2f} with the asset's moving part)")
-    return s, org
+    return s, org, v
 
 
 def _composite(src, static, frames, order):
@@ -2661,8 +2762,8 @@ def _composite(src, static, frames, order):
     fit = _placement(src, static, frames)
     if not fit:
         print("  ! could not locate the moving part in the asset; composites skipped")
-        return []
-    s, org = fit
+        return [], 0.0
+    s, org, v = fit
     P = max(src.size)
     size = (src.width + 2 * P, src.height + 2 * P)
     pos = (P + round(org[0]), P + round(org[1]))
@@ -2679,7 +2780,7 @@ def _composite(src, static, frames, order):
     # one shared crop box keeps every frame registered
     boxes = [content_box(c, 8) for c in comps]
     box = (min(b[0] for b in boxes), min(b[1] for b in boxes), max(b[2] for b in boxes), max(b[3] for b in boxes))
-    return [c.crop(box) for c in comps]
+    return [c.crop(box) for c in comps], v
 
 
 # -- frame QA
@@ -3083,8 +3184,16 @@ def cmd_frames(a):
         _qa_report(qa, " after colour match")
     for i, f in enumerate(frames):
         f.save(out / f"moving_f{i + 1:02d}.png")
+    comps, reg = _composite(src, static, frames, a.static_order) if static is not None else ([], None)
+    if reg is not None:
+        qa["sequence"]["registration_iou"] = round(float(reg), 3)
+        if reg < 0.3:
+            qa["sequence"]["flags"].append("misregistered")
+            print(f"  ! MISREGISTERED: the moving frames match the asset's moving part poorly (IoU {reg:.2f}). Check "
+                  "static.png (it must contain only the static part), describe --moving/--static more precisely, or "
+                  "re-run with --reuse static; moving_fNN.png are still usable on their own")
     (out / "qa.json").write_text(json.dumps(qa, indent=1))
-    seq = (_composite(src, static, frames, a.static_order) if static is not None else []) or frames
+    seq = comps or frames
     for i, f in enumerate(seq):
         f.save(out / f"frame_{i + 1:02d}.png")
     labels = [f"f{r['frame']} {' '.join(r['flags'])}".strip() for r in qa["frames"]]
@@ -7073,7 +7182,7 @@ def _token_model(spec, palette, texts, fonts, redline=None):
     for r, n in zip(radii, _uniq([_ident(r["name"]) for r in radii])):
         r.update(kt=n, sw=n[:1].lower() + n[1:], css=_ident(r["name"], "kebab"))
     spacing = [{"name": s["between"], "dp": _r05(s["px"] * k)} for s in spec.get("spacing", [])
-               if not re.search(r"pixels? per|per dp|px_to_dp", s["between"], re.I)]
+               if not re.search(r"pixels? per|\bpx ?per\b|per (compose )?dp|px_to_dp|ratio|density|scale factor", s["between"], re.I)]
     for s, n in zip(spacing, _uniq([_ident(s["name"]) for s in spacing])):
         s.update(kt=n, sw=n[:1].lower() + n[1:], css=_ident(s["name"], "kebab"))
     return {"colors": colors, "types": types, "radii": radii, "spacing": spacing, "families": list(families.values()),
@@ -8272,6 +8381,9 @@ def cmd_compare(a):
     mock = _rgba(a.mockup or d / (m or {}).get("mockup", "mockup.png")).convert("RGB")
     W, H = mock.size
     k = spec.get("px_to_dp") or (m["screen_dp"] / m["width"] if m else 1.0)
+    if spec.get("effective_width_dp"):
+        print(f"  (native scale: for a 1:1 check the screenshot should show the screen at ~{spec['effective_width_dp']}dp wide; "
+              "a narrower device reflows the layout)")
     shot = Image.open(a.screenshot).convert("RGB")
     if a.crop_top or a.crop_bottom:
         shot = shot.crop((0, a.crop_top, shot.width, shot.height - a.crop_bottom))
@@ -8620,8 +8732,12 @@ def main():
     p.add_argument("--platform", choices=list(PLATFORMS), help="default: design.json written by mockup")
     p.add_argument("--screen-dp", type=float, help="logical screen width (default: the platform's, else 390)")
     p.set_defaults(fn=cmd_manifest)
-    p = sub.add_parser("spec", help="extract palette/typography/spacing -> DIR/design_spec.json")
-    p.add_argument("dir"); p.set_defaults(fn=cmd_spec)
+    p = sub.add_parser("spec", help="extract palette/typography/spacing/native widgets -> DIR/design_spec.json")
+    p.add_argument("dir")
+    p.add_argument("--scale", choices=["auto", "native", "design"], default="auto",
+                   help="px->dp from native widget sizes (auto: when GPT drew them >12%% off) or the screen width")
+    p.add_argument("--recalibrate", action="store_true", help="only redo the px->dp scale of an existing spec (no API)")
+    p.set_defaults(fn=cmd_spec)
     p = sub.add_parser("forge", help="redraw png assets from scratch, 1:1, with candidates + scoring")
     p.add_argument("dir"); p.add_argument("--only"); p.add_argument("--candidates", type=int, default=2)
     p.add_argument("--jobs", type=int, default=6); p.add_argument("--force", action="store_true")
