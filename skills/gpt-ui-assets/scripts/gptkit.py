@@ -21,6 +21,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -30,6 +31,8 @@ import requests
 from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont, ImageStat
 
 SVG_NS = "{http://www.w3.org/2000/svg}"
+ET.register_namespace("", "http://www.w3.org/2000/svg")
+ET.register_namespace("xlink", "http://www.w3.org/1999/xlink")
 
 
 # ---------------------------------------------------------------- config + API
@@ -533,7 +536,10 @@ artwork that sits behind UI (kind "background"). Rules:
 - animated=true if it is a natural candidate for motion (flame, loader, mascot, weather, pulsing element).
 - name: short snake_case noun for the graphic itself (no file extension, no format/kind suffix).
 - description: precise enough to redraw it from scratch — shapes, parts, layer order, colours, gradients, stroke weight.
-- colors: main hex colours sampled from the design."""
+- colors: main hex colours sampled from the design.
+- material_symbol / sf_symbol: for an icon that is a standard glyph, the closest Google Material Symbols name
+  (snake_case, e.g. home, settings, search, favorite) and Apple SF Symbols name (e.g. house.fill, gearshape,
+  magnifyingglass, heart); "" for custom glyphs and for every non-icon."""
 
 SVG_RULES = """Write each asset as a standalone SVG that matches the design 1:1 (shape, proportions, stroke weight,
 corner rounding, colours). Hard rules so it converts to Android VectorDrawable:
@@ -573,7 +579,8 @@ MANIFEST_SCHEMA = {
     "type": "object", "additionalProperties": False, "required": ["assets"],
     "properties": {"assets": {"type": "array", "items": {
         "type": "object", "additionalProperties": False,
-        "required": ["name", "kind", "bbox", "format", "transparent", "animated", "description", "colors"],
+        "required": ["name", "kind", "bbox", "format", "transparent", "animated", "description", "colors",
+                     "material_symbol", "sf_symbol"],
         "properties": {
             "name": {"type": "string"},
             "kind": {"type": "string", "enum": ["icon", "illustration", "photo", "logo", "decoration", "background"]},
@@ -581,7 +588,8 @@ MANIFEST_SCHEMA = {
                      "properties": {k: {"type": "integer"} for k in "xywh"}},
             "format": {"type": "string", "enum": ["svg", "png"]},
             "transparent": {"type": "boolean"}, "animated": {"type": "boolean"},
-            "description": {"type": "string"}, "colors": {"type": "array", "items": {"type": "string"}}}}}},
+            "description": {"type": "string"}, "colors": {"type": "array", "items": {"type": "string"}},
+            "material_symbol": {"type": "string"}, "sf_symbol": {"type": "string"}}}}},
 }
 
 SPEC_SCHEMA = {
@@ -801,6 +809,7 @@ def cmd_manifest(a):
             n += "_2"
         seen.add(n)
         x["name"] = n
+        x["material_symbol"], x["sf_symbol"] = _symbol_names(x.get("material_symbol", ""), x.get("sf_symbol", ""))
         x["dp"] = {"w": round(x["bbox"]["w"] * a.screen_dp / mock.width, 1),
                    "h": round(x["bbox"]["h"] * a.screen_dp / mock.width, 1)}
     manifest = {"mockup": "mockup.png", "width": mock.width, "height": mock.height,
@@ -1016,84 +1025,300 @@ def _cairosvg():
         return None
 
 
-def _render_svg(svg_path, out_dir, size=256):
-    """Rasterise an SVG preview with cairosvg, rsvg-convert or macOS Quick Look, whichever exists."""
-    global _warned_render
-    svg_path, out_dir = Path(svg_path), Path(out_dir)
-    final = out_dir / f"{svg_path.stem}.png"
-    txt = svg_path.read_text()
+@functools.cache
+def _chrome():
+    names = ("google-chrome", "google-chrome-stable", "chromium", "chromium-browser", "chrome", "msedge")
+    cands = [os.environ.get("GPTKIT_CHROME"), "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+             "/Applications/Chromium.app/Contents/MacOS/Chromium",
+             "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"] + [shutil.which(n) for n in names]
+    return next((c for c in cands if c and Path(c).exists()), None)
+
+
+def _renderer_name():
+    if _chrome():
+        return "chrome"
+    if _cairosvg():
+        return "cairosvg"
+    return next((t for t in ("rsvg-convert", "qlmanage") if shutil.which(t)), None)
+
+
+def _sized_svg(txt, size):
     m_ = re.search(r"<svg\b[^>]*>", txt)
     root_tag = re.sub(r'\s(width|height)="[^"]*"', "", m_.group(0)).replace("<svg", f'<svg width="{size}" height="{size}"', 1)
-    sized = txt[:m_.start()] + root_tag + txt[m_.end():]
+    return txt[:m_.start()] + root_tag + txt[m_.end():]
+
+
+def _chrome_render(svgs, size):
+    cols = max(1, min(len(svgs), 2048 // size))
+    rows = math.ceil(len(svgs) / cols)
+    cells = "".join(f'<img src="data:image/svg+xml;base64,{base64.b64encode(s.encode()).decode()}" style="position:absolute;'
+                    f'left:{i % cols * size}px;top:{i // cols * size}px;width:{size}px;height:{size}px">'
+                    for i, s in enumerate(svgs))
+    with tempfile.TemporaryDirectory() as td:
+        html, png = Path(td) / "r.html", Path(td) / "r.png"
+        html.write_text(f"<!doctype html><style>html,body{{margin:0;background:transparent}}</style>{cells}")
+        subprocess.run([_chrome(), "--headless=new", "--disable-gpu", "--hide-scrollbars", "--force-device-scale-factor=1",
+                        "--default-background-color=00000000", "--use-mock-keychain",
+                        f"--window-size={cols * size},{rows * size}", "--virtual-time-budget=3000",
+                        f"--screenshot={png}", html.as_uri()], capture_output=True, timeout=120)
+        grid = Image.open(png).convert("RGBA")
+    return [grid.crop((i % cols * size, i // cols * size, i % cols * size + size, i // cols * size + size))
+            for i in range(len(svgs))]
+
+
+def _matte(on_white, on_black):
+    """Recover RGBA from two opaque renders on white and on black."""
+    w = np.asarray(on_white.convert("RGB").resize(on_black.size), dtype=float)
+    b = np.asarray(on_black.convert("RGB"), dtype=float)
+    a = np.clip(255 - (w - b).mean(2), 0, 255)
+    rgb = np.clip(b * 255 / np.maximum(a, 1)[..., None], 0, 255)
+    return Image.fromarray(np.dstack([rgb, a]).astype(np.uint8), "RGBA")
+
+
+def _render_one(sized, size):
     if _cairosvg():
         try:
-            _cairosvg().svg2png(bytestring=sized.encode(), write_to=str(final), output_width=size, output_height=size)
-            return final
+            return _rgba(io.BytesIO(_cairosvg().svg2png(bytestring=sized.encode(), output_width=size, output_height=size)))
         except Exception as e:
-            print(f"  ! cairosvg failed on {svg_path.name}: {str(e).splitlines()[0]}")
-    tmp = out_dir / f".{svg_path.stem}.svg"
-    tmp.write_text(sized)
-    try:
+            print(f"  ! cairosvg failed: {str(e).splitlines()[0]}")
+    with tempfile.TemporaryDirectory() as td:
+        src, out = Path(td) / "i.svg", Path(td) / "o.png"
         if shutil.which("rsvg-convert"):
-            subprocess.run(["rsvg-convert", "-w", str(size), "-h", str(size), "-o", str(final), str(tmp)], capture_output=True)
-        elif shutil.which("qlmanage"):
-            subprocess.run(["qlmanage", "-t", "-s", str(size), "-o", str(out_dir), str(tmp)], capture_output=True)
-            ql = out_dir / f"{tmp.name}.png"
-            if ql.exists():
-                ql.rename(final)
-        elif not _warned_render:
-            print("  (no SVG renderer found: pip install cairosvg for previews)")
-            _warned_render = True
-    finally:
-        tmp.unlink(missing_ok=True)
-    return final if final.exists() else None
+            src.write_text(sized)
+            subprocess.run(["rsvg-convert", "-w", str(size), "-h", str(size), "-o", str(out), str(src)], capture_output=True)
+            return _rgba(out) if out.exists() else None
+        if shutil.which("qlmanage"):
+            # Quick Look has no alpha and pads/clips its thumbnail: render smaller on white and black, matte, re-frame
+            vb = re.search(r'viewBox="([^"]+)"', sized)
+            x, y, w, h = [float(v) for v in re.split(r"[\s,]+", vb.group(1).strip())] if vb else (0, 0, size, size)
+            small = _sized_svg(sized, int(size * 0.75))
+            shots = []
+            for bg in ("#ffffff", "#000000"):
+                src.write_text(re.sub(r"(<svg\b[^>]*>)", rf'\1<rect x="{x:g}" y="{y:g}" width="{w:g}" height="{h:g}" fill="{bg}"/>',
+                                      small, count=1))
+                subprocess.run(["qlmanage", "-t", "-s", str(size), "-o", td, str(src)], capture_output=True)
+                ql = Path(td) / "i.svg.png"
+                if not ql.exists():
+                    return None
+                shots.append(Image.open(ql).convert("RGB"))
+                ql.unlink()
+            frame = ImageChops.difference(*shots).convert("L").point(lambda v: 255 if v > 128 else 0).getbbox()
+            if not frame:
+                return None
+            frame = (frame[0] + 1, frame[1] + 1, frame[2] - 1, frame[3] - 1)
+            return _matte(shots[0].crop(frame), shots[1].crop(frame)).resize((size, size), Image.LANCZOS)
+    return None
 
 
-def cmd_svg(a):
-    d, m, mock = _load(a.dir)
-    todo = [x for x in _select(m, a.only) if x["format"] == "svg" or a.only]
-    (d / "svg" / "preview").mkdir(parents=True, exist_ok=True)
-    schema = {"type": "object", "additionalProperties": False, "required": ["files"], "properties": {"files": {
-        "type": "array", "items": {"type": "object", "additionalProperties": False, "required": ["name", "svg"],
-                                   "properties": {"name": {"type": "string"}, "svg": {"type": "string"}}}}}}
-    batches = [todo[i:i + 6] for i in range(0, len(todo), 6)]
+def render_svgs(svgs, size=256):
+    """Rasterise SVG texts with real alpha (headless Chrome, cairosvg, rsvg-convert, or Quick Look + matting)."""
+    global _warned_render
+    sized = []
+    for s in svgs:
+        try:
+            ET.fromstring(s)
+            sized.append(_sized_svg(s, size))
+        except (ET.ParseError, AttributeError):
+            sized.append(None)
+    ok = [i for i, s in enumerate(sized) if s]
+    out = [None] * len(svgs)
+    if ok and _chrome():
+        try:
+            for i, im in zip(ok, _chrome_render([sized[i] for i in ok], size)):
+                out[i] = im
+            return out
+        except Exception as e:
+            print(f"  ! chrome render failed ({e}); falling back")
+    if ok and not _renderer_name() and not _warned_render:
+        print("  (no SVG renderer found: install Chrome/Chromium or pip install cairosvg for previews)")
+        _warned_render = True
+    for i in ok:
+        out[i] = _render_one(sized[i], size)
+    return out
 
-    def run(batch):
-        parts = [f"The first image is an APPROVED UI design. After it come zoomed crops of specific graphics. {SVG_RULES}\n"
-                 "Return one file per requested asset, name exactly as given.", mock.convert("RGB")]
-        for x in batch:
-            b = x["bbox"]
-            parts += [f"Asset \"{x['name']}\" at bbox x={b['x']},y={b['y']},w={b['w']},h={b['h']}: {x['description']} "
-                      f"Colours: {', '.join(x.get('colors', []))}", ref_crop(mock, b, margin=0.25, long_side=512)]
-        return ask(parts, schema, "svg_files")["files"]
-    rows = []
-    with cf.ThreadPoolExecutor(4) as ex:
-        for files in ex.map(run, batches):
-            for f in files:
-                name = re.sub(r"[^a-z0-9_]", "_", f["name"].lower().removesuffix(".svg"))
-                p = d / "svg" / f"{name}.svg"
-                p.write_text(f["svg"])
-                try:
-                    ET.fromstring(f["svg"])
-                except ET.ParseError as e:
-                    print(f"  ! {name}: invalid XML ({e})")
-                    continue
-                prev = _render_svg(p, d / "svg" / "preview")
-                asset = next((x for x in m["assets"] if x["name"] == name), None)
-                if asset and prev:
-                    b = asset["bbox"]
-                    pad = int(max(b["w"], b["h"]) * 0.2)
-                    rows.append([(f"{name} (design)", mock.crop((b["x"] - pad, b["y"] - pad, b["x"] + b["w"] + pad, b["y"] + b["h"] + pad))),
-                                 ("svg render", _rgba(prev))])
-                print(f"  {p}")
-    if rows:
-        (d / "review").mkdir(exist_ok=True)
-        stamp = time.strftime("%H%M%S")
-        for i in range(0, len(rows), 8):
-            print("review sheet ->", sheet(rows[i:i + 8], d / "review" / f"svg_{stamp}_{i // 8 + 1}.png", T=180))
+
+def _render_svg(svg_path, out_dir, size=256):
+    """Rasterise one SVG file to out_dir/<stem>.png with transparency; returns the path or None."""
+    svg_path, out_dir = Path(svg_path), Path(out_dir)
+    im = render_svgs([svg_path.read_text()], size)[0]
+    if im is None:
+        return None
+    final = out_dir / f"{svg_path.stem}.png"
+    im.save(final)
+    return final
+
+
+def _lab(rgb):
+    c = np.asarray(rgb, dtype=float) / 255
+    c = np.where(c > 0.04045, ((c + 0.055) / 1.055) ** 2.4, c / 12.92)
+    xyz = c @ np.array([[0.4124, 0.2126, 0.0193], [0.3576, 0.7152, 0.1192], [0.1805, 0.0722, 0.9505]])
+    xyz /= np.array([0.9505, 1.0, 1.089])
+    f = np.where(xyz > 0.008856, np.cbrt(xyz), 7.787 * xyz + 16 / 116)
+    return np.stack([116 * f[..., 1] - 16, 500 * (f[..., 0] - f[..., 1]), 200 * (f[..., 1] - f[..., 2])], -1)
+
+
+def _element_mask(mock, bbox):
+    """Segment a design element from its backdrop: (soft alpha, backdrop rgb, crop rgb) for bbox plus a margin."""
+    x, y, w, h = bbox["x"], bbox["y"], bbox["w"], bbox["h"]
+    m = max(3, round(max(w, h) * 0.12))
+    c = np.asarray(mock.crop((max(0, x - m), max(0, y - m), min(mock.width, x + w + m),
+                              min(mock.height, y + h + m))).convert("RGB"), dtype=float)
+    ring = np.concatenate([c[0], c[-1], c[:, 0], c[:, -1]])
+    bg = np.median(ring, 0)
+    dist = np.linalg.norm(c - bg, axis=2)
+    noise = np.percentile(np.linalg.norm(ring - bg, axis=1), 90)
+    core = max(np.percentile(dist, 99), noise + 20)
+    return np.clip((dist - noise) / (core - noise), 0, 1), bg, c
+
+
+def _abox(a, thr=0.3):
+    ys, xs = np.nonzero(a > thr)
+    return (xs.min(), ys.min(), xs.max() + 1, ys.max() + 1) if len(xs) else None
+
+
+def svg_fidelity(mock, bbox, render, visual=False):
+    """Registered comparison of an SVG render with the design element (rel: 0 = perfect, 1 = as bad as empty)."""
+    ad, bg, crop = _element_mask(mock, bbox)
+    z = max(1.0, 96 / max(ad.shape))
+    if z > 1:
+        size = (round(ad.shape[1] * z), round(ad.shape[0] * z))
+        crop = np.asarray(Image.fromarray(crop.astype(np.uint8)).resize(size, Image.BICUBIC), dtype=float)
+        ad = np.asarray(Image.fromarray((ad * 255).astype(np.uint8)).resize(size, Image.BICUBIC), dtype=float) / 255
+    db, rb = _abox(ad), _abox(np.asarray(render.getchannel("A"), dtype=float) / 255)
+    if not db or not rb:
+        sc = {"fit": 0.0, "iou": 0.0, "ink": 0.0, "dE": 99.0, "diff": 99.0, "rel": 1.0, "aspect_err": 1.0,
+              "design_hex": "", "svg_hex": "", "backdrop_hex": ""}
+        return (sc, Image.fromarray(crop.astype(np.uint8))) if visual else sc
+    dw, dh = db[2] - db[0], db[3] - db[1]
+    g0 = render.crop(rb)
+    s0 = min(dw / g0.width, dh / g0.height)
+    H, W = ad.shape
+    r = max(1, round(z))
+    best = None
+    for f in (0.95, 0.975, 1.0, 1.025, 1.05):
+        g = g0.resize((max(1, round(g0.width * s0 * f)), max(1, round(g0.height * s0 * f))), Image.BOX)
+        ga = g.getchannel("A")
+        x0, y0 = round((db[0] + db[2] - g.width) / 2), round((db[1] + db[3] - g.height) / 2)
+        for dy in range(-r, r + 1):
+            for dx in range(-r, r + 1):
+                m_ = Image.new("L", (W, H), 0)
+                m_.paste(ga, (x0 + dx, y0 + dy))
+                ar = np.asarray(m_, dtype=float) / 255
+                iou = np.minimum(ad, ar).sum() / max(np.maximum(ad, ar).sum(), 1e-6)
+                if best is None or iou > best[0]:
+                    best = (iou, g, (x0 + dx, y0 + dy))
+    iou, g, pos = best
+    layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    layer.alpha_composite(g, pos) if pos[0] >= 0 and pos[1] >= 0 else layer.paste(g, pos)
+    lr = np.asarray(layer, dtype=float)
+    ar = lr[..., 3] / 255
+    k = 2 * max(1, round(max(dw, dh) / 48)) + 1
+    grow = lambda a: np.asarray(Image.fromarray((a * 255).astype(np.uint8)).filter(ImageFilter.MaxFilter(k)), dtype=float) / 255
+    prec = np.minimum(ar, grow(ad)).sum() / max(ar.sum(), 1e-6)
+    rec = np.minimum(ad, grow(ar)).sum() / max(ad.sum(), 1e-6)
+    fit = 2 * prec * rec / max(prec + rec, 1e-6)
+    comp = lr[..., :3] * ar[..., None] + bg * (1 - ar[..., None])
+    core_d, core_r = ad > 0.85, ar > 0.85
+    if core_d.sum() >= 3 and core_r.sum() >= 3:
+        cd, cr = np.median(crop[core_d], 0), np.median(lr[..., :3][core_r], 0)
+    else:
+        cd, cr = np.average(crop.reshape(-1, 3), 0, ad.ravel() + 1e-6), np.average(lr[..., :3].reshape(-1, 3), 0, ar.ravel() + 1e-6)
+    hexc = lambda c: "#" + "".join(f"{int(round(v)):02X}" for v in c)
+    err = np.abs(comp - crop).mean()
+    sc = {"fit": round(float(fit), 3), "iou": round(float(iou), 3), "ink": round(float(ar.sum() / max(ad.sum(), 1e-6)), 2),
+          "dE": round(float(np.linalg.norm(_lab(cd) - _lab(cr))), 1), "diff": round(float(err), 1),
+          "rel": round(float(err / max(np.abs(bg - crop).mean(), 1e-6)), 3),
+          "aspect_err": round(float(abs((rb[2] - rb[0]) / (rb[3] - rb[1]) / (dw / dh) - 1)), 3),
+          "design_hex": hexc(cd), "svg_hex": hexc(cr), "backdrop_hex": hexc(bg)}
+    if not visual:
+        return sc
+    T = 256
+    left, right = (Image.fromarray(np.clip(x, 0, 255).astype(np.uint8)) for x in (crop, comp))
+    left, right = (im.resize((round(im.width * T / im.height), T), Image.LANCZOS) for im in (left, right))
+    sbs = Image.new("RGB", (left.width * 2 + 16, T), "white")
+    sbs.paste(left, (0, 0))
+    sbs.paste(right, (left.width + 16, 0))
+    return sc, sbs
 
 
 # ---- SVG -> Android VectorDrawable
+
+_PARAMS = {"M": 2, "L": 2, "T": 2, "H": 1, "V": 1, "C": 6, "S": 4, "Q": 4, "A": 7, "Z": 0}
+_NUM = re.compile(r"[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?")
+PRES_ATTRS = ("fill", "stroke", "stroke-width", "stroke-linecap", "stroke-linejoin", "stroke-miterlimit", "fill-rule",
+              "fill-opacity", "stroke-opacity", "stroke-dasharray", "color", "display", "visibility")
+NAMED_COLORS = {"white": "#ffffff", "black": "#000000", "red": "#ff0000", "green": "#008000", "blue": "#0000ff",
+                "yellow": "#ffff00", "orange": "#ffa500", "purple": "#800080", "gray": "#808080", "grey": "#808080",
+                "silver": "#c0c0c0", "navy": "#000080", "teal": "#008080", "maroon": "#800000", "olive": "#808000",
+                "lime": "#00ff00", "aqua": "#00ffff", "cyan": "#00ffff", "fuchsia": "#ff00ff", "magenta": "#ff00ff",
+                "pink": "#ffc0cb", "transparent": "#00000000"}
+
+
+def parse_path(d):
+    """SVG path data -> [(cmd, [floats])], one entry per segment (implicit repeats and compact arc flags expanded)."""
+    out, i, cmd, n = [], 0, None, len(d or "")
+    while True:
+        while i < n and (d[i].isspace() or d[i] == ","):
+            i += 1
+        if i >= n:
+            return out
+        if d[i].isalpha():
+            cmd = d[i]
+            i += 1
+            if cmd.upper() not in _PARAMS:
+                raise ValueError(f"unknown path command {cmd!r}")
+            if cmd in "Zz":
+                out.append((cmd, []))
+                continue
+        elif cmd is None or cmd in "Zz":
+            raise ValueError(f"path data has numbers without a command near {d[i:i + 12]!r}")
+        vals = []
+        for j in range(_PARAMS[cmd.upper()]):
+            while i < n and (d[i].isspace() or d[i] == ","):
+                i += 1
+            if cmd in "Aa" and j in (3, 4):
+                if i >= n or d[i] not in "01":
+                    raise ValueError(f"bad arc flag near {d[i:i + 12]!r}")
+                vals.append(float(d[i]))
+                i += 1
+                continue
+            m_ = _NUM.match(d, i)
+            if not m_:
+                raise ValueError(f"expected a number near {d[i:i + 12]!r}")
+            vals.append(float(m_.group()))
+            i = m_.end()
+        out.append((cmd, vals))
+        cmd = {"M": "L", "m": "l"}.get(cmd, cmd)
+
+
+def _fmt(v):
+    s = f"{v:.3f}".rstrip("0").rstrip(".")
+    return "0" if s in ("-0", "") else s
+
+
+def path_str(segs):
+    return " ".join(c + " ".join(_fmt(v) for v in vals) for c, vals in segs)
+
+
+def transform_path(segs, s, tx=0.0, ty=0.0):
+    """Scale by s and translate every coordinate of parsed path segments."""
+    out = []
+    for idx, (c, v) in enumerate(segs):
+        rel = c.islower()
+        if idx == 0 and c == "m":
+            c, rel = "M", False
+        U = c.upper()
+        if U == "A":
+            v = [v[0] * s, v[1] * s, v[2], v[3], v[4]] + ([v[5] * s, v[6] * s] if rel else [v[5] * s + tx, v[6] * s + ty])
+        elif U == "H":
+            v = [v[0] * s + (0 if rel else tx)]
+        elif U == "V":
+            v = [v[0] * s + (0 if rel else ty)]
+        else:
+            v = [x * s + (0 if rel else (tx if j % 2 == 0 else ty)) for j, x in enumerate(v)]
+        out.append((c, v))
+    return out
+
 
 def _num(v, default=0.0):
     if v is None:
@@ -1101,16 +1326,40 @@ def _num(v, default=0.0):
     return float(re.sub(r"[a-z%]+$", "", str(v).strip()) or default)
 
 
-def _color(v, opacity=1.0):
+def _style_dict(el):
+    return {k.strip(): v.strip() for k, _, v in (kv.partition(":") for kv in (el.get("style") or "").split(";")) if v}
+
+
+def _inherit(el, parent):
+    """Effective presentation attributes of el (style beats attributes; opacity multiplies down the tree)."""
+    attrs = dict(parent)
+    style = _style_dict(el)
+    for k in PRES_ATTRS:
+        v = style.get(k, el.get(k))
+        if v is not None:
+            attrs[k] = v.strip()
+    op = style.get("opacity", el.get("opacity"))
+    attrs["opacity"] = _num(parent.get("opacity"), 1.0) * (_num(op, 1.0) if op is not None else 1.0)
+    return attrs
+
+
+def _color(v, opacity=1.0, current=None):
     v = (v or "").strip().lower()
-    named = {"white": "#ffffff", "black": "#000000"}
-    v = named.get(v, v)
-    if not v.startswith("#"):
+    if v == "currentcolor":
+        v = (current or "#000000").strip().lower()
+    v = NAMED_COLORS.get(v, v)
+    m_ = re.match(r"rgba?\(([^)]*)\)", v)
+    if m_:
+        parts = [p.strip() for p in re.split(r"[\s,/]+", m_.group(1).strip()) if p.strip()]
+        rgb = [round(_num(p) * 2.55) if p.endswith("%") else round(_num(p)) for p in parts[:3]]
+        a = (_num(parts[3]) / 100 if parts[3].endswith("%") else _num(parts[3])) if len(parts) > 3 else 1.0
+        v = "#" + "".join(f"{max(0, min(255, c)):02x}" for c in rgb) + f"{round(a * 255):02x}"
+    if not v.startswith("#") or len(v) not in (4, 5, 7, 9):
         raise ValueError(f"unsupported colour {v!r}")
     h = v[1:]
-    if len(h) == 3:
+    if len(h) in (3, 4):
         h = "".join(c * 2 for c in h)
-    alpha = int(round(opacity * 255)) if len(h) == 6 else int(h[6:8], 16)
+    alpha = round((int(h[6:8], 16) if len(h) == 8 else 255) * opacity)
     return f"#{alpha:02X}{h[:6].upper()}" if alpha < 255 else f"#{h[:6].upper()}"
 
 
@@ -1119,16 +1368,18 @@ def _shape_path(el):
     g = lambda k, dflt=0.0: _num(el.get(k), dflt)
     if tag == "path":
         return el.get("d")
-    if tag == "circle" or tag == "ellipse":
+    if tag in ("circle", "ellipse"):
         cx, cy = g("cx"), g("cy")
-        rx = g("r") if tag == "circle" else g("rx")
-        ry = g("r") if tag == "circle" else g("ry")
+        rx = g("r") if tag == "circle" else g("rx", g("ry"))
+        ry = g("r") if tag == "circle" else g("ry", rx)
+        if rx <= 0 or ry <= 0:
+            return None
         return f"M{cx - rx},{cy}a{rx},{ry} 0 1,0 {2 * rx},0a{rx},{ry} 0 1,0 {-2 * rx},0Z"
     if tag == "rect":
         x, y, w, h = g("x"), g("y"), g("width"), g("height")
         rx = g("rx", g("ry"))
         ry = g("ry", rx)
-        if not rx:
+        if not rx or not ry:
             return f"M{x},{y}h{w}v{h}h{-w}Z"
         rx, ry = min(rx, w / 2), min(ry, h / 2)
         return (f"M{x + rx},{y}h{w - 2 * rx}a{rx},{ry} 0 0,1 {rx},{ry}v{h - 2 * ry}a{rx},{ry} 0 0,1 {-rx},{ry}"
@@ -1136,127 +1387,839 @@ def _shape_path(el):
     if tag == "line":
         return f"M{g('x1')},{g('y1')}L{g('x2')},{g('y2')}"
     if tag in ("polyline", "polygon"):
-        pts = re.findall(r"-?[\d.]+(?:e-?\d+)?", el.get("points", ""))
+        pts = _NUM.findall(el.get("points", ""))
         pairs = [f"{pts[i]},{pts[i + 1]}" for i in range(0, len(pts) - 1, 2)]
-        return "M" + "L".join(pairs) + ("Z" if tag == "polygon" else "")
+        return ("M" + "L".join(pairs) + ("Z" if tag == "polygon" else "")) if pairs else None
     return None
 
 
-def svg_to_vd(svg_text, width_dp=None):
+def _transforms(s):
+    """SVG transform list -> VectorDrawable <group> attribute dicts, outermost first."""
+    groups = []
+    for name, args in re.findall(r"(\w+)\s*\(([^)]*)\)", s or ""):
+        v = [float(x) for x in _NUM.findall(args)]
+        if name == "translate":
+            groups.append({"translateX": v[0], "translateY": v[1] if len(v) > 1 else 0})
+        elif name == "scale":
+            groups.append({"scaleX": v[0], "scaleY": v[1] if len(v) > 1 else v[0]})
+        elif name == "rotate":
+            groups.append({"rotation": v[0], "pivotX": v[1] if len(v) > 2 else 0, "pivotY": v[2] if len(v) > 2 else 0})
+        elif name == "matrix":
+            a, b, c, d, e, f = v
+            if abs(a * c + b * d) > 1e-6:
+                raise ValueError("transform matrix with skew is not expressible in VectorDrawable")
+            sx = math.hypot(a, b)
+            groups.append({"translateX": e, "translateY": f, "rotation": math.degrees(math.atan2(b, a)),
+                           "scaleX": sx, "scaleY": (a * d - b * c) / sx})
+        else:
+            raise ValueError(f"transform {name}() is not expressible in VectorDrawable")
+    return groups
+
+
+def svg_to_vd(svg_text, width_dp=None, warnings=None):
+    """Convert an SVG to VectorDrawable XML. Unsupported features raise ValueError; lossy ones append to warnings."""
+    warns = warnings if warnings is not None else []
     root = ET.fromstring(svg_text)
     vb = [float(v) for v in re.split(r"[\s,]+", root.get("viewBox", "").strip()) if v] or \
          [0, 0, _num(root.get("width"), 24), _num(root.get("height"), 24)]
-    vw, vh = vb[2], vb[3]
+    vx, vy, vw, vh = vb
     wdp = width_dp or vw
     hdp = round(wdp * vh / vw, 2)
+    ids = {el.get("id"): el for el in root.iter() if el.get("id")}
     grads = {}
     for gel in root.iter():
         tag = gel.tag.replace(SVG_NS, "")
-        if tag in ("linearGradient", "radialGradient"):
-            if gel.get("gradientUnits") != "userSpaceOnUse":
-                raise ValueError(f"gradient #{gel.get('id')} must use gradientUnits=userSpaceOnUse")
-            if gel.get("gradientTransform"):
-                raise ValueError(f"gradient #{gel.get('id')} uses gradientTransform (unsupported)")
-            stops = []
-            for s in gel:
-                if s.tag.replace(SVG_NS, "") == "stop":
-                    style = dict(kv.split(":", 1) for kv in (s.get("style") or "").replace(" ", "").split(";") if ":" in kv)
-                    col = s.get("stop-color") or style.get("stop-color", "#000000")
-                    op = _num(s.get("stop-opacity") or style.get("stop-opacity"), 1.0)
-                    off = s.get("offset", "0")
-                    off = _num(off) / 100 if off.strip().endswith("%") else _num(off)
-                    stops.append((off, _color(col, op)))
-            grads[gel.get("id")] = (tag, gel, stops)
+        if tag not in ("linearGradient", "radialGradient"):
+            continue
+        src = gel
+        href = gel.get("href") or gel.get("{http://www.w3.org/1999/xlink}href")
+        if not any(s.tag.replace(SVG_NS, "") == "stop" for s in gel) and href and href[1:] in ids:
+            src = ids[href[1:]]
+        if (gel.get("gradientUnits") or src.get("gradientUnits")) != "userSpaceOnUse":
+            raise ValueError(f"gradient #{gel.get('id')} must use gradientUnits=userSpaceOnUse")
+        if gel.get("gradientTransform"):
+            raise ValueError(f"gradient #{gel.get('id')} uses gradientTransform (unsupported)")
+        stops = []
+        for s in src:
+            if s.tag.replace(SVG_NS, "") == "stop":
+                st = _style_dict(s)
+                col = st.get("stop-color", s.get("stop-color", "#000000"))
+                op = _num(st.get("stop-opacity", s.get("stop-opacity")), 1.0)
+                off = s.get("offset", "0")
+                off = _num(off) / 100 if off.strip().endswith("%") else _num(off)
+                stops.append((min(1.0, max(0.0, off)), _color(col, op)))
+        grads[gel.get("id")] = (tag, gel, stops)
     used_grad = False
-    lines = []
 
     def grad_xml(ref, attr, indent):
         nonlocal used_grad
+        if ref not in grads:
+            raise ValueError(f"gradient #{ref} not found")
         used_grad = True
         tag, gel, stops = grads[ref]
         if tag == "linearGradient":
-            head = (f'android:type="linear" android:startX="{_num(gel.get("x1"))}" android:startY="{_num(gel.get("y1"))}" '
-                    f'android:endX="{_num(gel.get("x2"))}" android:endY="{_num(gel.get("y2"))}"')
+            head = (f'android:type="linear" android:startX="{_num(gel.get("x1")):g}" android:startY="{_num(gel.get("y1")):g}" '
+                    f'android:endX="{_num(gel.get("x2")):g}" android:endY="{_num(gel.get("y2")):g}"')
         else:
-            head = (f'android:type="radial" android:centerX="{_num(gel.get("cx"))}" android:centerY="{_num(gel.get("cy"))}" '
-                    f'android:gradientRadius="{_num(gel.get("r"))}"')
+            head = (f'android:type="radial" android:centerX="{_num(gel.get("cx")):g}" android:centerY="{_num(gel.get("cy")):g}" '
+                    f'android:gradientRadius="{_num(gel.get("r")):g}"')
+        tile = {"reflect": "mirror", "repeat": "repeat"}.get(gel.get("spreadMethod"))
+        if tile:
+            head += f' android:tileMode="{tile}"'
         items = "".join(f'\n{indent}      <item android:offset="{o:g}" android:color="{c}"/>' for o, c in stops)
         return (f'\n{indent}  <aapt:attr name="android:{attr}">\n{indent}    <gradient {head}>{items}\n'
                 f'{indent}    </gradient>\n{indent}  </aapt:attr>')
 
-    def walk(el, inherited):
+    def path_xml(d, attrs, ind):
+        fill = attrs.get("fill", "#000000")
+        stroke = attrs.get("stroke", "none")
+        op = attrs.get("opacity", 1.0)
+        cur = attrs.get("color")
+        out = [f'{ind}<path', f'{ind}    android:pathData="{path_str(parse_path(d))}"']
+        children = ""
+        if fill not in ("none", "transparent"):
+            m_ = re.match(r"url\(#([^)]+)\)", fill)
+            if m_:
+                children += grad_xml(m_.group(1), "fillColor", ind)
+            else:
+                out.append(f'{ind}    android:fillColor="{_color(fill, 1.0, cur)}"')
+            fo = _num(attrs.get("fill-opacity"), 1.0) * op
+            if fo < 1:
+                out.append(f'{ind}    android:fillAlpha="{fo:g}"')
+            if attrs.get("fill-rule") == "evenodd":
+                out.append(f'{ind}    android:fillType="evenOdd"')
+        if stroke not in ("none", "transparent"):
+            m_ = re.match(r"url\(#([^)]+)\)", stroke)
+            if m_:
+                children += grad_xml(m_.group(1), "strokeColor", ind)
+            else:
+                out.append(f'{ind}    android:strokeColor="{_color(stroke, 1.0, cur)}"')
+            out.append(f'{ind}    android:strokeWidth="{_num(attrs.get("stroke-width"), 1.0):g}"')
+            so = _num(attrs.get("stroke-opacity"), 1.0) * op
+            if so < 1:
+                out.append(f'{ind}    android:strokeAlpha="{so:g}"')
+            if attrs.get("stroke-linecap") in ("round", "square"):
+                out.append(f'{ind}    android:strokeLineCap="{attrs["stroke-linecap"]}"')
+            if attrs.get("stroke-linejoin") in ("round", "bevel"):
+                out.append(f'{ind}    android:strokeLineJoin="{attrs["stroke-linejoin"]}"')
+            if attrs.get("stroke-miterlimit"):
+                out.append(f'{ind}    android:strokeMiterLimit="{_num(attrs["stroke-miterlimit"]):g}"')
+            if attrs.get("stroke-dasharray") not in (None, "none", "0"):
+                warns.append("stroke-dasharray dropped (VectorDrawable has no dashes; stroke drawn solid)")
+        return "\n".join(out) + (f">{children}\n{ind}</path>" if children else " />")
+
+    def wrap(body, tf, ind):
+        for g in reversed(_transforms(tf)):
+            attrs = " ".join(f'android:{k}="{v:g}"' for k, v in g.items() if v or k.startswith("scale"))
+            body = f"{ind}<group {attrs}>\n" + "\n".join("    " + ln for ln in body.split("\n")) + f"\n{ind}</group>"
+        return body
+
+    def walk(el, inherited, ind):
+        lines = []
         for ch in el:
             tag = ch.tag.replace(SVG_NS, "")
             if tag in ("defs", "linearGradient", "radialGradient", "title", "desc", "metadata"):
                 continue
-            if ch.get("transform"):
-                raise ValueError(f"<{tag}> uses transform (unsupported) — ask for flattened coordinates")
-            if tag in ("text", "image", "use", "mask", "clipPath", "filter", "style"):
+            if tag in ("text", "image", "use", "mask", "clipPath", "filter", "style", "pattern", "symbol"):
                 raise ValueError(f"<{tag}> is not convertible")
-            attrs = dict(inherited)
-            style = dict(kv.split(":", 1) for kv in (ch.get("style") or "").replace(" ", "").split(";") if ":" in kv)
-            for k in ("fill", "stroke", "stroke-width", "stroke-linecap", "stroke-linejoin", "fill-rule",
-                      "fill-opacity", "stroke-opacity", "opacity", "stroke-miterlimit"):
-                v = ch.get(k) or style.get(k)
-                if v is not None:
-                    attrs[k] = v
-            if tag == "g":
-                walk(ch, attrs)
+            attrs = _inherit(ch, inherited)
+            if attrs.get("display") == "none" or attrs.get("visibility") == "hidden":
                 continue
-            d = _shape_path(ch)
-            if not d:
-                continue
-            op = _num(attrs.get("opacity"), 1.0)
-            fill = attrs.get("fill", "#000000")
-            stroke = attrs.get("stroke", "none")
-            out = [f'    <path\n        android:pathData="{d.strip()}"']
-            children = ""
-            if fill != "none":
-                m_ = re.match(r"url\(#([^)]+)\)", fill)
-                if m_:
-                    children += grad_xml(m_.group(1), "fillColor", "    ")
-                else:
-                    out.append(f'        android:fillColor="{_color(fill)}"')
-                fo = _num(attrs.get("fill-opacity"), 1.0) * op
-                if fo < 1:
-                    out.append(f'        android:fillAlpha="{fo:g}"')
-                if attrs.get("fill-rule") == "evenodd":
-                    out.append('        android:fillType="evenOdd"')
-            if stroke != "none":
-                m_ = re.match(r"url\(#([^)]+)\)", stroke)
-                if m_:
-                    children += grad_xml(m_.group(1), "strokeColor", "    ")
-                else:
-                    out.append(f'        android:strokeColor="{_color(stroke)}"')
-                out.append(f'        android:strokeWidth="{_num(attrs.get("stroke-width"), 1.0):g}"')
-                so = _num(attrs.get("stroke-opacity"), 1.0) * op
-                if so < 1:
-                    out.append(f'        android:strokeAlpha="{so:g}"')
-                if attrs.get("stroke-linecap") in ("round", "square"):
-                    out.append(f'        android:strokeLineCap="{attrs["stroke-linecap"]}"')
-                if attrs.get("stroke-linejoin") in ("round", "bevel"):
-                    out.append(f'        android:strokeLineJoin="{attrs["stroke-linejoin"]}"')
-            lines.append("\n".join(out) + (f">{children}\n    </path>" if children else " />"))
-    walk(root, {})
+            if ch.get("clip-path") or ch.get("mask") or ch.get("filter"):
+                raise ValueError(f"<{tag}> uses clip-path/mask/filter (not convertible)")
+            if tag in ("g", "a", "switch"):
+                body = walk(ch, attrs, ind)
+            else:
+                d = _shape_path(ch)
+                body = path_xml(d, attrs, ind) if d else ""
+            if body:
+                lines.append(wrap(body, ch.get("transform"), ind) if ch.get("transform") else body)
+        return "\n".join(lines)
+    body = walk(root, _inherit(root, {}), "    ")
+    if root.get("transform"):
+        body = wrap(body, root.get("transform"), "    ")
+    if vx or vy:
+        body = wrap(body, f"translate({-vx:g} {-vy:g})", "    ")
     ns = ' xmlns:aapt="http://schemas.android.com/aapt"' if used_grad else ""
     return (f'<?xml version="1.0" encoding="utf-8"?>\n<vector xmlns:android="http://schemas.android.com/apk/res/android"{ns}\n'
             f'    android:width="{wdp:g}dp"\n    android:height="{hdp:g}dp"\n'
-            f'    android:viewportWidth="{vw:g}"\n    android:viewportHeight="{vh:g}">\n' + "\n".join(lines) + "\n</vector>\n")
+            f'    android:viewportWidth="{vw:g}"\n    android:viewportHeight="{vh:g}">\n' + body + "\n</vector>\n")
+
+
+AND = "{http://schemas.android.com/apk/res/android}"
+
+
+def vd_to_svg(xml):
+    """Render-equivalent SVG of a VectorDrawable (used to verify conversions)."""
+    root = ET.fromstring(xml)
+    g = lambda el, k, dflt=None: el.get(AND + k, dflt)
+    defs, n = [], [0]
+
+    def colour(v, alpha):
+        v = v.lstrip("#")
+        a = int(v[:2], 16) / 255 if len(v) == 8 else 1.0
+        return "#" + v[-6:], a * alpha
+
+    def paint(el, attr, alpha):
+        grad = next((ga for ga in el if ga.tag.endswith("attr") and ga.get("name") == f"android:{attr}"), None)
+        if grad is not None:
+            gr = grad[0]
+            n[0] += 1
+            stops = "".join(f'<stop offset="{g(it, "offset")}" stop-color="{colour(g(it, "color"), 1)[0]}" '
+                            f'stop-opacity="{colour(g(it, "color"), 1)[1]:g}"/>' for it in gr)
+            if g(gr, "type") == "radial":
+                head = f'<radialGradient id="p{n[0]}" gradientUnits="userSpaceOnUse" cx="{g(gr, "centerX")}" cy="{g(gr, "centerY")}" r="{g(gr, "gradientRadius")}"'
+                tagn = "radialGradient"
+            else:
+                head = f'<linearGradient id="p{n[0]}" gradientUnits="userSpaceOnUse" x1="{g(gr, "startX")}" y1="{g(gr, "startY")}" x2="{g(gr, "endX")}" y2="{g(gr, "endY")}"'
+                tagn = "linearGradient"
+            spread = {"mirror": "reflect", "repeat": "repeat"}.get(g(gr, "tileMode"), "pad")
+            defs.append(f'{head} spreadMethod="{spread}">{stops}</{tagn}>')
+            return f"url(#p{n[0]})", alpha
+        v = g(el, attr)
+        return colour(v, alpha) if v else ("none", 1.0)
+
+    def walk(el):
+        out = []
+        for ch in el:
+            if ch.tag == "group":
+                tx, ty = float(g(ch, "translateX", 0)), float(g(ch, "translateY", 0))
+                px, py = float(g(ch, "pivotX", 0)), float(g(ch, "pivotY", 0))
+                tf = (f"translate({tx + px:g} {ty + py:g}) rotate({g(ch, 'rotation', 0)}) "
+                      f"scale({g(ch, 'scaleX', 1)} {g(ch, 'scaleY', 1)}) translate({-px:g} {-py:g})")
+                out.append(f'<g transform="{tf}">{walk(ch)}</g>')
+            elif ch.tag == "path":
+                fill, fa = paint(ch, "fillColor", float(g(ch, "fillAlpha", 1)))
+                stroke, sa = paint(ch, "strokeColor", float(g(ch, "strokeAlpha", 1)))
+                out.append(f'<path d="{g(ch, "pathData")}" fill="{fill}" fill-opacity="{fa:g}" stroke="{stroke}" '
+                           f'stroke-opacity="{sa:g}" stroke-width="{g(ch, "strokeWidth", 0)}" '
+                           f'stroke-linecap="{g(ch, "strokeLineCap", "butt")}" stroke-linejoin="{g(ch, "strokeLineJoin", "miter")}" '
+                           f'stroke-miterlimit="{g(ch, "strokeMiterLimit", 4)}" '
+                           f'fill-rule="{"evenodd" if g(ch, "fillType") == "evenOdd" else "nonzero"}"/>')
+        return "".join(out)
+    body = walk(root)
+    return (f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {g(root, "viewportWidth")} {g(root, "viewportHeight")}">'
+            f'<defs>{"".join(defs)}</defs>{body}</svg>')
+
+
+def vd_roundtrip(pairs, size=128):
+    """[(svg, vd xml)] -> mean RGBA difference (0-255) between each SVG and its VectorDrawable rendered, or None."""
+    ims = render_svgs([s for s, _ in pairs] + [vd_to_svg(x) for _, x in pairs], size)
+    out = []
+    for a, b in zip(ims[:len(pairs)], ims[len(pairs):]):
+        if a is None or b is None:
+            out.append(None)
+            continue
+        pa, pb = (np.asarray(im, dtype=float) for im in (a, b))
+        pa[..., :3] *= pa[..., 3:] / 255
+        pb[..., :3] *= pb[..., 3:] / 255
+        out.append(round(float(np.abs(pa - pb).mean()), 2))
+    return out
+
+
+@functools.cache
+def _android_sdk():
+    homes = [os.environ.get("ANDROID_HOME"), os.environ.get("ANDROID_SDK_ROOT"), "~/Library/Android/sdk", "~/Android/Sdk"]
+    for h in homes:
+        if h and Path(h).expanduser().is_dir():
+            sdk = Path(h).expanduser()
+            ver = lambda p: [int(x) if x.isdigit() else 0 for x in re.split(r"[.\-]", p.parent.name.replace("android-", ""))]
+            tools = sorted(sdk.glob("build-tools/*/aapt2"), key=ver)
+            jars = sorted(sdk.glob("platforms/android-*/android.jar"), key=ver)
+            if tools:
+                return str(tools[-1]), str(jars[-1]) if jars else None
+    return None
+
+
+def aapt2_check(xml_files):
+    """Compile + link VectorDrawable files with the Android SDK's aapt2; {file name: error} (empty = all valid)."""
+    sdk = _android_sdk()
+    if not sdk:
+        return None
+    aapt2, jar = sdk
+    errs = {}
+    with tempfile.TemporaryDirectory() as td:
+        res = Path(td) / "res" / "drawable"
+        res.mkdir(parents=True)
+        for f in xml_files:
+            shutil.copy(f, res / Path(f).name)
+        (Path(td) / "AndroidManifest.xml").write_text(
+            '<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="gptkit.check"/>')
+        steps = [[aapt2, "compile", "-o", f"{td}/c.zip", "--dir", str(res.parent)]]
+        if jar:
+            steps.append([aapt2, "link", "-o", f"{td}/o.apk", "-I", jar, "--manifest", f"{td}/AndroidManifest.xml", f"{td}/c.zip"])
+        for cmd in steps:
+            r = subprocess.run(cmd, capture_output=True, text=True)
+            for line in (r.stderr + r.stdout).splitlines():
+                m_ = re.search(r"drawable/([^/:]+\.xml)(?::\d+)?: error: (.*)", line)
+                if m_:
+                    errs.setdefault(m_.group(1), m_.group(2))
+            if r.returncode and not errs:
+                errs["*"] = (r.stderr or r.stdout).strip()[:300]
+            if errs:
+                break
+    return errs
 
 
 def cmd_vd(a):
+    out_dir = Path(a.out)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    done = []
     for f in a.svgs:
         p = Path(f)
-        name = a.prefix + p.stem
-        out_dir = Path(a.out)
-        out_dir.mkdir(parents=True, exist_ok=True)
+        warns = []
         try:
-            xml = svg_to_vd(p.read_text(), a.dp)
-        except ValueError as e:
+            svg = p.read_text()
+            xml = svg_to_vd(svg, a.dp, warns)
+        except (ValueError, ET.ParseError) as e:
             print(f"  ! {p.name}: {e}")
             continue
-        (out_dir / f"{name}.xml").write_text(xml)
-        print(f"  {out_dir / (name + '.xml')}")
+        out = out_dir / f"{a.prefix + p.stem}.xml"
+        out.write_text(xml)
+        done.append((out, svg, xml, warns))
+    rts = vd_roundtrip([(s, x) for _, s, x, _ in done]) if done and not a.no_check else [None] * len(done)
+    for (out, _, _, warns), rt in zip(done, rts):
+        note = "".join(f"  ! {w}" for w in dict.fromkeys(warns))
+        if rt is not None and rt > 2:
+            note += f"  ! render differs from the SVG (mean diff {rt})"
+        print(f"  {out}{'  (render match ' + str(rt) + ')' if rt is not None and rt <= 2 else ''}{note}")
+    written = [x[0] for x in done]
+    if written and not a.no_check:
+        errs = aapt2_check(written)
+        if errs is None:
+            print("  (aapt2 not found: set ANDROID_HOME to validate with the Android SDK)")
+        elif errs:
+            for k, v in errs.items():
+                print(f"  ! aapt2: {k}: {v}")
+        else:
+            print(f"  aapt2 compile+link: {len(written)} file(s) valid")
+
+
+# ---- SVG icons: fidelity retry, 24-grid normalisation, icon-set spec + consistency, new icons
+
+SVG_SCHEMA = {"type": "object", "additionalProperties": False, "required": ["files"], "properties": {"files": {
+    "type": "array", "items": {"type": "object", "additionalProperties": False, "required": ["name", "svg"],
+                               "properties": {"name": {"type": "string"}, "svg": {"type": "string"}}}}}}
+
+ICON_SPEC_SCHEMA = {
+    "type": "object", "additionalProperties": False,
+    "required": ["style", "stroke_px", "stroke_24", "linecap", "linejoin", "corner_radius_24", "traits", "states", "icons"],
+    "properties": {
+        "style": {"type": "string", "enum": ["outlined", "filled", "mixed", "duotone"]},
+        "stroke_px": {"type": "number"}, "stroke_24": {"type": "number"},
+        "linecap": {"type": "string", "enum": ["round", "butt", "square"]},
+        "linejoin": {"type": "string", "enum": ["round", "miter", "bevel"]},
+        "corner_radius_24": {"type": "number"}, "traits": {"type": "string"},
+        "states": {"type": "array", "items": {
+            "type": "object", "additionalProperties": False, "required": ["state", "treatment", "color"],
+            "properties": {"state": {"type": "string"}, "treatment": {"type": "string", "enum": ["outlined", "filled"]},
+                           "color": {"type": "string"}}}},
+        "icons": {"type": "array", "items": {
+            "type": "object", "additionalProperties": False,
+            "required": ["name", "state", "treatment", "material_symbol", "sf_symbol"],
+            "properties": {"name": {"type": "string"}, "state": {"type": "string"},
+                           "treatment": {"type": "string", "enum": ["outlined", "filled"]},
+                           "material_symbol": {"type": "string"}, "sf_symbol": {"type": "string"}}}}},
+}
+
+ICON_SPEC_PROMPT = """This is an APPROVED UI design ({W}x{H} px). After it come zoomed crops of its icons, each labelled with
+its name. Describe the icon SET's shared style precisely enough that new icons can be drawn to match:
+- style, stroke width in design px for the most common icon size, and the same stroke on a 24-unit grid whose live
+  area is 20 units (stroke_px * 20 / icon size in px), line caps and joins, typical corner radius on that 24 grid;
+- traits: geometry (geometric/organic), terminal shapes, level of detail, how active/selected icons differ;
+- states: each visual state (e.g. "tab inactive", "tab active", "on accent button") with its treatment and hex colour;
+- icons: for every listed icon, its state and treatment, plus the closest standard glyph name in Google Material
+  Symbols (snake_case, e.g. home, settings, favorite, person, explore, play_arrow, chevron_right, graphic_eq, air) and
+  Apple SF Symbols (e.g. house.fill, gearshape, heart, person, safari, play.fill, chevron.right, waveform, wind).
+  Use "" when no standard glyph is a close match."""
+
+SVG_FIX_PROMPT = """You wrote these SVGs for assets of an APPROVED design, but they do not match it closely enough. For each
+asset the image shows LEFT the design element (zoomed screenshot on its backdrop) and RIGHT your SVG rendered at the same
+scale on the same backdrop; then come the measured problems and your current SVG. Rewrite each SVG so RIGHT matches LEFT
+1:1: fix the listed problems, keep what already matches, do not simplify, return the same names."""
+
+ICONS_PROMPT = """Design NEW icons for the app in the first image (an APPROVED design). They must be members of the SAME icon
+set as its existing icons (the second image shows them; their SVG sources follow): same grid, stroke weight, caps/joins,
+corner rounding, level of detail and optical size, so nobody can tell which icons were added later.
+Concepts: {concepts}.
+Draw each on a 24x24 grid: viewBox="0 0 24 24", artwork inside the 2..22 live area and optically centred, {treatment},
+stroke-width="{sw}", stroke-linecap="{cap}", stroke-linejoin="{join}", colour {color}. Use the simplest recognisable
+metaphor (the one Material Symbols / SF Symbols use for it). No text, no background shape. Name each file after its
+concept in snake_case."""
+
+_SHAPES = ("path", "circle", "ellipse", "rect", "line", "polyline", "polygon")
+
+
+def _vb(root):
+    vb = [float(v) for v in re.split(r"[\s,]+", root.get("viewBox", "").strip()) if v]
+    return vb if len(vb) == 4 else [0, 0, _num(root.get("width"), 24), _num(root.get("height"), 24)]
+
+
+def _units_box(render, vb):
+    """Alpha bounding box of a render (made by render_svgs) in viewBox units."""
+    bb = content_box(render, 25)
+    if not bb:
+        return None
+    R = render.width
+    s = R / max(vb[2], vb[3])
+    ox, oy = (R - vb[2] * s) / 2, (R - vb[3] * s) / 2
+    return (vb[0] + (bb[0] - ox) / s, vb[1] + (bb[1] - oy) / s, vb[0] + (bb[2] - ox) / s, vb[1] + (bb[3] - oy) / s)
+
+
+def normalize_svg(txt, box, grid=24, pad=2.0):
+    """Scale coordinates (never adding transforms) so content box `box` fits a grid x grid viewBox inside `pad`."""
+    root = ET.fromstring(txt)
+    if any(el.get("transform") or el.get("gradientTransform") for el in root.iter()):
+        return None
+    s = (grid - 2 * pad) / max(box[2] - box[0], box[3] - box[1], 1e-6)
+    tx, ty = grid / 2 - s * (box[0] + box[2]) / 2, grid / 2 - s * (box[1] + box[3]) / 2
+    fx = {"x": lambda v: _fmt(_num(v) * s + tx), "y": lambda v: _fmt(_num(v) * s + ty), "l": lambda v: _fmt(_num(v) * s)}
+    attrs = {"circle": {"cx": "x", "cy": "y", "r": "l"}, "ellipse": {"cx": "x", "cy": "y", "rx": "l", "ry": "l"},
+             "rect": {"x": "x", "y": "y", "width": "l", "height": "l", "rx": "l", "ry": "l"},
+             "line": {"x1": "x", "y1": "y", "x2": "x", "y2": "y"},
+             "linearGradient": {"x1": "x", "y1": "y", "x2": "x", "y2": "y"},
+             "radialGradient": {"cx": "x", "cy": "y", "r": "l", "fx": "x", "fy": "y", "fr": "l"}}
+    stroked = False
+    for el in root.iter():
+        tag = el.tag.replace(SVG_NS, "")
+        if tag.endswith("Gradient") and el.get("gradientUnits") != "userSpaceOnUse":
+            continue
+        for k, kind in attrs.get(tag, {}).items():
+            if el.get(k) is not None:
+                if "%" in el.get(k):
+                    return None
+                el.set(k, fx[kind](el.get(k)))
+        if tag == "path" and el.get("d"):
+            el.set("d", path_str(transform_path(parse_path(el.get("d")), s, tx, ty)))
+        if tag in ("polyline", "polygon"):
+            pts = [float(v) for v in _NUM.findall(el.get("points", ""))]
+            el.set("points", " ".join(f"{_fmt(pts[i] * s + tx)},{_fmt(pts[i + 1] * s + ty)}" for i in range(0, len(pts) - 1, 2)))
+        st = _style_dict(el)
+        for k in ("stroke-width", "stroke-dashoffset"):
+            if el.get(k) is not None:
+                el.set(k, fx["l"](el.get(k)))
+            if k in st:
+                st[k] = fx["l"](st[k])
+        if el.get("stroke-dasharray") not in (None, "none"):
+            el.set("stroke-dasharray", " ".join(_fmt(float(v) * s) for v in _NUM.findall(el.get("stroke-dasharray"))))
+        if st:
+            el.set("style", ";".join(f"{k}:{v}" for k, v in st.items()))
+        stroked |= (st.get("stroke") or el.get("stroke") or "none") != "none"
+    if stroked and root.get("stroke-width") is None and "stroke-width" not in _style_dict(root):
+        root.set("stroke-width", _fmt(s))
+    for k in ("width", "height"):
+        root.set(k, str(grid))
+    root.set("viewBox", f"0 0 {grid} {grid}")
+    return ET.tostring(root, encoding="unicode")
+
+
+def svg_style(txt):
+    """Effective style facts of an SVG: viewBox size, stroke widths, caps/joins, fill/stroke use, colours."""
+    root = ET.fromstring(txt)
+    vb = _vb(root)
+    info = {"viewBox": [vb[2], vb[3]], "strokes": [], "caps": set(), "joins": set(), "filled": False,
+            "stroked": False, "colors": set(), "transform": False}
+
+    def walk(el, attrs):
+        for ch in el:
+            tag = ch.tag.replace(SVG_NS, "")
+            at = _inherit(ch, attrs)
+            info["transform"] |= bool(ch.get("transform"))
+            if tag in ("g", "a", "switch"):
+                walk(ch, at)
+            if tag not in _SHAPES:
+                continue
+            fill, stroke = at.get("fill", "#000000"), at.get("stroke", "none")
+            if stroke not in ("none", "transparent"):
+                info["stroked"] = True
+                info["strokes"].append(_num(at.get("stroke-width"), 1.0))
+                segs = parse_path(ch.get("d")) if tag == "path" else []
+                open_ = tag in ("line", "polyline") or (tag == "path" and segs and segs[-1][0] not in "Zz")
+                if open_:
+                    info["caps"].add(at.get("stroke-linecap", "butt"))
+                if tag in ("path", "polyline", "polygon") or (tag == "rect" and not (ch.get("rx") or ch.get("ry"))):
+                    info["joins"].add(at.get("stroke-linejoin", "miter"))
+                info["colors"].add(stroke.lower())
+            if fill not in ("none", "transparent") and tag != "line":
+                info["filled"] = True
+                info["colors"].add(fill.lower())
+    walk(root, _inherit(root, {}))
+    return info
+
+
+def _stroke24(st):
+    return round(float(np.median(st["strokes"])) * 24 / max(st["viewBox"]), 2) if st["strokes"] else None
+
+
+def icon_set_report(entries, tol=0.15):
+    """entries: [{name, svg, size (design px or None)}] -> consistency notes (stroke outliers per size group, caps, viewBox)."""
+    rows, notes = [], []
+    for e in entries:
+        try:
+            st = svg_style(e["svg"])
+        except ET.ParseError:
+            continue
+        rows.append({**e, "style": st, "sw": _stroke24(st)})
+    vbs = {tuple(r["style"]["viewBox"]) for r in rows}
+    if len(vbs) > 1:
+        notes.append("mixed viewBoxes: " + ", ".join(f"{r['name']} {r['style']['viewBox'][0]:g}x{r['style']['viewBox'][1]:g}"
+                                                     for r in rows))
+    groups = []
+    for r in sorted(rows, key=lambda r: r["size"] or 0):
+        g = next((g for g in groups if (g[0]["size"] is None) == (r["size"] is None) and
+                  (r["size"] is None or r["size"] <= g[0]["size"] * 1.25)), None)
+        (g.append(r) if g is not None else groups.append([r]))
+    for g in groups:
+        strokes = [r for r in g if r["sw"]]
+        if len(strokes) >= 2:
+            med = float(np.median([r["sw"] for r in strokes]))
+            for r in strokes:
+                if abs(r["sw"] - med) / med > tol:
+                    notes.append(f"{r['name']}: stroke {r['sw']} on the 24 grid vs {med:.2f} for its size group "
+                                 f"({', '.join(x['name'] for x in strokes)})")
+        for key in ("caps", "joins"):
+            vals = [v for r in strokes for v in r["style"][key]]
+            if vals:
+                top = max(set(vals), key=vals.count)
+                for r in strokes:
+                    if r["style"][key] - {top}:
+                        notes.append(f"{r['name']}: {key[:-1]} {'/'.join(sorted(r['style'][key]))} vs {top} in its group")
+    for r in rows:
+        if r["style"]["transform"]:
+            notes.append(f"{r['name']}: uses transform attributes")
+    return rows, notes
+
+
+def _load_spec(d):
+    p = Path(d) / "icon_spec.json"
+    return json.loads(p.read_text()) if p.exists() else None
+
+
+def _spec_text(spec):
+    if not spec:
+        return ""
+    states = "; ".join(f"{s['state']}: {s['treatment']} {s['color']}" for s in spec.get("states", []))
+    return (f"\nICON SET SPEC (every icon must follow it so the set stays uniform): {spec['style']} style; stroke about "
+            f"{spec['stroke_px']:g} px in the design ({spec['stroke_24']:g} on a 24-unit grid); {spec['linecap']} caps, "
+            f"{spec['linejoin']} joins; corner radius about {spec['corner_radius_24']:g} on the 24 grid. {spec['traits']} "
+            f"States: {states}.")
+
+
+def _svg_issues(sc):
+    out = []
+    if sc["fit"] < 0.9 or sc["rel"] > 0.45:
+        out.append(f"the silhouette differs from the design (overlap {sc['iou']:.2f}): check parts, proportions, positions")
+    if sc["ink"] > 1.3:
+        out.append(f"about {round((sc['ink'] - 1) * 100)}% heavier than the design: thinner strokes or smaller filled areas")
+    elif sc["ink"] < 0.77:
+        out.append(f"about {round((1 - sc['ink']) * 100)}% lighter than the design: thicker strokes or larger/filled areas")
+    if sc["dE"] > 12:
+        out.append(f"colour is off: design {sc['design_hex']}, yours {sc['svg_hex']}")
+    if sc["aspect_err"] > 0.15:
+        out.append("the width/height ratio differs from the design")
+    return out
+
+
+def _evaluate_svgs(mock, assets, svgs):
+    """{name: svg} -> {name: {svg, score, issues, image}} with VectorDrawable-compatibility and fidelity checks."""
+    res, texts = {}, {}
+    for name, svg in svgs.items():
+        issues = []
+        try:
+            ET.fromstring(svg)
+            warns = []
+            svg_to_vd(svg, None, warns)
+            issues += [f"not VectorDrawable-safe: {w}" for w in dict.fromkeys(warns)]
+            texts[name] = svg
+        except ET.ParseError as e:
+            issues.append(f"invalid XML: {e}")
+        except ValueError as e:
+            issues.append(f"not convertible to VectorDrawable: {e}")
+            texts[name] = svg
+        res[name] = {"svg": svg, "score": None, "issues": issues, "image": None}
+    names = list(texts)
+    for name, r in zip(names, render_svgs([texts[n] for n in names], 256)):
+        if r is None:
+            continue
+        a = assets.get(name)
+        if a:
+            sc, img = svg_fidelity(mock, a["bbox"], r, visual=True)
+            res[name].update(score=sc, image=img, render=r)
+            res[name]["issues"] += _svg_issues(sc)
+        else:
+            res[name]["render"] = r
+    return res
+
+
+def _svg_rank(e):
+    hard = sum(1 for i in e["issues"] if i.startswith(("invalid", "not convertible")))
+    return hard, e["score"]["rel"] if e["score"] else 9.0
+
+
+def _norm_name(n):
+    return re.sub(r"_+", "_", re.sub(r"[^a-z0-9_]", "_", n.lower().removesuffix(".svg"))).strip("_")
+
+
+def _grid_normalize(svgs, grid=24, pad=2.0):
+    """[svg] -> [svg rescaled onto the grid, or None], using one batch render to measure each content box."""
+    out = []
+    for s, r in zip(svgs, render_svgs(svgs, 512)):
+        try:
+            box = r and _units_box(r, _vb(ET.fromstring(s)))
+            out.append(normalize_svg(s, box, grid, pad) if box else None)
+        except (ValueError, ET.ParseError):
+            out.append(None)
+    return out
+
+
+def cmd_svg(a):
+    d, m, mock = _load(a.dir)
+    todo = [x for x in _select(m, a.only) if x["format"] == "svg" or a.only]
+    for sub in ("preview", "raw"):
+        (d / "svg" / sub).mkdir(parents=True, exist_ok=True)
+    spec = _load_spec(d)
+    per_icon = {i["name"]: i for i in (spec or {}).get("icons", [])}
+    by_name = {x["name"]: x for x in todo}
+    batches = [todo[i:i + 6] for i in range(0, len(todo), 6)]
+    if spec:
+        print(f"using icon set spec {d / 'icon_spec.json'}")
+    if a.check:
+        return _svg_check(d, m, mock, by_name)
+
+    def run(batch):
+        parts = [f"The first image is an APPROVED UI design. After it come zoomed crops of specific graphics. {SVG_RULES}"
+                 f"{_spec_text(spec)}\nReturn one file per requested asset, name exactly as given.", mock.convert("RGB")]
+        for x in batch:
+            b = x["bbox"]
+            st = per_icon.get(x["name"])
+            state = f" State: {st['state']}, {st['treatment']}." if st else ""
+            parts += [f"Asset \"{x['name']}\" at bbox x={b['x']},y={b['y']},w={b['w']},h={b['h']}: {x['description']} "
+                      f"Colours: {', '.join(x.get('colors', []))}.{state}", ref_crop(mock, b, margin=0.25, long_side=512)]
+        return ask(parts, SVG_SCHEMA, "svg_files")["files"]
+
+    def fix(batch):
+        parts = [SVG_FIX_PROMPT + "\n" + SVG_RULES + _spec_text(spec)]
+        for name, e in batch:
+            parts += [f"Asset \"{name}\": {by_name[name]['description']}"]
+            if e["image"] is not None:
+                parts.append(e["image"])
+            parts.append("Problems: " + "; ".join(e["issues"]) + f"\nCurrent SVG:\n{e['svg']}")
+        return ask(parts, SVG_SCHEMA, "svg_files")["files"]
+    first = {}
+    with cf.ThreadPoolExecutor(4) as ex:
+        for files in ex.map(run, batches):
+            for f in files:
+                first[_norm_name(f["name"])] = f["svg"]
+    evals = _evaluate_svgs(mock, by_name, first)
+    history = {n: [e] for n, e in evals.items()}
+    todo_fix = [(n, e) for n, e in evals.items() if e["issues"] and n in by_name] if a.retry else []
+    if todo_fix:
+        print(f"retrying {len(todo_fix)} below threshold: {', '.join(n for n, _ in todo_fix)}")
+        with cf.ThreadPoolExecutor(4) as ex:
+            fixed = {}
+            for files in ex.map(fix, [todo_fix[i:i + 4] for i in range(0, len(todo_fix), 4)]):
+                fixed.update({_norm_name(f["name"]): f["svg"] for f in files})
+        for n, e in _evaluate_svgs(mock, by_name, {k: v for k, v in fixed.items() if k in history}).items():
+            history[n].append(e)
+    report_path = d / "svg_report.json"
+    report = json.loads(report_path.read_text()) if report_path.exists() else {}
+    rows = []
+    best = {n: min(t, key=_svg_rank) for n, t in history.items()}
+    final = {n: b["svg"] for n, b in best.items()}
+    grid_ok = [n for n, b in best.items() if a.grid and by_name.get(n, {}).get("kind") == "icon" and
+               not any(i.startswith("invalid") for i in b["issues"])]
+    for n, norm in zip(grid_ok, _grid_normalize([final[n] for n in grid_ok], a.grid, a.pad)):
+        if norm:
+            final[n] = norm
+    previews = dict(zip(final, render_svgs(list(final.values()), 256)))
+    for n in grid_ok:
+        sc0 = best[n]["score"]
+        if final[n] != best[n]["svg"] and sc0 and previews[n] is not None:
+            if svg_fidelity(mock, by_name[n]["bbox"], previews[n])["rel"] > sc0["rel"] + 0.05:
+                print(f"  ! {n}: grid normalisation changed the render, kept the original viewBox")
+                final[n] = best[n]["svg"]
+                previews[n] = render_svgs([final[n]], 256)[0]
+    for name, tries in history.items():
+        for i, e in enumerate(tries):
+            (d / "svg" / "raw" / f"{name}_try{i + 1}.svg").write_text(e["svg"])
+        b, asset, svg, prev = best[name], by_name.get(name, {}), final[name], previews[name]
+        grid = a.grid if svg != b["svg"] else None
+        p = d / "svg" / f"{name}.svg"
+        p.write_text(svg)
+        if prev:
+            prev.save(d / "svg" / "preview" / f"{name}.png")
+        sc = b["score"]
+        line = f"  {p}"
+        if sc:
+            line += f"  rel={sc['rel']} fit={sc['fit']} ink={sc['ink']} dE={sc['dE']}"
+        if len(tries) > 1:
+            r0, r1 = (t["score"]["rel"] if t["score"] else "-" for t in tries[:2])
+            line += f"  retry rel {r0} -> {r1}: {'KEPT' if b is tries[-1] else 'discarded'}"
+        if grid and asset.get("dp"):
+            line += f"  (24-grid; use at ~{round(max(asset['dp']['w'], asset['dp']['h']) * grid / (grid - 2 * a.pad))}dp)"
+        if asset.get("material_symbol") or asset.get("sf_symbol"):
+            line += f"  [material: {asset.get('material_symbol') or '-'}, sf: {asset.get('sf_symbol') or '-'}]"
+        print(line)
+        for i in b["issues"]:
+            print(f"      ! {i}")
+        report[name] = {"svg": str(p), "grid": grid, "score": sc, "issues": b["issues"], "tries": len(tries),
+                        "kept_try": tries.index(b) + 1}
+        if sc and prev:
+            rows.append([(f"{name}: design | svg", b["image"])] +
+                        [(f"try {i + 1}: rel={t['score']['rel']}" + (" KEPT" if t is b else ""), t["render"])
+                         for i, t in enumerate(tries) if t["score"]] +
+                        [(f"final ink={sc['ink']} dE={sc['dE']}", prev)])
+    report_path.write_text(json.dumps(report, indent=2))
+    if rows:
+        (d / "review").mkdir(exist_ok=True)
+        stamp = time.strftime("%H%M%S")
+        for i in range(0, len(rows), 8):
+            print("review sheet ->", sheet(rows[i:i + 8], d / "review" / f"svg_{stamp}_{i // 8 + 1}.png", T=240))
+    entries = [{"name": x["name"], "svg": (d / "svg" / f"{x['name']}.svg").read_text(),
+                "size": max(x["bbox"]["w"], x["bbox"]["h"])}
+               for x in m["assets"] if x["format"] == "svg" and x.get("kind") == "icon" and (d / "svg" / f"{x['name']}.svg").exists()]
+    _, notes = icon_set_report(entries)
+    print("icon set consistency:", "ok" if not notes else "")
+    for n in notes:
+        print(f"  ~ {n}")
+
+
+def _svg_check(d, m, mock, by_name):
+    have = {n: (d / "svg" / f"{n}.svg").read_text() for n in by_name if (d / "svg" / f"{n}.svg").exists()}
+    rows = []
+    for n, e in _evaluate_svgs(mock, by_name, have).items():
+        sc = e["score"]
+        print(f"  {n:22s} " + (f"rel={sc['rel']} fit={sc['fit']} ink={sc['ink']} dE={sc['dE']}" if sc else "not scored"))
+        for i in e["issues"]:
+            print(f"      ! {i}")
+        if sc:
+            rows.append([(f"{n}: design | svg", e["image"]), (f"rel={sc['rel']} ink={sc['ink']}", e["render"])])
+    if rows:
+        (d / "review").mkdir(exist_ok=True)
+        print("review sheet ->", sheet(rows, d / "review" / f"svgcheck_{time.strftime('%H%M%S')}.png", T=240))
+    _, notes = icon_set_report([{"name": n, "svg": s, "size": max(by_name[n]["bbox"]["w"], by_name[n]["bbox"]["h"])}
+                                for n, s in have.items() if by_name[n].get("kind") == "icon"])
+    print("icon set consistency:", "ok" if not notes else "")
+    for n in notes:
+        print(f"  ~ {n}")
+
+
+def cmd_iconspec(a):
+    d, m, mock = _load(a.dir)
+    icons = [x for x in m["assets"] if x["format"] == "svg"]
+    parts = [ICON_SPEC_PROMPT.format(W=mock.width, H=mock.height), mock.convert("RGB")]
+    for x in icons:
+        parts += [f"Icon \"{x['name']}\" ({x['description'][:160]})", ref_crop(mock, x["bbox"], margin=0.25, long_side=256)]
+    spec = ask(parts, ICON_SPEC_SCHEMA, "icon_spec")
+    for i in spec["icons"]:
+        i["name"] = _norm_name(i["name"])
+        i["material_symbol"], i["sf_symbol"] = _symbol_names(i["material_symbol"], i["sf_symbol"])
+    (d / "icon_spec.json").write_text(json.dumps(spec, indent=2))
+    names = {i["name"]: i for i in spec["icons"]}
+    for x in m["assets"]:
+        if x["name"] in names:
+            x["material_symbol"], x["sf_symbol"] = names[x["name"]]["material_symbol"], names[x["name"]]["sf_symbol"]
+    (d / "assets.json").write_text(json.dumps(m, indent=2))
+    print(f"{spec['style']} icons, stroke {spec['stroke_px']:g}px ({spec['stroke_24']:g} on 24 grid), {spec['linecap']} caps, "
+          f"{spec['linejoin']} joins, radius {spec['corner_radius_24']:g}")
+    print(f"traits: {spec['traits']}")
+    for s in spec["states"]:
+        print(f"  state {s['state']}: {s['treatment']} {s['color']}")
+    for i in spec["icons"]:
+        print(f"  {i['name']:22s} {i['state']:18s} {i['treatment']:9s} material={i['material_symbol'] or '-':16s} "
+              f"sf={i['sf_symbol'] or '-'}")
+    print(f"-> {d / 'icon_spec.json'} (symbol names merged into assets.json)")
+
+
+def _symbol_names(material, sf):
+    material = material.strip() if re.fullmatch(r"[a-z0-9_]+", material.strip()) else ""
+    sf = sf.strip() if re.fullmatch(r"[a-z0-9]+(\.[a-z0-9]+)*", sf.strip()) else ""
+    return material, sf
+
+
+def cmd_icons(a):
+    d, m, mock = _load(a.dir)
+    concepts = [c.strip() for c in a.concepts.split(",") if c.strip()]
+    spec = _load_spec(d)
+    out = Path(a.out) if a.out else d / "icons"
+    out.mkdir(parents=True, exist_ok=True)
+    have = [x for x in m["assets"] if x["format"] == "svg" and x.get("kind") == "icon" and (d / "svg" / f"{x['name']}.svg").exists()]
+    if not have:
+        sys.exit("icons: no existing svg icons in DIR/svg; run `svg` first so the new icons can match them")
+    srcs = [(d / "svg" / f"{x['name']}.svg").read_text() for x in have]
+    srcs = [n or s for s, n in zip(srcs, _grid_normalize(srcs))]
+    existing = [{"asset": x, "svg": s, "style": svg_style(s), "sw": _stroke24(svg_style(s))} for x, s in zip(have, srcs)]
+    size = float(np.median([max(e["asset"]["bbox"]["w"], e["asset"]["bbox"]["h"]) for e in existing]))
+    group = [e for e in existing if max(e["asset"]["bbox"]["w"], e["asset"]["bbox"]["h"]) <= size * 1.25 and
+             max(e["asset"]["bbox"]["w"], e["asset"]["bbox"]["h"]) >= size / 1.25]
+    outlined = [e for e in group if e["style"]["stroked"] and not e["style"]["filled"]]
+    treatment = a.treatment if a.treatment != "auto" else (
+        spec["style"] if spec and spec["style"] in ("outlined", "filled") else ("outlined" if outlined else "filled"))
+    pool = outlined if treatment == "outlined" and outlined else group
+    sw = a.stroke or (float(np.median([e["sw"] for e in pool if e["sw"]])) if any(e["sw"] for e in pool)
+                      else spec["stroke_24"] if spec else 2)
+    caps = [c for e in pool for c in e["style"]["caps"]] or [spec["linecap"] if spec else "round"]
+    joins = [j for e in pool for j in e["style"]["joins"]] or [spec["linejoin"] if spec else "round"]
+    colors = [c for e in pool for c in e["style"]["colors"] if c.startswith("#")]
+    color = a.color or (max(set(colors), key=colors.count).upper() if colors else "#000000")
+    cap, join = max(set(caps), key=caps.count), max(set(joins), key=joins.count)
+    ref = sheet([[(e["asset"]["name"], ref_crop(mock, e["asset"]["bbox"], 0.25, 160)) for e in existing[i:i + 6]]
+                 for i in range(0, len(existing), 6)], out / "_existing.png", T=160)
+    tr = ("outlined: fill=\"none\" on stroked parts, filled only where the set fills small details" if treatment == "outlined"
+          else "filled shapes like the set's filled icons")
+    prompt = ICONS_PROMPT.format(concepts=", ".join(concepts), treatment=tr, sw=f"{sw:g}", cap=cap, join=join, color=color)
+    exemplars = "\n".join(f"--- {e['asset']['name']}.svg\n{e['svg']}" for e in pool[:5])
+    parts = [prompt + "\n" + SVG_RULES + _spec_text(spec), mock.convert("RGB"), _rgba(ref).convert("RGB"),
+             f"Existing icon SVG sources, on the same 24 grid:\n{exemplars}"]
+    files = {}
+    for attempt in range(2):
+        for f in ask(parts, SVG_SCHEMA, "svg_files")["files"]:
+            files[_norm_name(f["name"])] = f["svg"]
+        bad = {}
+        for n, s in files.items():
+            try:
+                svg_to_vd(s)
+            except (ValueError, ET.ParseError) as e:
+                bad[n] = str(e)
+        if not bad:
+            break
+        print("  retrying invalid:", "; ".join(f"{k}: {v}" for k, v in bad.items()))
+        parts = parts + [f"These files were invalid, fix them and return ALL icons again: {bad}"]
+    for n, s in files.items():
+        if _vb(ET.fromstring(s))[2:] != [24.0, 24.0]:
+            s = _grid_normalize([s])[0] or s
+        if a.snap:
+            s = re.sub(r'stroke-width="[^"]*"', f'stroke-width="{sw:g}"', s)
+        files[n] = s
+        (out / f"{n}.svg").write_text(s)
+    renders = render_svgs([e["svg"] for e in existing] + list(files.values()), 192)
+    hexbg = lambda x: "#" + "".join(f"{int(v):02X}" for v in _element_mask(mock, x["bbox"])[1])
+    bg = hexbg(pool[0]["asset"])
+    old_r, new_r = renders[:len(existing)], renders[len(existing):]
+    tiles = [(f"{e['asset']['name']} (existing)", r, hexbg(e["asset"])) for e, r in zip(existing, old_r)]
+    names = list(files)
+    rows = [tiles[i:i + 6] for i in range(0, len(tiles), 6)]
+    rows += [[(f"{n} (new)", r, bg) for n, r in zip(names[i:i + 6], new_r[i:i + 6])] for i in range(0, len(names), 6)]
+    T = 150
+    im = Image.new("RGB", (6 * T, len(rows) * T), "white")
+    for ri, row in enumerate(rows):
+        for ci, (label, r, b) in enumerate(row):
+            im.paste(_tile(r, T, label, bg=b), (ci * T, ri * T))
+    im.save(out / "preview.png")
+    (out / "_existing.png").unlink(missing_ok=True)
+    _, notes = icon_set_report([{"name": e["asset"]["name"], "svg": e["svg"], "size": None} for e in pool] +
+                               [{"name": n, "svg": s, "size": None} for n, s in files.items()])
+    for n in names:
+        st = svg_style(files[n])
+        print(f"  {out / (n + '.svg')}  stroke={_stroke24(st)} caps={'/'.join(sorted(st['caps'])) or '-'} "
+              f"{'filled' if st['filled'] else ''}{' outlined' if st['stroked'] else ''}")
+    print(f"target: {treatment}, stroke {sw:g}, {cap} caps, {join} joins, {color}; preview -> {out / 'preview.png'}")
+    print("set consistency:", "ok" if not notes else "")
+    for n in notes:
+        print(f"  ~ {n}")
+    if a.vd:
+        a2 = argparse.Namespace(svgs=[str(out / f"{n}.svg") for n in names], out=a.vd, dp=a.dp, prefix="ic_", no_check=False)
+        cmd_vd(a2)
 
 
 # ---- animation frames
@@ -2933,8 +3896,11 @@ def cmd_doctor(a):
     print(f"api key     : {'set' if c['key'] else 'MISSING'}")
     print(f"image model : {c['image_model']}")
     print(f"text model  : {c['text_model']}")
-    renderer = "cairosvg" if _cairosvg() else next((t for t in ("rsvg-convert", "qlmanage") if shutil.which(t)), None)
-    print(f"svg preview : {renderer or 'none (pip install cairosvg)'}")
+    renderer = _renderer_name()
+    print(f"svg render  : {renderer or 'none (install Chrome/Chromium or pip install cairosvg)'}"
+          f"{' (no alpha: matted from two renders)' if renderer == 'qlmanage' else ''}")
+    sdk = _android_sdk()
+    print(f"aapt2       : {sdk[0] if sdk else 'not found (set ANDROID_HOME to validate VectorDrawables)'}")
     if not c["key"]:
         sys.exit(1)
     base, headers = _auth()
@@ -2956,7 +3922,12 @@ def cmd_score(a):
     d, m, mock = _load(a.dir)
     asset = next(x for x in m["assets"] if x["name"] == a.name)
     for f in a.files:
-        print(f, score(mock, asset["bbox"], _rgba(f), None, asset["transparent"]))
+        if f.endswith(".svg"):
+            r = render_svgs([Path(f).read_text()], 256)[0]
+            sc = svg_fidelity(mock, asset["bbox"], r) if r else "not renderable"
+            print(f, sc, *(f"\n  ! {i}" for i in (_svg_issues(sc) if r else [])))
+        else:
+            print(f, score(mock, asset["bbox"], _rgba(f), None, asset["transparent"]))
 
 
 def _color_args(p):
@@ -3002,11 +3973,29 @@ def main():
     p.add_argument("--note", help="extra user feedback to include"); p.add_argument("--accept", action="store_true",
                                                                                    help="keep the result even if the score is worse")
     _color_args(p); p.add_argument("--model", default=None); p.set_defaults(fn=cmd_fix)
-    p = sub.add_parser("svg", help="write svg-format assets as SVG with previews")
-    p.add_argument("dir"); p.add_argument("--only"); p.set_defaults(fn=cmd_svg)
+    p = sub.add_parser("svg", help="write svg-format assets as SVG: scored vs the design, retried, 24-grid, previews")
+    p.add_argument("dir"); p.add_argument("--only")
+    p.add_argument("--no-retry", dest="retry", action="store_false", help="skip the vision-guided retry of weak icons")
+    p.add_argument("--grid", type=float, default=24, help="normalise icon viewBoxes to this grid (0 = keep as drawn)")
+    p.add_argument("--pad", type=float, default=2, help="grid padding around the icon's content")
+    p.add_argument("--check", action="store_true", help="only score existing DIR/svg files (no API calls)")
+    p.set_defaults(fn=cmd_svg)
+    p = sub.add_parser("iconspec", help="extract the icon-set style spec + Material/SF symbol names -> DIR/icon_spec.json")
+    p.add_argument("dir"); p.set_defaults(fn=cmd_iconspec)
+    p = sub.add_parser("icons", help="draw NEW icons (not in the mockup) in the design's icon style as SVG")
+    p.add_argument("dir"); p.add_argument("concepts", help='comma-separated, e.g. "notifications, sleep timer, download"')
+    p.add_argument("--out", help="default DIR/icons")
+    p.add_argument("--treatment", choices=["auto", "outlined", "filled"], default="auto")
+    p.add_argument("--stroke", type=float, help="stroke width on the 24 grid (default: measured from the set)")
+    p.add_argument("--color", help="hex colour (default: the set's most common)")
+    p.add_argument("--snap", action="store_true", help="force every stroke-width to the set's stroke")
+    p.add_argument("--vd", help="also write VectorDrawables to this res/drawable dir"); p.add_argument("--dp", type=float)
+    p.set_defaults(fn=cmd_icons)
     p = sub.add_parser("vd", help="convert SVG files to Android VectorDrawable XML")
     p.add_argument("svgs", nargs="+"); p.add_argument("--out", required=True); p.add_argument("--dp", type=float)
-    p.add_argument("--prefix", default="ic_"); p.set_defaults(fn=cmd_vd)
+    p.add_argument("--prefix", default="ic_")
+    p.add_argument("--no-check", action="store_true", help="skip the render round-trip and aapt2 validation")
+    p.set_defaults(fn=cmd_vd)
     p = sub.add_parser("frames", help="frame-by-frame animation from a forged asset (moving layer sprite sheet, "
                                       "or --procedural local motion)")
     p.add_argument("dir"); p.add_argument("name"); p.add_argument("--moving", help="part that moves (generated route)")
@@ -3063,7 +4052,7 @@ def main():
     q.add_argument("--model", default=None); q.set_defaults(fn=cmd_appicon_build)
     p = sub.add_parser("pick", help="override the chosen candidate (number from the review sheet, or a file path)")
     p.add_argument("dir"); p.add_argument("name"); p.add_argument("candidate"); _color_args(p); p.set_defaults(fn=cmd_pick)
-    p = sub.add_parser("score", help="score arbitrary files against a manifest asset")
+    p = sub.add_parser("score", help="score arbitrary PNG or SVG files against a manifest asset")
     p.add_argument("dir"); p.add_argument("name"); p.add_argument("files", nargs="+"); p.set_defaults(fn=cmd_score)
     a = ap.parse_args()
     a.fn(a)
