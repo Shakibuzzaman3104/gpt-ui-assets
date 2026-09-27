@@ -17,9 +17,9 @@ accept "GPT can't" as the end of the road:
 | Asset inventory, design QA, icon-set style, vector keyframes | GPT vision (`manifest`, `critique`, `iconspec`, `vectorize`) |
 | Flat/line icons as vectors | GPT vision writes SVG (`svg`, `icons`). If it stays weak after its retry, **you** write or fix the SVG by hand, then `svg --check` |
 | Ranking, colour correction, safe zones, slicing, registration, QA | Local measurement in the kit. Trust numbers over the model's claims |
-| Raster art → vectors, animatable parts | Local tracing and rigging (`trace`, `rig`) <!-- WAVE2 --> |
+| Raster art → vectors, animatable parts | Local tracing and rigging (`trace`, `rig`, `animate`); GPT can optionally isolate parts (`rig --route hybrid`) |
 | Lottie / AnimatedVectorDrawable / motion | `vectorize` builds and validates them; **you** refine `layers.json` and `--rebuild` |
-| Theme code, fonts, 1:1 check of the built screen | `tokens`, `fonts`, `compare` <!-- WAVE2 --> plus you, the engineer |
+| Exact colours, fonts, geometry, theme code, 1:1 check of the built screen | Measurement from pixels (`tokens`, `fonts`, `redline`, `compare`) plus you, the engineer |
 | Anything a human must judge | You: Read every review sheet before handing anything over |
 
 `K` below is `scripts/gptkit.py` inside this skill's directory:
@@ -42,6 +42,9 @@ python3 $K doctor                                                      # key, en
   - Headless Chrome/Chromium renders SVG with real alpha and plays Lottie through lottie-web (`GPTKIT_CHROME` sets its path).
   - The Android SDK's `aapt2` (via `ANDROID_HOME` or `~/Library/Android/sdk`) validates every VectorDrawable, adaptive icon and AVD.
   - `xcrun actool` validates the iOS app icon.
+  - `pip install vtracer scipy fonttools` add an extra trace candidate, faster region labelling and kerning in the font
+    matcher. Everything works without them.
+  - `fonts` needs network access to Google Fonts once; after that it runs from `~/.cache/gptkit`.
 - Never print or echo the API key.
 - Image calls take 35–80 s and cost money or quota. Batch deliberately, run slow commands in the background, and run
   independent commands in parallel (e.g. `forge` and `svg`).
@@ -144,7 +147,18 @@ python3 $K icons build/home "notifications, sleep timer, download" --vd app/src/
 - `icons` measures the set's stroke, caps, joins and colour from existing SVGs, so run `svg` first. Read `icons/preview.png`:
   the new row must look like the same family. `--snap` forces the set's stroke, `--treatment filled` draws filled variants.
 
-<!-- WAVE2: trace -->
+**Vector versions of raster art (optional).** GPT only writes reliable SVG for simple glyphs. For anything forged as a PNG, trace it locally:
+```bash
+python3 $K trace build/home/assets/*.png --out build/home/traced      # SVG + img_*.xml (VD) + *.layers.json + review/
+```
+- `--preset auto` (the default) traces with the flat, illustration and gradient presets (plus vtracer if installed). It renders
+  each one at the source size with alpha and keeps the smallest whose display-size diff is within 10% of the best.
+- Gradients are fitted per region, linear or radial, so VectorDrawable can express them. Glows are rebuilt as stacked translucent bands.
+- **Read `review/<name>_trace.png`** (source | vector | diff heatmap), then follow `advice.prefer` in `<name>.trace.json`:
+  - `vd`: use `img_<name>.xml`. It has already passed aapt2 and been rendered back. Gradients need API 24+ or AndroidX.
+  - `svg/lottie`: the vector is good, but too big or heavy for a VectorDrawable (Android guidance is ≤200 dp and simple paths).
+  - `png/webp`: tracing loses too much (photos, textures, star fields), so keep the raster and use `export`.
+- Typical display-size diff: icons ≤0.5, illustrations 1.5–2.5, photographic backgrounds 7+ (keep those raster).
 
 ## Phase 4: platform export
 
@@ -199,8 +213,8 @@ Pick the route with the user:
 |---|---|---|
 | `frames --procedural bounce\|pulse\|float\|wiggle\|spin\|breathe` | the art moves rigidly; **no API calls**, art stays exactly 1:1 | frames, WebP, APNG, tiny transform Lottie, `motion.json` for code |
 | `frames --moving … --static …` | the art changes shape (flame, ripples, blinking mascot) | registered frames, WebP/APNG/image-sequence Lottie, `animation-list` XML |
-| `vectorize` | vector motion: morphs, transforms, glows | Lottie **and** looping AnimatedVectorDrawable |
-<!-- WAVE2: rig -->
+| `vectorize` | GPT-authored vector motion: morphs, transforms, glows | Lottie **and** looping AnimatedVectorDrawable |
+| `rig` + `animate` | the exact traced art must move (1:1 with the design, glow included); **no GPT needed** | layered Lottie with procedural keyframes |
 
 ```bash
 python3 $K frames build/home rain_drop --procedural bounce --amount 1.2
@@ -231,12 +245,62 @@ python3 $K vectorize build/home campfire --rebuild      # after YOU edit layers.
     API 23+ framework (use AppCompat `app:srcCompat` below that); gradients need API 24+.
   - To refine motion, edit `layers.json` yourself and `--rebuild`.
 
-## Phase 6: build the UI
+**Rig the exact art into parts (vector, 1:1).** `vectorize` redraws the art in simplified form: keyframe 0 of GPT's
+campfire scored 10.2 against the design, while a traced rig scores 2.3. When fidelity matters, rig the traced asset instead:
+```bash
+python3 $K rig build/home cozy_campfire --namer none \
+  --parts "outer_flame=the outer flame; inner_flame=the inner flame; logs=the two crossed logs"   # bottom -> top
+# Read rig/<name>/regions.png (numbered regions + connected groups c1..cN), then assign and animate:
+python3 $K rig build/home cozy_campfire --parts "..." --assign "outer_flame=1,17,19; inner_flame=2,27; logs=rest" \
+  --animate "outer_flame=flicker; inner_flame=flicker:1.3:0.35"          # glow_<part> follows its part
+python3 $K animate build/home/traced/rain_drop.layers.json --part "art=squash:0.8; glow=squash:0.8@art"
+```
+- You can name the regions yourself from `regions.png`. Otherwise, omit `--assign` to have one vision call name them (98% agreement in
+  testing), or use `--route hybrid`, where GPT isolates each part (1 image call per part) and the tool registers it back.
+- Every part is extended under the parts above it, so moving parts never open gaps. Check `rig_preview.png`: the recomposite
+  should match the source.
+- Motions: sway, flicker, breathe, squash, bob, wave and ripple. The syntax is `part=motion[:amp[:phase]][@anchor]`; `@anchor` shares
+  another layer's motion field. Frame 0 is always the approved design.
+- **Read `anim/lottie_frames.png`** (rendered by lottie-web). In `animation_report.json`, `tear_px` should be about 0.
+- Traced rigs make 150–250 KB Lotties; `--min-detail 0.02 --keyframes 6` shrinks them.
 
-<!-- WAVE2: tokens fonts compare -->
-Build from `assets.json` (positions), `design_spec.json` (tokens, `native` widget per component, `platform_style` per
-text style) and the exported assets, using the platform's native components. Multiply px by `px_to_dp`, then snap to the
-grid. Follow the project's own conventions. At the end, compare a screenshot of the built screen with the mockup.
+## Phase 6: build the UI 1:1 (measure, don't guess)
+
+GPT's spec is a list of estimates. Replace them with measurements from the pixels before writing UI code:
+```bash
+python3 $K fonts   build/home     # Google Fonts match by rendering + measuring (network once; cached)
+python3 $K redline build/home     # real edges, corner radii, insets and gaps in dp
+python3 $K tokens  build/home --package com.acme.app.ui.theme --prefix Acme [--author "Name"] --verify
+```
+- **`fonts`** writes TTFs, Android `res/font` + font-family XML, `ios/UIAppFonts.plist`, `web/fonts.css`, `licenses/` and `fonts.json`
+  (the fitted size, weight and tracking for each style).
+  - **Read `fonts_review.png`.**
+  - On GPT-drawn text, sans families often tie within 0.01; the tool says so, keeps the spec's family when it's close, and
+    `--family` overrides it.
+  - `! Style: fits X poorly; Y fits much better` means that style may really use a second family.
+- **`redline`** writes surface boxes, corner radii (rect, pill or circle), insets and gaps in dp. Use these numbers for padding,
+  spacing and shapes.
+- **`tokens`** writes Compose `Color.kt`/`Type.kt`/`Shape.kt`/`Dimens.kt`, a SwiftUI tokens file, `web/tokens.css` and Tailwind config.
+  - Every palette hex is first snapped to the mockup's pixels; `palette_check.png` shows the guess, the snapped value and the ΔE00.
+  - `--verify` type-checks the Swift, loads the Tailwind config and parses the CSS.
+  - If `tokens`/`fonts` print "missing: …", add `--vision` (one cached call to locate the text).
+
+Build the screen with the platform's **native components**, using `spec`'s `native` widget per component and `platform_style` per
+text style, plus these files and the exported assets. Follow the project's conventions. Then close the loop:
+```bash
+# screenshot the built screen (emulator/simulator/device, or headless Chrome at the target width), then:
+python3 $K compare build/home shot.png [--vision] [--crop-top PX] [--crop-bottom PX]
+```
+- `compare` writes `compare/report.json`, `heatmap.png` (design | aligned implementation | ΔE heatmap with the worst regions boxed)
+  and a ranked list of concrete fixes, for example:
+  - `'Sleep Stories' 7% smaller (try 31.1sp)`
+  - `'Breathe' looks like Nunito 400 rather than Lora 400`
+  - `fill colour off by dE 4.8 (#A69BF7 -> #9A8BE6)`
+  - `shifted +12dp vertically`
+  - `element … missing`
+- It detects a status bar and a taller screen automatically. "Differs inside the artwork" regions come from the forged assets, not
+  your code. `--vision` adds qualitative descriptions; trust the measured numbers for sizes and positions.
+- Fix, re-screenshot and re-run until the only remaining items are ones you accept.
 
 ## Rules learned from probing (don't relearn them)
 
@@ -256,4 +320,5 @@ grid. Follow the project's own conventions. At the end, compare a screenshot of 
   the moving layer. Use `--procedural` for rigid motion.
 - gpt-6 animates too subtly by default, and the kit's motion check retries. AVD `pathType` keyframes crash the inflater, so the
   kit relays multi-key morphs across path copies.
+- Vision hex guesses drift (ΔE up to 5 on text ink and 10 on borders). `tokens` snaps them to pixels. Measure; never ask vision for numbers.
 - Full measurements are in `references/api-findings.md`.

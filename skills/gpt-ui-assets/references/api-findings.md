@@ -332,3 +332,58 @@ Cost: 8 image calls (6 concepts, 1 plate, 1 foreground) and 2 gpt-6 glyph calls 
   so fades are per path.
 - The RenderThread AVD subsamples keyframed animators past 300 frames and logs "Duration for the animation is too
   long". This happened with the animator duration scale at 5x (6 s); it matters for loops longer than about 5 s.
+
+## Tracing raster assets locally (2026-09-28)
+
+Test assets: the forged campfire (785×1047) and rain drop, the two lake backgrounds, and 9 GPT icons. For the icons, each SVG was rendered to a 512 px PNG as ground truth. Fidelity is measured at display size (dp × 3) on vectors rendered by headless Chrome with alpha.
+
+- **vtracer on the raw forged PNG is unusable:** 1.1 MB and 895 paths, including black and red shapes traced from the RGB of transparent pixels.
+- **vtracer with the alpha pre-processed** still posterizes gradients, loses the glow and loses the drop highlight. Display diff: campfire 5.08, rain drop 4.68, icons 0.88.
+- **Native tracer** (k-means → connected regions → merging of soft-edged neighbours with a highlight guard → linear/radial multi-stop fits; marching squares → Schneider Béziers):
+
+| Asset | Display diff / IoU | Size |
+|---|---|---|
+| Campfire | 2.25 / 0.993 | 40 KB, 45 paths |
+| Rain drop | 1.50–1.69 | 16–28 KB |
+| Icons | 0.22 / 0.992 | ~3.7 KB each |
+
+- **Gradient-heavy art:** more colours make it worse (k 24/32 is worse than k 16). What helps is merging regions across boundaries that are invisible in the source (per-pixel contrast < 2 ΔE) as long as the smaller side isn't a distinct feature, then fitting one multi-stop gradient. That removed the posterized yellow core of the flame.
+- **Glow:** 8 stacked bands with opacities solved to rebuild the alpha falloff (spacing γ=1.6) cut the alpha error from 10.5 to 3.4. 4 bands terrace visibly. The bands must not spill past crisp edges; when they did, the drop showed a dark rim.
+- **Photographic backgrounds:** display diff 6–11 even with 140 paths → keep them raster.
+- **VectorDrawable checks:** aapt2 compiles every output. Rendering the VD back through a VD→SVG converter matches the SVG within 0.2 (gradient dithering only). Android guidance, verified at the source: vectors ≤200×200 dp; lint VectorPath now warns at 3000 chars, and only when vectors are rasterized for minSdk < 21.
+
+## GPT part isolation
+
+- One edit call per part with the prompt "keep ONLY <part>, same canvas", 35–55 s each.
+- The returned canvas is not the input canvas: parts come back scaled 0.67–0.88× and shifted 60–120 px (on 1047 px).
+- A robust registration (summed truncated colour cost, scale ±30% around identity) recovers the outer flame and logs to 98% / 96% coverage. A mean-cost version shrank parts into their best-matching patch.
+- GPT redrew the inner flame as a different teardrop (77% coverage).
+- Consequence: use GPT parts only as masks (for assigning regions and completing hidden shapes). Tracing GPT's redraws directly gives 5.41 vs 2.37.
+- Vision naming of numbered regions: 98.3% area agreement with Claude's naming, in 1 call of about 60 s.
+
+## Procedural vs GPT keyframes
+
+- Deforming one traced path with smooth, loop-periodic fields keeps the command sequence identical by construction, and keyframe 0 is exactly the design.
+- Keyframe 0 vs the approved asset: 2.33 for the rigged trace vs 10.2 for GPT `vectorize` (no glow, flat logs). The cost is size: 196 KB vs 17 KB.
+- Hidden-shape completion is required: without it, the moving inner flame tears up to 110 px per keyframe.
+
+The main result: every GPT estimate I measured was usable as a starting point but not as a final value, and local measurement fixes it.
+
+- **Colours.** Snapping cut palette error against independent flat patches from 1.35 to 0.36 ΔE00. Text inks were off by up to 5 ΔE and borders by up to 10. One hallucinated gradient was caught, and on screen 2 a text colour was wrong by 10.5 ΔE.
+- **Text-colour measurement needed care.** A plain "most-distant 15% of pixels" estimate reads thin text too dark. Eroded stroke interiors fix thick text (the wordmark has an internal gradient) and the top 5% fixes thin text. I judged this with swatch sheets.
+- **Fonts, on known ground truth.** An 18-font Chrome benchmark let me find three physical mismatches:
+  - no kerning in Pillow's basic layout;
+  - coverage measured in sRGB instead of linear light;
+  - Skia's stem darkening.
+
+  I also found a crop-threshold inconsistency that squeezed small text by about 10% when resized. After fixing all four, weights went from 5/14 to 15/16 exact, size error to 0.8% median and tracking error to 0.003 em median.
+- **Fonts, on GPT text.** GPT's letters don't follow one real family. Similar sans families tie within about 0.01 and per-style bests disagree, so the tool reports ties, flags styles that fit poorly and supports `--family`. It no longer pretends there is one true answer. The serif titles consistently match Lora, Libre Baskerville or Fraunces closely.
+- **compare** needed three layers:
+  - a global row-profile offset, which found the status bar exactly (63 px = 24 dp);
+  - a prior-constrained region search;
+  - measurement on ink and object boxes rather than template scale.
+
+  Its font verdict is relative (which candidate explains the implemented glyphs best), which is what separated real swaps (margins 0.11–0.20) from noise (≤ 0.057).
+- **Vision is useful but only qualitative.** When I gave it tiles with different geometry it invented a size difference. After I used identical crop geometry its descriptions matched the measurements.
+- **redline** recovers CSS geometry to under 1 dp.
+- **Generalisation.** The unchanged pipeline ran on an unseen second screen: 26/26 texts located with one vision call, all verifications passing. It also exposed text-location bugs that the first screen hid (component ambiguity, rows of repeated labels, badge icons, mixed-style lines), which are now fixed.
