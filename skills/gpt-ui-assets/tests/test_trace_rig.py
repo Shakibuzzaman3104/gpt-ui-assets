@@ -83,6 +83,43 @@ def test_animate_to_lottie():
     assert lot["layers"] and all(L["ty"] == 4 for L in lot["layers"])
 
 
+def test_animate_traced_file_without_chrome():
+    import argparse
+    import os
+    import tempfile
+    res = g.trace_image(synthetic(), "illustration", work=96)
+    old = os.environ.get("GPTKIT_CHROME")
+    os.environ["GPTKIT_CHROME"] = "none"
+    g._chrome.cache_clear()
+    try:
+        assert g.chrome_shot("<p>x</p>", 16, 16) is None
+        with tempfile.TemporaryDirectory() as td:
+            src = Path(td) / "drop.layers.json"
+            src.write_text(json.dumps(g.layers_vec(res)))
+            g.cmd_animate(argparse.Namespace(layers=str(src), part="art=bob", keyframes=4, seconds=1.0, fps=24, size=128,
+                                             ease="linear", out=None, name=None, preview_bg="#000000"))
+            assert (Path(td) / "anim" / "drop" / "drop.json").exists()
+    finally:
+        if old is None:
+            os.environ.pop("GPTKIT_CHROME")
+        else:
+            os.environ["GPTKIT_CHROME"] = old
+        g._chrome.cache_clear()
+
+
+def test_blank_filmstrip_is_not_rendered():
+    import tempfile
+    vec = g.animate_layers(g.layers_vec(g.trace_image(synthetic(), "illustration", work=64)), g._parse_motions("art=bob"), 4)
+    saved = g.lottie_filmstrip, g._tr_render_svgs
+    g.lottie_filmstrip = lambda lot, frames, size=256, bg="#1b1d33": Image.new("RGB", (size * len(frames), size), bg)
+    g._tr_render_svgs = lambda svgs, sizes: None
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            assert g.write_animation(vec, td, "t", 1.0, 24, 128)["lottie_rendered"] is False
+    finally:
+        g.lottie_filmstrip, g._tr_render_svgs = saved
+
+
 def test_render_fidelity():
     if not g._chrome():
         print("  (skip: no Chrome)")

@@ -69,6 +69,37 @@ def test_roundtrip_and_aapt2():
         assert not errs, errs
 
 
+def test_icons_mixed_sizes_without_renderer():
+    import argparse
+    import json
+    import tempfile
+    from PIL import Image, ImageDraw
+    icon = ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#FFFFFF" stroke-width="2" '
+            'stroke-linecap="round"><path d="M4 12h16"/></svg>')
+    with tempfile.TemporaryDirectory() as td:
+        d = Path(td)
+        (d / "svg").mkdir()
+        im = Image.new("RGB", (400, 400), "#101830")
+        ImageDraw.Draw(im).rectangle([40, 40, 60, 60], fill="white")
+        ImageDraw.Draw(im).rectangle([200, 200, 300, 300], fill="white")
+        im.save(d / "mockup.png")
+        assets = [{"name": n, "kind": "icon", "format": "svg", "bbox": b} for n, b in
+                  (("small", {"x": 40, "y": 40, "w": 20, "h": 20}), ("big", {"x": 200, "y": 200, "w": 100, "h": 100}))]
+        (d / "assets.json").write_text(json.dumps({"mockup": "mockup.png", "width": 400, "height": 400, "screen_dp": 390,
+                                                   "assets": assets}))
+        for n in ("small", "big"):
+            (d / "svg" / f"{n}.svg").write_text(icon)
+        saved = K.ask, K.render_svgs
+        K.ask = lambda *a_, **k_: {"files": [{"name": "bell", "svg": icon}]}
+        K.render_svgs = lambda svgs, size=256: [None] * len(svgs)
+        try:
+            K.cmd_icons(argparse.Namespace(dir=td, concepts="bell", out=None, treatment="auto", stroke=None, color=None,
+                                           snap=False, vd=None, dp=None))
+        finally:
+            K.ask, K.render_svgs = saved
+        assert (d / "icons" / "bell.svg").exists() and (d / "icons" / "preview.png").exists()
+
+
 if __name__ == "__main__":
     for k, fn in list(globals().items()):
         if k.startswith("test_"):

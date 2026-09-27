@@ -220,7 +220,7 @@ def checker(w, h, c=16):
 
 
 def _tile(img, T, label=None, bg="checker"):
-    im = img.convert("RGBA").copy()
+    im = img.convert("RGBA").copy() if img is not None else Image.new("RGBA", (1, 1))
     im.thumbnail((T, T))
     base = checker(T, T) if bg == "checker" else Image.new("RGB", (T, T), bg)
     base.paste(im, ((T - im.width) // 2, (T - im.height) // 2), im)
@@ -2272,7 +2272,7 @@ def cmd_icons(a):
     existing = [{"asset": x, "svg": s, "style": svg_style(s), "sw": _stroke24(svg_style(s))} for x, s in zip(have, srcs)]
     size = float(np.median([max(e["asset"]["bbox"]["w"], e["asset"]["bbox"]["h"]) for e in existing]))
     group = [e for e in existing if max(e["asset"]["bbox"]["w"], e["asset"]["bbox"]["h"]) <= size * 1.25 and
-             max(e["asset"]["bbox"]["w"], e["asset"]["bbox"]["h"]) >= size / 1.25]
+             max(e["asset"]["bbox"]["w"], e["asset"]["bbox"]["h"]) >= size / 1.25] or existing
     outlined = [e for e in group if e["style"]["stroked"] and not e["style"]["filled"]]
     treatment = a.treatment if a.treatment != "auto" else (
         spec["style"] if spec and spec["style"] in ("outlined", "filled") else ("outlined" if outlined else "filled"))
@@ -3888,7 +3888,7 @@ def _chrome():
 @functools.cache
 def _lottie_js():
     """lottie-web source (cached under ~/.cache/gptkit) for inlining; None if it can't be fetched."""
-    p = Path("~/.cache/gptkit/lottie-5.12.2.min.js").expanduser()
+    p = _cache_dir() / "lottie-5.12.2.min.js"
     if not p.exists():
         try:
             r = requests.get(LOTTIE_JS, timeout=60)
@@ -3913,7 +3913,7 @@ def _chrome_shot(html, out, w, h):
         try:
             proc = subprocess.Popen([_chrome(), "--headless=new", "--disable-gpu", "--hide-scrollbars", f"--user-data-dir={tmp}/p",
                                      "--default-background-color=00000000", f"--window-size={w},{h}", "--virtual-time-budget=8000",
-                                     f"--screenshot={out}", page.as_uri()], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                                     "--use-mock-keychain", f"--screenshot={out}", page.as_uri()], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         except OSError:
             return None
         # Chrome can linger after writing the screenshot (lottie's web worker), so stop once the file is complete
@@ -4066,7 +4066,10 @@ def _review_sheet(vec, lot, src, out, bg, n=8):
         base.alpha_composite(f)
         tiles.append((f"t={t:.2f}", base))
     rows = [tiles[i:i + 5] for i in range(0, len(tiles), 5)]
-    sheet(rows, out / "keys_review.png", T=220)
+    if rows:
+        sheet(rows, out / "keys_review.png", T=220)
+    else:
+        how = "not written: no SVG renderer"
     return how, px
 
 
@@ -4548,7 +4551,8 @@ def _svg_raster(svg_text, work, size=432):
     p.unlink(missing_ok=True)
     if not png:
         return None
-    L = np.asarray(Image.open(png).convert("RGBA").convert("L").resize((size, size)), float)
+    im = Image.open(png).convert("RGBA")
+    L = np.asarray(Image.alpha_composite(Image.new("RGBA", im.size, "white"), im).convert("L").resize((size, size)), float)
     png.unlink(missing_ok=True)
     return Image.fromarray((255 - L).astype(np.uint8), "L")
 
@@ -4578,7 +4582,7 @@ def _aapt2_check(res, name, work):
         f'  <application android:icon="@mipmap/{name}" android:roundIcon="@mipmap/{name}_round" />\n</manifest>\n')
     r = subprocess.run([str(aapt), "link", "-I", str(jar), "--manifest", str(work / "AndroidManifest.xml"),
                         "-o", str(work / "check.apk"), str(work / "res.zip")], capture_output=True, text=True)
-    return f"compile+link ok ({jar.parent.name})" if not r.returncode else "link FAILED: " + (r.stderr or r.stdout).strip()[:800]
+    return f"compile+link ok ({Path(jar).parent.name})" if not r.returncode else "link FAILED: " + (r.stderr or r.stdout).strip()[:800]
 
 
 def _actool_check(iconset, work):
@@ -4874,34 +4878,22 @@ def cmd_pick(a):
 
 # ---- raster -> vector tracing, part rigs, procedural keyframes
 
-CHROME_PATHS = ("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-                "/Applications/Chromium.app/Contents/MacOS/Chromium")
-
-
-@functools.cache
-def _tr_chrome():
-    if os.environ.get("GPTKIT_CHROME") and Path(os.environ["GPTKIT_CHROME"]).exists():
-        return os.environ["GPTKIT_CHROME"]
-    for p in CHROME_PATHS:
-        if Path(p).exists():
-            return p
-    return next((shutil.which(n) for n in ("google-chrome", "google-chrome-stable", "chromium", "chromium-browser")
-                 if shutil.which(n)), None)
-
-
 def chrome_shot(html, w, h, budget=3000):
     """Render an HTML string in headless Chrome at w x h CSS px on a transparent background -> RGBA image or None."""
     import tempfile
-    exe = _tr_chrome()
+    exe = _chrome()
     if not exe:
         return None
     with tempfile.TemporaryDirectory() as td:
         page, png = Path(td) / "page.html", Path(td) / "shot.png"
         page.write_text(html)
-        subprocess.run([exe, "--headless=new", "--disable-gpu", "--hide-scrollbars", f"--window-size={w},{h}",
-                        "--force-device-scale-factor=1", f"--virtual-time-budget={budget}",
-                        "--default-background-color=00000000", f"--screenshot={png}", page.as_uri()],
-                       capture_output=True, timeout=180)
+        try:
+            subprocess.run([exe, "--headless=new", "--disable-gpu", "--hide-scrollbars", f"--window-size={w},{h}",
+                            "--force-device-scale-factor=1", f"--virtual-time-budget={budget}", "--use-mock-keychain",
+                            "--default-background-color=00000000", f"--screenshot={png}", page.as_uri()],
+                           capture_output=True, timeout=180)
+        except (subprocess.TimeoutExpired, OSError) as e:
+            print(f"  ! headless Chrome failed ({type(e).__name__})")
         return Image.open(png).convert("RGBA") if png.exists() else None
 
 
@@ -5779,7 +5771,7 @@ def cmd_trace(a):
         presets = [a.preset]
         if a.preset == "vtracer" and not _vtracer():
             sys.exit("vtracer not installed: pip install vtracer (or use --preset flat|illustration|gradient)")
-    if not _tr_chrome():
+    if not _chrome():
         print("  (no Chrome/Chromium found: fidelity is not measured; set GPTKIT_CHROME to enable it)")
     for f in a.files:
         src = _rgba(f)
@@ -5983,8 +5975,9 @@ def lottie_filmstrip(lot, frames, size=256, bg="#1b1d33"):
           "fr.forEach(function(f,i){var an=lottie.loadAnimation({container:document.getElementById('f'+i),renderer:'svg',"
           "loop:false,autoplay:false,animationData:JSON.parse(JSON.stringify(d))});an.addEventListener('DOMLoaded',"
           "function(){an.goToAndStop(f,true)});});")
-    html = (f"<!doctype html><body style='margin:0;background:{bg}'>{divs}<script src='{TR_LOTTIE_JS}'></script>"
-            f"<script>{js}</script></body>")
+    lib = _lottie_js()
+    html = (f"<!doctype html><body style='margin:0;background:{bg}'>{divs}"
+            + (f"<script>{lib}</script>" if lib else f"<script src='{TR_LOTTIE_JS}'></script>") + f"<script>{js}</script></body>")
     return chrome_shot(html, w * len(frames), h, budget=6000)
 
 
@@ -6321,7 +6314,7 @@ def write_animation(vec, out, name, seconds=1.6, fps=30, size=512, ease="linear"
         tiles = [np.asarray(film.crop((i * film.width // strip, 0, (i + 1) * film.width // strip, film.height)), np.float32)
                  for i in range(strip)]
         report["lottie_frame_delta"] = [round(float(np.abs(tiles[i] - tiles[i - 1]).mean()), 2) for i in range(1, strip)]
-        report["lottie_rendered"] = bool(np.asarray(film)[..., :3].std() > 3)
+        report["lottie_rendered"] = bool(np.asarray(film)[..., :3].reshape(-1, 3).std(0).max() > 3)
     (out / "animation_report.json").write_text(json.dumps(report, indent=2))
     return report
 
@@ -6332,9 +6325,13 @@ def cmd_animate(a):
     specs = _parse_motions(a.part)
     if not specs:
         sys.exit("give --part 'layer=motion[:amp[:phase]]; ...' (motions: " + ", ".join(TR_MOTIONS) + ")")
-    vec = animate_layers(vec, specs, a.keyframes)
-    out = Path(a.out) if a.out else src.parent / "anim"
-    rep = write_animation(vec, out, a.name or src.parent.name, a.seconds, a.fps, a.size, a.ease, a.preview_bg)
+    try:
+        vec = animate_layers(vec, specs, a.keyframes)
+    except ValueError as e:
+        sys.exit(f"animate: {e}")
+    stem = src.name[:-len(".layers.json")] if src.name.endswith(".layers.json") else ""
+    out = Path(a.out) if a.out else src.parent / "anim" / stem
+    rep = write_animation(vec, out, a.name or stem or src.parent.name, a.seconds, a.fps, a.size, a.ease, a.preview_bg)
     print(f"-> {out}/layers.json, {rep['lottie']} ({rep['bytes'] // 1024} KB, {rep['frames']} frames), keys_review.png, "
           f"lottie_frames.png, preview.html")
     for k, v in rep["motion"].items():
@@ -6404,7 +6401,10 @@ def cmd_rig(a):
         r_ = rep["recomposite_vs_source"]["display"]
         print(f"  recomposite vs source (display): diff={r_['diff']} iou={r_['iou']}   preview -> {out / 'rig_preview.png'}")
     if a.animate:
-        vec = animate_layers(vec, _parse_motions(a.animate), a.keyframes)
+        try:
+            vec = animate_layers(vec, _parse_motions(a.animate), a.keyframes)
+        except ValueError as e:
+            sys.exit(f"rig --animate: {e} (the rig itself was written)")
         rep["animation"] = write_animation(vec, out / "anim", a.name, a.seconds, a.fps, 512, "linear", a.preview_bg)
         print(f"  animated -> {out / 'anim'} (Lottie {a.name}.json, keys_review.png, lottie_frames.png, preview.html)")
         for k, v in rep["animation"]["motion"].items():
@@ -6844,7 +6844,7 @@ def _save_text_boxes(d, mock, texts, path):
             dr.text((x, max(0, y - 11)), role[:40], fill="#ffd60a")
     ov.save(path)
     strip = lambda t: {k: ([strip(i) for i in v] if k == "instances" else v) for k, v in t.items() if k != "alpha"}
-    (d / "text_boxes.json").write_text(json.dumps({r: strip(t) for r, t in texts.items()}, indent=2))
+    Path(path).with_suffix(".json").write_text(json.dumps({r: strip(t) for r, t in texts.items()}, indent=2))
 
 
 # ---- tokens: design_spec.json -> Compose / SwiftUI / CSS / Tailwind
@@ -7028,6 +7028,8 @@ def _num_s(v):
 
 def _d2c_load_spec(dir_):
     d = Path(dir_)
+    if not (d / "design_spec.json").exists():
+        sys.exit(f"gptkit: no {d / 'design_spec.json'}; run `spec {d}` first")
     spec = json.loads((d / "design_spec.json").read_text())
     mpath = d / "mockup.png"
     if (d / "assets.json").exists():
@@ -7222,14 +7224,6 @@ def _emit_web(tm, a, out):
     return [out / f for f in ("tokens.css", "tailwind.config.js", "tailwind.theme.css")]
 
 
-def _chrome_bin():
-    for c in (os.environ.get("GPTKIT_CHROME"), "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-              shutil.which("google-chrome"), shutil.which("chromium"), shutil.which("chromium-browser"), shutil.which("chrome")):
-        if c and Path(c).exists():
-            return c
-    return None
-
-
 def _verify_tokens(tm, out, a):
     res = {}
     sw = out / "swiftui" / f"{a.prefix}Tokens.swift"
@@ -7244,7 +7238,7 @@ def _verify_tokens(tm, out, a):
         res["tailwind"] = "ok (node require)" if r.returncode == 0 else "FAILED: " + r.stderr.strip()[:400]
     else:
         res["tailwind"] = "skipped (no node)"
-    chrome = _chrome_bin()
+    chrome = _chrome()
     if chrome:
         names = [f"--color-{c['css']}" for c in tm["colors"]] + [f"--radius-{r['css']}" for r in tm["radii"]]
         probe = out / "web" / ".css_probe.html"
@@ -7255,9 +7249,12 @@ def _verify_tokens(tm, out, a):
                          "for(const p of document.querySelectorAll('p')){const c=getComputedStyle(p);"
                          "o.text[p.className]=[c.fontSize,c.lineHeight,c.letterSpacing,c.fontWeight,c.color];}"
                          "document.getElementById('r').textContent=JSON.stringify(o);</script>")
-        r = subprocess.run([chrome, "--headless=new", "--disable-gpu", "--allow-file-access-from-files", "--dump-dom",
-                            probe.resolve().as_uri()], capture_output=True, text=True, timeout=60)
-        m_ = re.search(r'<pre id="r">(.*?)</pre>', r.stdout, re.S)
+        try:
+            dom = subprocess.run([chrome, "--headless=new", "--disable-gpu", "--allow-file-access-from-files", "--use-mock-keychain",
+                                  "--dump-dom", probe.resolve().as_uri()], capture_output=True, text=True, timeout=60).stdout
+        except (subprocess.TimeoutExpired, OSError):
+            dom = ""
+        m_ = re.search(r'<pre id="r">(.*?)</pre>', dom, re.S)
         if m_:
             got = json.loads(m_.group(1).replace("&quot;", '"'))
             empty = [n for n, v in got["vars"].items() if not v]
@@ -7349,11 +7346,17 @@ def _cache_dir():
 def _gf_meta():
     p = _cache_dir() / "gf_metadata.json"
     if not p.exists() or time.time() - p.stat().st_mtime > 7 * 86400:
-        r = requests.get(GF_METADATA, timeout=60)
-        r.raise_for_status()
-        t = r.text[4:] if r.text.startswith(")]}'") else r.text
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(t)
+        try:
+            r = requests.get(GF_METADATA, timeout=60)
+            r.raise_for_status()
+        except requests.RequestException:
+            if not p.exists():
+                raise
+            print("  (Google Fonts unreachable: using the cached metadata)")
+        else:
+            t = r.text[4:] if r.text.startswith(")]}'") else r.text
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(t)
     return json.loads(p.read_text())["familyMetadataList"]
 
 
@@ -7777,7 +7780,9 @@ def cmd_fonts(a):
                 continue
             fam, w, fit = mine[0]
             ok = rs[0][2]["similarity"] >= 0.45 and -0.15 < fit["tracking_em"] < 0.6
-            results[st["role"]] = {"role": st["role"], "family": winner, "weight": w if ok else st.get("weight", w), "italic": italic,
+            avail = [int(x.rstrip("i")) for f in cands if f["family"] == winner for x in f["fonts"] if x.endswith("i") == italic]
+            spec_w = min(avail, key=lambda x: abs(x - st.get("weight", w))) if avail else w
+            results[st["role"]] = {"role": st["role"], "family": winner, "weight": w if ok else spec_w, "italic": italic,
                                    "size_px": fit["size_px"] if ok else None,
                                    "tracking_em": fit["tracking_em"] if ok else st.get("letter_spacing_em", 0),
                                    "reliable": ok,
@@ -7822,6 +7827,9 @@ def cmd_fonts(a):
         files, ps = [], {}
         for w, it in sorted({(r["weight"], r["italic"]) for r in rs}):
             src = _gf_ttf(fam, w, it)
+            if not src:
+                print(f"  ! could not download {fam} {w}{' italic' if it else ''}; skipped")
+                continue
             psn, full = _ttf_names(src)
             fname = (psn or fam.replace(" ", "") + f"-{w}") + ".ttf"
             ttf_dir.mkdir(parents=True, exist_ok=True)

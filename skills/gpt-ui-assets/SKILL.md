@@ -40,7 +40,7 @@ python3 $K doctor                                                      # key, en
   - `GPTKIT_IMAGE_MODEL` (default `gpt-image-2`) and `GPTKIT_TEXT_MODEL` (default `gpt-6`, which needs vision and structured outputs).
 - **Optional tools**, each used when present:
   - Headless Chrome/Chromium renders SVG with real alpha and plays Lottie through lottie-web (`GPTKIT_CHROME` sets its path).
-  - The Android SDK's `aapt2` (via `ANDROID_HOME` or `~/Library/Android/sdk`) validates every VectorDrawable, adaptive icon and AVD.
+  - The Android SDK's `aapt2` (via `ANDROID_HOME` or `~/Library/Android/sdk`) validates every VectorDrawable and adaptive icon.
   - `xcrun actool` validates the iOS app icon.
   - `pip install vtracer scipy fonttools` add an extra trace candidate, faster region labelling and kerning in the font
     matcher. Everything works without them.

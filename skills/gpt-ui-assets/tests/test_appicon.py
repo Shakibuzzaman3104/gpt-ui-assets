@@ -59,6 +59,26 @@ class AppIconBuild(unittest.TestCase):
             self.assertEqual(opened(out / "ios" / "AppIcon.appiconset" / "AppIcon-1024.png")[1], "RGB")
             self.assertEqual(opened(out / "web" / "favicon.ico")[2]["sizes"], {(16, 16), (32, 32), (48, 48)})
 
+    def test_validation_reports_instead_of_crashing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "c.png"
+            concept(src, 260)
+            out = Path(tmp) / "v"
+            subprocess.run([sys.executable, str(K), "appicon", "build", str(src), "--out", str(out), "--mono", "silhouette"],
+                           check=True, capture_output=True, env={"GPTKIT_CONFIG": "/nonexistent"})
+            rep = json.loads((out / "appicon.json").read_text())
+            self.assertNotIn("FAILED", rep["aapt2"])
+
+    def test_glyph_mask_is_the_glyph_not_the_canvas(self):
+        sys.path.insert(0, str(K.parent))
+        import gptkit as g
+        if not g._renderer_name():
+            self.skipTest("no SVG renderer")
+        svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 108 108"><circle cx="54" cy="54" r="24" fill="#000"/></svg>'
+        with tempfile.TemporaryDirectory() as tmp:
+            bb = g._svg_raster(svg, tmp, 432).point(lambda v: 255 if v > 128 else 0).getbbox()
+        self.assertTrue(all(abs(a - b) <= 3 for a, b in zip(bb, (120, 120, 312, 312))), bb)
+
     def test_oversized_subject_is_shrunk_into_safe_zone(self):
         with tempfile.TemporaryDirectory() as tmp:
             _, rep = build(tmp, 470, "--bg", "color")
