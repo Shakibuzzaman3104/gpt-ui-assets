@@ -4879,7 +4879,7 @@ CHROME_PATHS = ("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
 
 
 @functools.cache
-def _chrome():
+def _tr_chrome():
     if os.environ.get("GPTKIT_CHROME") and Path(os.environ["GPTKIT_CHROME"]).exists():
         return os.environ["GPTKIT_CHROME"]
     for p in CHROME_PATHS:
@@ -4892,7 +4892,7 @@ def _chrome():
 def chrome_shot(html, w, h, budget=3000):
     """Render an HTML string in headless Chrome at w x h CSS px on a transparent background -> RGBA image or None."""
     import tempfile
-    exe = _chrome()
+    exe = _tr_chrome()
     if not exe:
         return None
     with tempfile.TemporaryDirectory() as td:
@@ -4905,7 +4905,7 @@ def chrome_shot(html, w, h, budget=3000):
         return Image.open(png).convert("RGBA") if png.exists() else None
 
 
-def render_svgs(svgs, sizes):
+def _tr_render_svgs(svgs, sizes):
     """Rasterise SVG strings at the given (w, h) with real alpha, batched into few Chrome calls. None if no Chrome."""
     out, batch, bw = [], [], 0
     for s, (w, h) in list(zip(svgs, sizes)) + [(None, (10 ** 9, 0))]:
@@ -5212,7 +5212,7 @@ def _fit_loop(P, tol=0.8, corner_deg=70, k=3):
     return out
 
 
-def _fmt(v):
+def _tr_fmt(v):
     s = f"{v:.1f}"
     return s[:-2] if s.endswith(".0") else ("-0" if s == "-0.0" else s)
 
@@ -5223,7 +5223,7 @@ def _beziers_d(loops_bez, scale=1.0, dx=0.0, dy=0.0):
     for bz in loops_bez:
         if not bz:
             continue
-        P = lambda p: f"{_fmt(p[0] * scale + dx)} {_fmt(p[1] * scale + dy)}"
+        P = lambda p: f"{_tr_fmt(p[0] * scale + dx)} {_tr_fmt(p[1] * scale + dy)}"
         s = [f"M{P(bz[0][0])}"]
         for b in bz:
             chord = b[3] - b[0]
@@ -5325,7 +5325,7 @@ def fit_fill(P, C, kinds=("flat", "linear", "radial"), max_stops=6, tol=3.0):
     return best
 
 
-def _hex(c, alpha=None):
+def _tr_hex(c, alpha=None):
     c = np.clip(np.round(c), 0, 255).astype(int)
     return "#%02x%02x%02x" % tuple(c[:3])
 
@@ -5333,15 +5333,15 @@ def _hex(c, alpha=None):
 def _fill_svg(fill, gid, scale=1.0):
     """fill spec -> (fill attribute, <defs> entry)."""
     if fill["type"] == "flat":
-        return _hex(fill["color"]), ""
-    stops = "".join(f'<stop offset="{o:.3f}" stop-color="{_hex(c)}"/>' for o, c in fill["stops"])
+        return _tr_hex(fill["color"]), ""
+    stops = "".join(f'<stop offset="{o:.3f}" stop-color="{_tr_hex(c)}"/>' for o, c in fill["stops"])
     if fill["type"] == "linear":
         (x1, y1), (x2, y2) = fill["p0"] * scale, fill["p1"] * scale
-        return f"url(#{gid})", (f'<linearGradient id="{gid}" gradientUnits="userSpaceOnUse" x1="{_fmt(x1)}" '
-                                f'y1="{_fmt(y1)}" x2="{_fmt(x2)}" y2="{_fmt(y2)}">{stops}</linearGradient>')
+        return f"url(#{gid})", (f'<linearGradient id="{gid}" gradientUnits="userSpaceOnUse" x1="{_tr_fmt(x1)}" '
+                                f'y1="{_tr_fmt(y1)}" x2="{_tr_fmt(x2)}" y2="{_tr_fmt(y2)}">{stops}</linearGradient>')
     cx, cy = fill["c"] * scale
-    return f"url(#{gid})", (f'<radialGradient id="{gid}" gradientUnits="userSpaceOnUse" cx="{_fmt(cx)}" cy="{_fmt(cy)}" '
-                            f'r="{_fmt(fill["r"] * scale)}">{stops}</radialGradient>')
+    return f"url(#{gid})", (f'<radialGradient id="{gid}" gradientUnits="userSpaceOnUse" cx="{_tr_fmt(cx)}" cy="{_tr_fmt(cy)}" '
+                            f'r="{_tr_fmt(fill["r"] * scale)}">{stops}</radialGradient>')
 
 
 def _quad_residual(xy, lab):
@@ -5474,7 +5474,7 @@ def _alpha_bands(alpha, rgb, core, n, tol=1.2, fill_kinds=("flat",), gamma=1.0):
             ys, xs = np.nonzero(region)
             layers.append({"name": f"glow_{len(layers) + 1}", "role": "glow", "d": d, "fill": fill, "opacity": round(o, 3),
                            "area": int(region.sum()), "bbox": [int(xs.min()), int(ys.min()), int(xs.max()) + 1, int(ys.max()) + 1],
-                           "color": _hex(c_i), "mask": region})
+                           "color": _tr_hex(c_i), "mask": region})
         prev_a, prev_c = a_i, c_i
     return layers
 
@@ -5506,7 +5506,7 @@ def _bake_translate(d, dx, dy):
                 raise ValueError(f"unsupported path command {t}")
             out.append(t)
             continue
-        out.append(_fmt(float(t) + (dx if k % 2 == 0 else dy)))
+        out.append(_tr_fmt(float(t) + (dx if k % 2 == 0 else dy)))
         k += 1
     return " ".join(out).replace("Z ", "Z")
 
@@ -5569,7 +5569,7 @@ def trace_image(img, preset="illustration", **over):
         if d:
             layers.append({"name": f"region_{len(layers) + 1}", "role": "region", "d": d, "fill": fill, "opacity": 1.0,
                            "area": int(len(xs)), "bbox": [int(xs.min()), int(ys.min()), int(xs.max()) + 1, int(ys.max()) + 1],
-                           "color": _hex(rgb[ys, xs].mean(0)), "mask": masks[r]})
+                           "color": _tr_hex(rgb[ys, xs].mean(0)), "mask": masks[r]})
     return {"preset": preset, "params": {k: (list(v) if isinstance(v, tuple) else v) for k, v in P.items()},
             "size": (w, h), "src_size": img.size, "layers": layers}
 
@@ -5612,7 +5612,7 @@ def _vd_color(v):
     return ("#" + v[2:], int(v[:2], 16) / 255) if len(v) == 8 else ("#" + v, 1.0)
 
 
-def vd_to_svg(xml):
+def _tr_vd_to_svg(xml):
     """Android VectorDrawable XML -> equivalent SVG, so the VD itself (not its source SVG) can be rendered and checked."""
     A = "{http://schemas.android.com/apk/res/android}"
     root = ET.fromstring(xml)
@@ -5678,7 +5678,7 @@ def _aapt2():
     return shutil.which("aapt2")
 
 
-def aapt2_check(xml_text, name="traced"):
+def _tr_aapt2_check(xml_text, name="traced"):
     """Compile a drawable with aapt2 (what the Android build does). Returns 'ok', an error string, or None."""
     import tempfile
     exe = _aapt2()
@@ -5756,7 +5756,7 @@ def trace_asset(src, presets, dp=None, display=None, **over):
         svg = layers_svg(res["layers"], res["size"], src.size)
         cands.append({"preset": pr, "res": res, "svg": svg, "secs": round(time.time() - t, 2), "bytes": len(svg)})
     display = display or (round(max(dp) * 3) if dp else 192)
-    rens = render_svgs([c["svg"] for c in cands], [src.size] * len(cands))
+    rens = _tr_render_svgs([c["svg"] for c in cands], [src.size] * len(cands))
     for c, r in zip(cands, rens or [None] * len(cands)):
         c["render"] = r
         c["metrics"] = trace_metrics(src, r, display) if r is not None else None
@@ -5779,7 +5779,7 @@ def cmd_trace(a):
         presets = [a.preset]
         if a.preset == "vtracer" and not _vtracer():
             sys.exit("vtracer not installed: pip install vtracer (or use --preset flat|illustration|gradient)")
-    if not _chrome():
+    if not _tr_chrome():
         print("  (no Chrome/Chromium found: fidelity is not measured; set GPTKIT_CHROME to enable it)")
     for f in a.files:
         src = _rgba(f)
@@ -5800,8 +5800,8 @@ def cmd_trace(a):
             (out / f"{a.prefix}{name}.xml").write_text(vd)
             report["vd"] = {"file": str(out / f"{a.prefix}{name}.xml"), "bytes": len(vd), "width_dp": vd_w,
                             "width_from": "dp" if dp else "default 48dp long side (pass --dp)",
-                            "aapt2": aapt2_check(vd, a.prefix + name)}
-            vr = render_svgs([vd_to_svg(vd)], [src.size])
+                            "aapt2": _tr_aapt2_check(vd, a.prefix + name)}
+            vr = _tr_render_svgs([_tr_vd_to_svg(vd)], [src.size])
             if vr and chosen.get("render") is not None:
                 report["vd"]["vs_svg_diff"] = trace_metrics(chosen["render"], vr[0])["diff"]
         except ValueError as e:
@@ -5839,7 +5839,7 @@ def map_path(d, fn):
         if t.isalpha():
             for i in range(0, len(nums) - 1, 2):
                 x, y = fn(nums[i], nums[i + 1])
-                out.append(f"{_fmt(x)} {_fmt(y)}")
+                out.append(f"{_tr_fmt(x)} {_tr_fmt(y)}")
             nums = []
             out.append(t)
         else:
@@ -5852,7 +5852,7 @@ def _path_points(d):
     return np.array(v[:len(v) // 2 * 2]).reshape(-1, 2)
 
 
-MOTIONS = {  # default amplitude per motion (fraction of the part's width/height)
+TR_MOTIONS = {  # default amplitude per motion (fraction of the part's width/height)
     "sway": 0.06, "flicker": 0.05, "breathe": 0.04, "squash": 0.08, "bob": 0.04, "wave": 0.04, "ripple": 0.06,
 }
 
@@ -5871,7 +5871,7 @@ def _field(kind, box, t, amp, phase, seed):
     x0, y0, x1, y1 = box
     W, H = max(x1 - x0, 1e-6), max(y1 - y0, 1e-6)
     cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
-    A = MOTIONS[kind] * amp
+    A = TR_MOTIONS[kind] * amp
     rng = np.random.default_rng(seed)
     ph = rng.uniform(0, 2 * np.pi, 6)
     tau = 2 * np.pi * (t + phase)
@@ -5903,7 +5903,7 @@ def _field(kind, box, t, amp, phase, seed):
     if kind == "ripple":
         s = 1 + A * (0.5 - 0.5 * np.cos(tau))
         return lambda x, y: (cx + (x - cx) * s, cy + (y - cy) * (1 + (s - 1) * 0.6))
-    raise ValueError(f"unknown motion {kind!r} (choose {', '.join(MOTIONS)})")
+    raise ValueError(f"unknown motion {kind!r} (choose {', '.join(TR_MOTIONS)})")
 
 
 def procedural_keyframes(paths, kind, n=8, amp=1.0, phase=0.0, seed=0, box=None):
@@ -5970,7 +5970,7 @@ def _tidy_lottie(lot, linear=True):
     return lot
 
 
-LOTTIE_JS = "https://cdnjs.cloudflare.com/ajax/libs/lottie-web/5.12.2/lottie.min.js"
+TR_LOTTIE_JS = "https://cdnjs.cloudflare.com/ajax/libs/lottie-web/5.12.2/lottie.min.js"
 
 
 def lottie_filmstrip(lot, frames, size=256, bg="#1b1d33"):
@@ -5983,7 +5983,7 @@ def lottie_filmstrip(lot, frames, size=256, bg="#1b1d33"):
           "fr.forEach(function(f,i){var an=lottie.loadAnimation({container:document.getElementById('f'+i),renderer:'svg',"
           "loop:false,autoplay:false,animationData:JSON.parse(JSON.stringify(d))});an.addEventListener('DOMLoaded',"
           "function(){an.goToAndStop(f,true)});});")
-    html = (f"<!doctype html><body style='margin:0;background:{bg}'>{divs}<script src='{LOTTIE_JS}'></script>"
+    html = (f"<!doctype html><body style='margin:0;background:{bg}'>{divs}<script src='{TR_LOTTIE_JS}'></script>"
             f"<script>{js}</script></body>")
     return chrome_shot(html, w * len(frames), h, budget=6000)
 
@@ -6296,12 +6296,12 @@ def write_animation(vec, out, name, seconds=1.6, fps=30, size=512, ease="linear"
     (out / f"{name}.json").write_text(json.dumps(lot, separators=(",", ":")))
     (out / "preview.html").write_text(
         f"<!doctype html><meta charset=utf-8><body style='margin:0;background:{bg}'>"
-        f"<div id=a style='width:{lot['w']}px;height:{lot['h']}px'></div><script src='{LOTTIE_JS}'></script>"
+        f"<div id=a style='width:{lot['w']}px;height:{lot['h']}px'></div><script src='{TR_LOTTIE_JS}'></script>"
         f"<script>lottie.loadAnimation({{container:a,renderer:'svg',loop:true,autoplay:true,animationData:{json.dumps(lot)}}})</script>")
     vb = [float(x) for x in vec["viewBox"].split()]
     sz = (round(300 * vb[2] / max(vb[2:])), round(300 * vb[3] / max(vb[2:])))
     nk = max((len(al["keyframes"]) for al in vec["animated_layers"]), default=1)
-    keys = render_svgs([_vec_render(vec, sz, k) for k in range(nk)], [sz] * nk)
+    keys = _tr_render_svgs([_vec_render(vec, sz, k) for k in range(nk)], [sz] * nk)
     report = {"lottie": str(out / f"{name}.json"), "bytes": len(json.dumps(lot, separators=(",", ":"))),
               "frames": lot["op"], "fps": fps, "motion": _motion_stats(vec)}
     if keys:
@@ -6331,7 +6331,7 @@ def cmd_animate(a):
     vec = json.loads(src.read_text())
     specs = _parse_motions(a.part)
     if not specs:
-        sys.exit("give --part 'layer=motion[:amp[:phase]]; ...' (motions: " + ", ".join(MOTIONS) + ")")
+        sys.exit("give --part 'layer=motion[:amp[:phase]]; ...' (motions: " + ", ".join(TR_MOTIONS) + ")")
     vec = animate_layers(vec, specs, a.keyframes)
     out = Path(a.out) if a.out else src.parent / "anim"
     rep = write_animation(vec, out, a.name or src.parent.name, a.seconds, a.fps, a.size, a.ease, a.preview_bg)
@@ -6390,7 +6390,7 @@ def cmd_rig(a):
     (out / "layers.json").write_text(json.dumps(vec, indent=1))
     names = vec["layer_order"]
     svgs = [_vec_render(vec, src.size)] + [_vec_render(vec, src.size, only=[p]) for p in names]
-    rens = render_svgs(svgs, [src.size] * len(svgs))
+    rens = _tr_render_svgs(svgs, [src.size] * len(svgs))
     rep = {"route": a.route, "layers": names, "parts": vec["rig"]["parts"]}
     if rens:
         rep["recomposite_vs_source"] = trace_metrics(src, rens[0], 192)
@@ -6495,7 +6495,7 @@ def _add_trace_rig_parsers(sub):
     p.add_argument("--preset", choices=list(TRACE_PRESETS), default="illustration")
     p.add_argument("--min-detail", type=float, default=0.0, help="drop detail regions smaller than this fraction of "
                                                                  "their part (smaller Lottie; the part base covers them)")
-    p.add_argument("--animate", help="'part=motion[:amp[:phase]][@anchor_part]; ...' motions: " + ", ".join(MOTIONS))
+    p.add_argument("--animate", help="'part=motion[:amp[:phase]][@anchor_part]; ...' motions: " + ", ".join(TR_MOTIONS))
     p.add_argument("--keyframes", type=int, default=8); p.add_argument("--seconds", type=float, default=1.6)
     p.add_argument("--fps", type=int, default=30); p.add_argument("--force", action="store_true")
     p.add_argument("--model", default=None); p.add_argument("--text-model", default=None)

@@ -53,7 +53,7 @@ def test_trace_and_vd():
     ET.fromstring(svg)
     vd = g.svg_to_vd(svg, 48)
     assert "<vector" in vd and "transform" not in vd
-    ET.fromstring(g.vd_to_svg(vd))
+    ET.fromstring(g._tr_vd_to_svg(vd))
     for L in res["layers"]:
         g._subpaths(L["d"])  # only absolute M/L/C/Z
         assert "e-" not in L["d"] and " ." not in L["d"], "lint InvalidVectorPath: no exponents / bare decimals"
@@ -66,7 +66,7 @@ def test_bake_translate():
 def test_procedural_keys():
     d = "M10 90 C20 50 40 20 50 5 C60 20 80 50 90 90 L50 95Z M40 80 L60 80 L50 60Z"
     rest = g.map_path(d, lambda x, y: (x, y))
-    for kind in g.MOTIONS:
+    for kind in g.TR_MOTIONS:
         keys = g.procedural_keyframes([d], kind, 6, phase=0.3)[0]
         assert keys[0] == rest, f"{kind}: key 0 must be the rest pose"
         assert len({"".join(t for t in g._TOK.findall(k) if t.isalpha()) for k in keys}) == 1, kind
@@ -89,7 +89,7 @@ def test_render_fidelity():
         return
     src = synthetic()
     res = g.trace_image(src, "illustration", work=128)
-    ren = g.render_svgs([g.layers_svg(res["layers"], res["size"], src.size)], [src.size])[0]
+    ren = g._tr_render_svgs([g.layers_svg(res["layers"], res["size"], src.size)], [src.size])[0]
     m = g.trace_metrics(src, ren)
     assert m["iou"] > 0.97 and m["diff"] < 4, m
 
