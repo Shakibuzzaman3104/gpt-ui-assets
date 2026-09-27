@@ -387,3 +387,28 @@ The main result: every GPT estimate I measured was usable as a starting point bu
 - **Vision is useful but only qualitative.** When I gave it tiles with different geometry it invented a size difference. After I used identical crop geometry its descriptions matched the measurements.
 - **redline** recovers CSS geometry to under 1 dp.
 - **Generalisation.** The unchanged pipeline ran on an unseen second screen: 26/26 texts located with one vision call, all verifications passing. It also exposed text-location bugs that the first screen hid (component ambiguity, rows of repeated labels, badge icons, mixed-style lines), which are now fixed.
+
+## Verification round (2026-09-28): clean-room "Penny" Android build + adversarial review
+
+- **Native scale.** GPT draws native components at 0.65–0.71× platform size. On Penny the anchors were TopAppBar 104 px,
+  FAB 88 px and NavigationBar 139 px, against the M3 sizes of 64/56/80 dp; the habit tracker gave TopAppBar 125 px and
+  NavigationBar 130 px. The implied px→dp agree within ±5% per design. So the width-based scale (412 dp / 1024 px) makes
+  every token about 1.5× too small (7–13 sp text). `spec` now calibrates from the anchors: Penny type sizes went to
+  10.5–44.5 sp, and the design depicts a ~577–630 dp-wide screen.
+- **Frame registration.** When GPT's static redraw is slightly smaller than the asset, "asset minus static" leaves thick
+  crescents plus the shadow band, so the extent fit placed a giant coin (IoU 0.05) and nothing flagged it. The fixes:
+  - A morphological opening and connected-component clustering (coin + rays vs slivers), keeping a cluster only when it
+    beats the full target by 0.15 IoU. This gave IoU 0.67 and a correct composite.
+  - A `misregistered` QA flag below IoU 0.3.
+  - Campfire (0.90) and ripples (0.44) were unchanged.
+- **App-icon matte.** Light subject on a light background (a pale coral pig on cream): the local matte came out 96%
+  semi-transparent with composite diff 10.6. An image-edit foreground gave 3.2. `--separate auto` now switches to it.
+- **Concept copies.** Perceptual `fid` of the concept's subject against the design's PNG illustrations separates re-posed
+  copies (20.9–22.0) from new emblems (70–107). The threshold is 35. Against background scenes it does not separate
+  (22–37 either way), so `BUSY-BACKGROUND` covers that case.
+- **critique.** Even with explicit overlap and wrong-platform-status-bar items in the prompt, gpt-6 missed a FAB covering
+  a row amount and an iOS-style "9:41" status bar on an Android design (1 run). Vision QA is weak at spatial collisions.
+- **Merge regressions caught in review.** `_android_sdk` returned str where Paths were expected, which crashed appicon validation.
+  The merged SVG renderer returns real alpha, and an `L`-mode mask read the transparent background as ink, so the
+  themed glyph was placed at 28% scale. Three separate Chrome finders ignored `GPTKIT_CHROME=none`. Headless Chrome hangs
+  under a fresh HOME without `--use-mock-keychain`.

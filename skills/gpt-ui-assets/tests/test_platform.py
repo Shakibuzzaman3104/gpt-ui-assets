@@ -1,0 +1,63 @@
+"""Offline checks for platform profiles, native-scale calibration and moving-part registration: python3 tests/test_platform.py"""
+import importlib.util
+import json
+import tempfile
+from pathlib import Path
+
+import numpy as np
+from PIL import Image, ImageDraw
+
+spec = importlib.util.spec_from_file_location("gptkit", Path(__file__).parent.parent / "scripts" / "gptkit.py")
+g = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(g)
+
+
+def test_platform_rule_names_native_components():
+    assert "NavigationBar" in g._platform_rule("android") and "SF Symbols" in g._platform_rule("ios")
+    assert g._platform_rule(None) == ""
+    assert g._screen_dp("android") == 412 and g._screen_dp(None) == 390 and g._screen_dp("ios", 400) == 400
+
+
+def test_calibration_from_native_anchors():
+    with tempfile.TemporaryDirectory() as td:
+        d = Path(td)
+        m = {"mockup": "mockup.png", "width": 1024, "height": 1536, "platform": "android", "screen_dp": 412,
+             "assets": [{"name": "home", "bbox": {"x": 0, "y": 0, "w": 36, "h": 36}}]}
+        spec_ = {"components": [
+            {"name": "Bottom navigation", "native": "NavigationBar (4 destinations)", "bbox": {"x": 0, "y": 1390, "w": 1024, "h": 139}},
+            {"name": "Add", "native": "FloatingActionButton", "bbox": {"x": 880, "y": 1250, "w": 88, "h": 88}},
+            {"name": "Summary", "native": "Card (filled)", "bbox": {"x": 40, "y": 200, "w": 940, "h": 300}}]}
+        g._calibrate(d, spec_, m, 1024)
+        k = spec_["px_to_dp"]
+        assert abs(k - np.median([80 / 139, 56 / 88])) < 1e-4 and spec_["native_scale"]["applied"]
+        assert spec_["effective_width_dp"] == round(1024 * k) and spec_["px_to_dp_design"] == round(412 / 1024, 5)
+        assert json.loads((d / "assets.json").read_text())["assets"][0]["dp"]["w"] == round(36 * k, 1)
+        spec_design = {"components": spec_["components"]}
+        g._calibrate(d, spec_design, dict(m), 1024, "design")
+        assert spec_design["px_to_dp"] == round(412 / 1024, 5) and not spec_design["native_scale"]["applied"]
+
+
+def test_registration_ignores_static_slivers():
+    size = (400, 400)
+    src = Image.new("RGBA", size, (0, 0, 0, 0))
+    d = ImageDraw.Draw(src)
+    d.ellipse((60, 150, 340, 380), fill=(240, 150, 140, 255))      # body (static)
+    d.ellipse((250, 30, 320, 100), fill=(240, 190, 40, 255))       # coin (moving)
+    static = Image.new("RGBA", size, (0, 0, 0, 0))
+    ImageDraw.Draw(static).ellipse((80, 165, 320, 365), fill=(240, 150, 140, 255))  # redrawn slightly smaller
+    frames = []
+    for i in range(4):
+        f = Image.new("RGBA", (120, 120), (0, 0, 0, 0))
+        ImageDraw.Draw(f).ellipse((10 + i, 10, 110 - i, 110), fill=(240, 190, 40, 255))
+        frames.append(f)
+    s, org, v = g._placement(src, static, frames)
+    assert v > 0.5, v
+    cx = org[0] + 60 * s
+    assert 250 < cx < 320, (org, s)
+
+
+if __name__ == "__main__":
+    for name, fn in list(globals().items()):
+        if name.startswith("test_"):
+            fn()
+            print("ok", name)

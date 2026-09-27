@@ -1025,6 +1025,8 @@ def _calibrate(d, spec, m, width, scale="auto"):
         print(f"  native scale: GPT drew {', '.join(a['component'] for a in anchors[:3])} at {1 / factor:.2f}x platform size; "
               f"px_to_dp {design_k} -> {spec['px_to_dp']} (design depicts a ~{spec['effective_width_dp']}dp-wide screen; "
               "asset dp estimates updated). `spec --scale design` keeps the proportional scale.")
+    elif scale == "design":
+        print(f"  native scale: kept the proportional px_to_dp {design_k} (--scale design; native factor {factor:.2f})")
     else:
         print(f"  native scale: design matches platform sizes (factor {factor:.2f}); kept px_to_dp {design_k}")
 
