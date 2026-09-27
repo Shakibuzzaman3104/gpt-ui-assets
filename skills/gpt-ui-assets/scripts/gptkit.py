@@ -1261,28 +1261,204 @@ def cmd_vd(a):
 
 # ---- animation frames
 
-def _longest_run(values):
-    best = cur = 0
-    for v in values:
-        cur = cur + 1 if v else 0
-        best = max(best, cur)
-    return best
+def _runs(v):
+    """(start, end) pairs of the True runs of a 1-D array."""
+    d = np.diff(np.concatenate([[0], np.asarray(v, np.int8), [0]]))
+    return list(zip(np.nonzero(d == 1)[0].tolist(), np.nonzero(d == -1)[0].tolist()))
 
 
 def _remove_dividers(img):
-    """Clear drawn grid lines: thin lines that run unbroken across the whole sheet."""
-    a = img.getchannel("A")
-    W, H = img.size
-    px = img.load()
-    for x in range(W):
-        if _longest_run(a.getpixel((x, y)) > 180 for y in range(H)) >= 0.97 * H:
-            for y in range(H):
-                px[x, y] = (0, 0, 0, 0)
-    for y in range(H):
-        if _longest_run(a.getpixel((x, y)) > 180 for x in range(W)) >= 0.97 * W:
-            for x in range(W):
-                px[x, y] = (0, 0, 0, 0)
-    return img
+    """Clear drawn grid lines: thin lines that span nearly the whole sheet."""
+    arr = np.array(img.convert("RGBA"))
+    solid = arr[..., 3] > 100
+    for axis in (0, 1):
+        cov = solid.mean(axis=axis)
+        n = cov.size
+        for s, e in _runs(cov >= 0.9):
+            side = cov[[i for i in (s - 3, e + 2) if 0 <= i < n]]
+            if e - s <= max(4, n // 150) and (side < 0.6).all():
+                sl = slice(max(0, s - 1), min(n, e + 1))
+                arr[(slice(None), sl) if axis == 0 else sl] = 0
+    return Image.fromarray(arr)
+
+
+def _bands(occ, gap):
+    """Occupied runs of a 1-D profile; gaps under `gap` are bridged and slivers join their nearest neighbour."""
+    runs = []
+    for s, e in _runs(occ):
+        if runs and s - runs[-1][1] < gap:
+            runs[-1] = (runs[-1][0], e)
+        else:
+            runs.append((s, e))
+    while len(runs) > 1:
+        sizes = [e - s for s, e in runs]
+        i = int(np.argmin(sizes))
+        if sizes[i] >= 0.3 * max(sizes):
+            break
+        left = runs[i][0] - runs[i - 1][1] if i else math.inf
+        right = runs[i + 1][0] - runs[i][1] if i + 1 < len(runs) else math.inf
+        j = i - 1 if left <= right else i
+        runs[j:j + 2] = [(runs[j][0], runs[j + 1][1])]
+    return runs
+
+
+def _gutter_cells(A):
+    """XY cut along empty gutters: row bands, then column bands inside each row, in reading order."""
+    H, W = A.shape
+    m = A > 64
+    rows = _bands(m.sum(1) > max(2, W * 0.005), max(4, H // 60))
+    cells = []
+    for r, (y0, y1) in enumerate(rows):
+        top = 0 if r == 0 else (rows[r - 1][1] + y0) // 2
+        bot = H if r == len(rows) - 1 else (y1 + rows[r + 1][0]) // 2
+        cols = _bands(m[top:bot].sum(0) > max(2, (bot - top) * 0.005), max(4, W // 60))
+        for c, (x0, x1) in enumerate(cols):
+            left = 0 if c == 0 else (cols[c - 1][1] + x0) // 2
+            right = W if c == len(cols) - 1 else (x1 + cols[c + 1][0]) // 2
+            cells.append((left, top, right, bot))
+    return cells
+
+
+def _reading_order(boxes):
+    boxes = sorted(boxes, key=lambda b: b[1] + b[3])
+    tol = 0.5 * float(np.median([b[3] - b[1] for b in boxes]))
+    rows = []
+    for b in boxes:
+        cy = (b[1] + b[3]) / 2
+        if rows and abs(cy - rows[-1][0]) < tol:
+            rows[-1][1].append(b)
+        else:
+            rows.append((cy, [b]))
+    return [b for _, r in rows for b in sorted(r, key=lambda b: b[0])]
+
+
+def _blob_cells(A, count):
+    """(box, mask) cells from connected blobs, for sheets whose frames are not separated by straight gutters."""
+    f = max(1, max(A.shape) // 400)
+    m = A[::f, ::f] > 96
+    h, w = m.shape
+    ml, lab, boxes = m.tolist(), [[0] * w for _ in range(h)], []
+    for sy, sx in zip(*np.nonzero(m)):
+        if lab[sy][sx]:
+            continue
+        n = len(boxes) + 1
+        lab[sy][sx] = n
+        stack, x0, y0, x1, y1, area = [(sy, sx)], sx, sy, sx, sy, 0
+        while stack:
+            y, x = stack.pop()
+            area += 1
+            x0, y0, x1, y1 = min(x0, x), min(y0, y), max(x1, x), max(y1, y)
+            for ny in (y - 1, y, y + 1):
+                for nx in (x - 1, x, x + 1):
+                    if 0 <= ny < h and 0 <= nx < w and ml[ny][nx] and not lab[ny][nx]:
+                        lab[ny][nx] = n
+                        stack.append((ny, nx))
+        boxes.append([x0, y0, x1 + 1, y1 + 1, area, {n}])
+    boxes = [b for b in boxes if b[4] >= h * w * 0.0005]
+
+    def union(p, q):
+        return [min(p[0], q[0]), min(p[1], q[1]), max(p[2], q[2]), max(p[3], q[3]), p[4] + q[4], p[5] | q[5]]
+
+    def nested(p, q):
+        ix, iy = min(p[2], q[2]) - max(p[0], q[0]), min(p[3], q[3]) - max(p[1], q[1])
+        return ix > 0 and iy > 0 and ix * iy >= 0.5 * min((b[2] - b[0]) * (b[3] - b[1]) for b in (p, q))
+    merged = True
+    while merged:
+        merged = False
+        for i, j in ((i, j) for i in range(len(boxes)) for j in range(i + 1, len(boxes))):
+            if nested(boxes[i], boxes[j]):
+                boxes[i] = union(boxes[i], boxes.pop(j))
+                merged = True
+                break
+    if not boxes:
+        return []
+    floor = 0.15 * float(np.median(sorted(b[4] for b in boxes)[-count:]))
+    main = [b for b in boxes if b[4] >= floor]
+    for b in boxes:
+        if b[4] < floor:
+            k = min(range(len(main)), key=lambda k: abs(main[k][0] + main[k][2] - b[0] - b[2]) +
+                    abs(main[k][1] + main[k][3] - b[1] - b[3]))
+            main[k] = union(main[k], b)
+    H, W = A.shape
+    g = max(1, int(max(h, w) * 0.02))
+    labels = np.array(lab)
+    cells = []
+    for b in _reading_order(main):
+        own = Image.fromarray(np.isin(labels, list(b[5])).astype(np.uint8) * 255).filter(ImageFilter.MaxFilter(2 * g + 1))
+        cells.append(((max(0, (b[0] - g) * f), max(0, (b[1] - g) * f), min(W, (b[2] + g) * f), min(H, (b[3] + g) * f)),
+                      own.resize((w * f, h * f), Image.NEAREST)))
+    return cells
+
+
+def _robust_box(alpha, thr=24, frac=0.004):
+    """Content bbox that ignores stray specks (rows/columns with only a few pixels over thr)."""
+    m = alpha > thr
+    ys = np.nonzero(m.sum(1) > max(1, frac * m.shape[1]))[0]
+    xs = np.nonzero(m.sum(0) > max(1, frac * m.shape[0]))[0]
+    return (int(xs[0]), int(ys[0]), int(xs[-1]) + 1, int(ys[-1]) + 1) if len(xs) and len(ys) else None
+
+
+def _slice_sheet(img, count, cols):
+    """Frames of a sprite sheet in reading order: gutter cuts, else a clean equal grid, else connected blobs."""
+    A = np.asarray(img.getchannel("A"))
+    H, W = A.shape
+    rows_n = math.ceil(count / cols)
+    grid = [((round(i % cols * W / cols), round(i // cols * H / rows_n), round((i % cols + 1) * W / cols),
+              round((i // cols + 1) * H / rows_n)), None) for i in range(count)]
+    m = A > 64
+    xs, ys = [round(c * W / cols) for c in range(1, cols)], [round(r * H / rows_n) for r in range(1, rows_n)]
+    cuts = [m[:, max(0, x - 1):x + 2].mean() for x in xs] + [m[max(0, y - 1):y + 2].mean() for y in ys]
+    how, cells = "gutters", [(c, None) for c in _gutter_cells(A)]
+    if len(cells) != count and max(cuts, default=0) < 0.01:
+        how, cells = "grid", grid
+    elif len(cells) != count:
+        blobs = _blob_cells(A, count)
+        if abs(len(blobs) - count) < abs(len(cells) - count):
+            how, cells = "blobs", blobs
+        if abs(len(cells) - count) > count // 4:
+            how, cells = "grid", grid
+    crops = []
+    for i, (box, mask) in enumerate(cells):
+        cell = img.crop(box)
+        if mask is not None:
+            cell.putalpha(ImageChops.multiply(cell.getchannel("A"), mask.crop(box)))
+        bb = _robust_box(np.asarray(cell.getchannel("A")))
+        if not bb:
+            print(f"  ! frame {i + 1} empty")
+            continue
+        if bb[0] <= 1 or bb[1] <= 1 or bb[2] >= cell.width - 1 or bb[3] >= cell.height - 1:
+            print(f"  ! frame {i + 1} touches its cell edge (may be cut off)")
+        crops.append(cell.crop(bb))
+    print(f"  sliced {len(crops)} frames by {how}" + ("" if len(crops) == count else f" (asked for {count})"))
+    return crops
+
+
+def _anchor_point(img, anchor):
+    """Base centre (bottom anchor) or centroid (center anchor) of the solid part."""
+    s = np.asarray(img.getchannel("A")) > 128
+    if not s.any():
+        return img.width / 2, img.height if anchor == "bottom" else img.height / 2
+    ys, xs = np.nonzero(s)
+    if anchor == "bottom":
+        band = ys >= ys.max() - 0.15 * (ys.max() - ys.min() + 1)
+        return float(xs[band].mean()), float(ys.max() + 1)
+    return float(xs.mean()), float(ys.mean())
+
+
+def _align(crops, anchor):
+    """Place crops on one shared canvas with their anchor points coincident."""
+    pts = [_anchor_point(c, anchor) for c in crops]
+    left, up = max(p[0] for p in pts), max(p[1] for p in pts)
+    right = max(c.width - p[0] for c, p in zip(crops, pts))
+    down = max(c.height - p[1] for c, p in zip(crops, pts))
+    pad = int(max(left + right, up + down) * 0.06)
+    size = (math.ceil(left + right) + 2 * pad, math.ceil(up + down) + 2 * pad)
+    out = []
+    for c, (px, py) in zip(crops, pts):
+        f = Image.new("RGBA", size, (0, 0, 0, 0))
+        f.alpha_composite(c, (round(pad + left - px), round(pad + up - py)))
+        out.append(f)
+    return out
 
 
 def _square(img):
@@ -1328,10 +1504,10 @@ def _fit_moving(src, static, frame, grid=128):
     visible = sa & ~st
     allowed = (np.asarray(src.getchannel("A").resize((tw, th))) > 40) | st
     fb = content_box(frame, 100)
-    fcrop = frame.crop(fb)
     ys, xs = np.nonzero(visible)
-    if not len(xs):
+    if not fb or not len(xs):
         return None
+    fcrop = frame.crop(fb)
     s0 = (xs.max() - xs.min() + 1) / (fcrop.width * k)
     best = None
     for f in np.linspace(0.55, 1.25, 15):
@@ -1358,103 +1534,483 @@ def _fit_moving(src, static, frame, grid=128):
     return sc, (x + fw / 2) / k, (y + fh) / k, fb
 
 
+def _placed_alpha(size, frame, s, org):
+    m = Image.new("L", size, 0)
+    m.paste(frame.getchannel("A").resize((max(1, round(frame.width * s)), max(1, round(frame.height * s)))),
+            (round(org[0]), round(org[1])))
+    return np.asarray(m)
+
+
+def _placement(src, static, frames):
+    """One scale + origin for every frame: silhouette fit of the middle frame or extent fit of any frame, by IoU."""
+    target = (np.asarray(src.getchannel("A")) > 60) & _moving_mask(static)
+    if not target.any():
+        return None
+    ys, xs = np.nonzero(target)
+    tb = (xs.min(), ys.min(), xs.max() + 1, ys.max() + 1)
+    cands = []
+    mid = len(frames) // 2
+    fit = _fit_moving(src, static, frames[mid])
+    if fit:
+        s, cx, by, fb = fit
+        cands.append(("silhouette", mid, s, (cx - (fb[0] + fb[2]) / 2 * s, by - fb[3] * s)))
+    for i, f in enumerate(frames):
+        b = content_box(f, 60)
+        if b:
+            s = math.sqrt((tb[2] - tb[0]) / (b[2] - b[0]) * (tb[3] - tb[1]) / (b[3] - b[1]))
+            org = ((tb[0] + tb[2] - (b[0] + b[2]) * s) / 2, (tb[1] + tb[3] - (b[1] + b[3]) * s) / 2)
+            cands.append(("extent", i, s, org))
+    if not cands:
+        return None
+
+    def iou(c):
+        m = _placed_alpha(src.size, frames[c[1]], c[2], c[3]) > 60
+        return (m & target).sum() / max(1, (m | target).sum())
+    scored = [(iou(c), c) for c in cands]
+    v, (how, i, s, org) = max(scored, key=lambda t: t[0])
+    print(f"  registered by {how} fit of f{i + 1} (IoU {v:.2f} with the asset's moving part)")
+    return s, org
+
+
+def _composite(src, static, frames, order):
+    """Place every aligned moving frame with one shared transform onto the asset and stack the static layer."""
+    fit = _placement(src, static, frames)
+    if not fit:
+        print("  ! could not locate the moving part in the asset; composites skipped")
+        return []
+    s, org = fit
+    P = max(src.size)
+    size = (src.width + 2 * P, src.height + 2 * P)
+    pos = (P + round(org[0]), P + round(org[1]))
+    st = Image.new("RGBA", size, (0, 0, 0, 0))
+    st.alpha_composite(static, (P, P))
+    comps = []
+    for f in frames:
+        layer = Image.new("RGBA", size, (0, 0, 0, 0))
+        layer.paste(f.resize((max(1, round(f.width * s)), max(1, round(f.height * s))), Image.LANCZOS), pos)
+        comp = Image.new("RGBA", size, (0, 0, 0, 0))
+        for lyr in ((layer, st) if order == "front" else (st, layer)):
+            comp.alpha_composite(lyr)
+        comps.append(comp)
+    # one shared crop box keeps every frame registered
+    boxes = [content_box(c, 8) for c in comps]
+    box = (min(b[0] for b in boxes), min(b[1] for b in boxes), max(b[2] for b in boxes), max(b[3] for b in boxes))
+    return [c.crop(box) for c in comps]
+
+
+# -- frame QA
+
+_XYZ = np.array([[0.4124, 0.3576, 0.1805], [0.2126, 0.7152, 0.0722], [0.0193, 0.1192, 0.9505]])
+_D65 = np.array([0.95047, 1.0, 1.08883])
+
+
+def _lab(rgb):
+    c = np.asarray(rgb, np.float64) / 255
+    c = np.where(c > 0.04045, ((c + 0.055) / 1.055) ** 2.4, c / 12.92)
+    t = c @ _XYZ.T / _D65
+    f = np.where(t > 0.008856, np.cbrt(t), 7.787 * t + 16 / 116)
+    return np.stack([116 * f[..., 1] - 16, 500 * (f[..., 0] - f[..., 1]), 200 * (f[..., 1] - f[..., 2])], -1)
+
+
+def _lab_rgb(lab):
+    fy = (lab[..., 0] + 16) / 116
+    f = np.stack([fy + lab[..., 1] / 500, fy, fy - lab[..., 2] / 200], -1)
+    c = (np.where(f > 0.2069, f ** 3, (f - 16 / 116) / 7.787) * _D65) @ np.linalg.inv(_XYZ).T
+    c = np.where(c > 0.0031308, 1.055 * np.clip(c, 0, None) ** (1 / 2.4) - 0.055, 12.92 * c)
+    return np.clip(np.round(c * 255), 0, 255).astype(np.uint8)
+
+
+def _solid_lab(img, mask=None, thr=160):
+    arr = np.asarray(img.convert("RGBA"))
+    sel = arr[..., 3] > thr
+    if mask is not None:
+        sel &= mask
+    return _lab(arr[..., :3][sel]) if sel.any() else np.zeros((1, 3))
+
+
+def _moving_mask(static):
+    """Pixels of the approved asset that belong to the moving part (the asset minus a dilated static layer)."""
+    return np.asarray(static.getchannel("A").filter(ImageFilter.MaxFilter(9))) <= 30
+
+
+def _premul_thumb(img, side=128):
+    t = img.copy()
+    t.thumbnail((side, side), Image.LANCZOS)
+    a = np.asarray(t, np.float64) / 255
+    return np.concatenate([a[..., :3] * a[..., 3:], a[..., 3:]], -1) * 255
+
+
+def _alpha_stats(img, mask=None):
+    """Alpha-weighted mean Lab colour and alpha mass (robust for glows and fading frames)."""
+    arr = np.asarray(img.convert("RGBA"))
+    w = arr[..., 3] / 255 * (1 if mask is None else mask)
+    sel = w > 0.1
+    if not sel.any():
+        return np.zeros(3), 1.0
+    return (_lab(arr[..., :3][sel]) * w[sel, None]).sum(0) / w[sel].sum(), float(w.sum())
+
+
+def _outliers(X, thr, spike):
+    """Frames off the median by > thr in an otherwise steady series, or sticking out from both neighbours by > spike."""
+    X = np.asarray(X, np.float64).reshape(len(X), -1)
+    dev = np.linalg.norm(X - np.median(X, 0), axis=1)
+    out = set(np.nonzero((dev > thr) & (dev > 6 * np.median(dev)))[0].tolist())
+    for i in range(len(X) if len(X) >= 4 else 0):
+        p, q = X[i] - X[i - 1], X[i] - X[(i + 1) % len(X)]
+        if min(np.linalg.norm(p), np.linalg.norm(q)) > spike and np.dot(p, q) > 0:
+            out.add(i)
+    return out
+
+
+def _frame_qa(frames, ref, ref_mask=None):
+    """Colour (Lab) and size outliers, centre drift and loop continuity of an aligned frame sequence."""
+    n = len(frames)
+    ref_lab = _alpha_stats(ref, ref_mask)[0]
+    stats = [_alpha_stats(f) for f in frames]
+    labs, mass = np.array([x[0] for x in stats]), np.array([max(1.0, x[1]) for x in stats])
+    side = max(frames[0].size)
+    pts = np.array([_anchor_point(f, "center") for f in frames]) / side
+    med_lab, med_mass, med_pt = np.median(labs, 0), float(np.median(mass)), np.median(pts, 0)
+    flags = {"colour": _outliers(labs, 8, 10), "size": _outliers(np.log(mass) / 2, 0.14, 0.26),
+             "drift": _outliers(pts, 0.06, 0.08)}
+    thumbs = [_premul_thumb(f) for f in frames]
+    adj = [float(np.abs(thumbs[i] - thumbs[(i + 1) % n]).mean()) for i in range(n)]
+    typical = max(1e-6, float(np.median(adj[:-1])) if n > 2 else adj[0])
+
+    def near(i):  # steps just outside frame i's in/out steps, floored at the median step
+        return max(typical, (adj[(i - 2) % n] + adj[(i + 1) % n]) / 2) if n > 4 else typical
+    rows = []
+    for i in range(n):
+        r = {"frame": i + 1, "dE_seq": round(float(np.linalg.norm(labs[i] - med_lab)), 1),
+             "dE_ref": round(float(np.linalg.norm(labs[i] - ref_lab)), 1),
+             "size": round(math.sqrt(mass[i] / med_mass), 3),
+             "drift": round(float(np.linalg.norm(pts[i] - med_pt)), 3),
+             "step_in": round(adj[i - 1] / near(i), 2), "step_out": round(adj[i] / near(i), 2)}
+        r["flags"] = [k for k, v in flags.items() if i in v]
+        if n > 3 and min(r["step_in"], r["step_out"]) > 2:
+            r["flags"].append("pop")
+        rows.append(r)
+    seq = {"frames": n, "dE_ref": round(float(np.linalg.norm(med_lab - ref_lab)), 1),
+           "loop_ratio": round(adj[-1] / near(n - 1), 2), "step_median": round(typical, 2), "flags": []}
+    if seq["dE_ref"] > 10:
+        seq["flags"].append("style-drift")
+    if seq["loop_ratio"] > 2:
+        seq["flags"].append("loop-seam")
+    return {"sequence": seq, "frames": rows}
+
+
+def _qa_report(qa, label=""):
+    s = qa["sequence"]
+    bad = [r for r in qa["frames"] if r["flags"]]
+    print(f"  QA{label}: dE vs asset {s['dE_ref']}, loop seam {s['loop_ratio']}x a typical step"
+          f"{' ' + ','.join(s['flags']) if s['flags'] else ''}; flagged frames: "
+          + (", ".join(f"f{r['frame']}({'+'.join(r['flags'])})" for r in bad) or "none")
+          + (" (try --match-colors)" if "style-drift" in s["flags"] else ""))
+    return [r["frame"] - 1 for r in bad]
+
+
+def _badness(r):
+    return max(r["dE_seq"] / 8, abs(math.log(max(r["size"], 1e-3))) / 0.14, r["drift"] / 0.06,
+               min(r["step_in"], r["step_out"]) / 2)
+
+
+def _match_colors(frames, ref, ref_mask=None):
+    """One LCh transform for all frames: lightness mean/std, chroma ratio and hue rotation onto the approved asset."""
+    r, p = _solid_lab(ref, ref_mask), np.concatenate([_solid_lab(f) for f in frames])
+    gain = np.clip(r[:, 0].std() / (p[:, 0].std() + 1e-6), 0.6, 1.6)
+    chroma = np.hypot(r[:, 1], r[:, 2]).mean() / max(1e-6, np.hypot(p[:, 1], p[:, 2]).mean())
+    turn = np.arctan2(r[:, 2].mean(), r[:, 1].mean()) - np.arctan2(p[:, 2].mean(), p[:, 1].mean())
+    out = []
+    for f in frames:
+        arr = np.array(f)
+        vis = arr[..., 3] > 0
+        lab = _lab(arr[..., :3][vis])
+        c, h = np.hypot(lab[:, 1], lab[:, 2]) * chroma, np.arctan2(lab[:, 2], lab[:, 1]) + turn
+        arr[..., :3][vis] = _lab_rgb(np.stack([(lab[:, 0] - p[:, 0].mean()) * gain + r[:, 0].mean(),
+                                               c * np.cos(h), c * np.sin(h)], -1))
+        out.append(Image.fromarray(arr))
+    return out
+
+
+# -- procedural motion
+
+MOTIONS = {"bounce": 0.9, "pulse": 1.0, "float": 2.0, "wiggle": 1.0, "spin": 1.2, "breathe": 4.0}
+
+
+def _motion(kind, t, amt):
+    """Transform at loop phase t: (scale x, scale y, degrees clockwise, dy in content heights, opacity, pivot)."""
+    wave = 0.5 - 0.5 * math.cos(2 * math.pi * t)
+    if kind == "bounce":
+        land = 0.14
+        if t < land:
+            sy = 1 - 0.16 * amt * math.sin(math.pi * t / land)
+            return 1 / sy, sy, 0, 0, 1, "bottom"
+        u = (t - land) / (1 - land)
+        sy = 1 + 0.08 * amt * abs(1 - 2 * u)
+        return 1 / sy, sy, 0, -0.22 * amt * 4 * u * (1 - u), 1, "bottom"
+    if kind == "pulse":
+        return 1 + 0.08 * amt * wave, 1 + 0.08 * amt * wave, 0, 0, 1, "center"
+    if kind == "breathe":
+        e = wave * wave * (3 - 2 * wave)
+        return 1 + 0.06 * amt * e, 1 + 0.06 * amt * e, 0, 0, 0.8 + 0.2 * e, "center"
+    if kind == "float":
+        return 1, 1, 2 * amt * math.cos(2 * math.pi * t), -0.035 * amt * math.sin(2 * math.pi * t), 1, "center"
+    if kind == "wiggle":
+        return 1, 1, 8 * amt * math.sin(2 * math.pi * t), 0, 1, "bottom"
+    return 1, 1, 360 * t, 0, 1, "center"
+
+
+def _affine(p, w, h):
+    sx, sy, deg, dy, _, pivot = p
+    px, py = w / 2, h if pivot == "bottom" else h / 2
+    c, s = math.cos(math.radians(deg)), math.sin(math.radians(deg))
+    A = np.array([[c * sx, -s * sy], [s * sx, c * sy]])
+    return A, np.array([px, py + dy * h]) - A @ [px, py]
+
+
+def _procedural(src, kind, count, amt):
+    """Loop frames of `src` under an eased affine motion; returns frames, per-frame params, canvas origin, art."""
+    art = src.crop(content_box(src, 8) or (0, 0, src.width, src.height))
+    w, h = art.size
+    params = [_motion(kind, i / count, amt) for i in range(count)]
+    mats = [_affine(p, w, h) for p in params]
+    corners = np.array([[0, 0], [w, 0], [0, h], [w, h]], np.float64)
+    pts = np.concatenate([corners @ A.T + t for A, t in mats])
+    lo, hi = np.floor(pts.min(0)) - 2, np.ceil(pts.max(0)) + 2
+    size = (int(hi[0] - lo[0]), int(hi[1] - lo[1]))
+    pm = art.convert("RGBa")
+    frames = []
+    for (A, t), p in zip(mats, params):
+        inv = np.linalg.inv(A)
+        b = -inv @ (t - lo)
+        f = pm.transform(size, Image.AFFINE, (inv[0, 0], inv[0, 1], b[0], inv[1, 0], inv[1, 1], b[1]),
+                         Image.BICUBIC).convert("RGBA")
+        if p[4] < 1:
+            f.putalpha(f.getchannel("A").point(lambda v, o=p[4]: round(v * o)))
+        frames.append(f)
+    return frames, params, lo, art
+
+
+# -- outputs
+
+def _lottie_ks(w, h):
+    return {"o": {"a": 0, "k": 100}, "r": {"a": 0, "k": 0}, "p": {"a": 0, "k": [w / 2, h / 2, 0]},
+            "a": {"a": 0, "k": [w / 2, h / 2, 0]}, "s": {"a": 0, "k": [100, 100, 100]}}
+
+
+def _lottie_image(img, i):
+    buf = io.BytesIO()
+    img.save(buf, "PNG", optimize=True)
+    return {"id": f"img_{i}", "w": img.width, "h": img.height, "u": "", "e": 1,
+            "p": "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()}
+
+
+def lottie_frames(frames, fps, name="gptkit"):
+    """Lottie image sequence: each frame is an embedded PNG shown for exactly one Lottie frame."""
+    w, h = frames[0].size
+    layers = [{"ddd": 0, "ind": i + 1, "ty": 2, "nm": f"frame {i + 1}", "refId": f"img_{i}", "sr": 1, "ip": i,
+               "op": i + 1, "st": 0, "bm": 0, "ks": _lottie_ks(w, h)} for i in range(len(frames))]
+    return {"v": "5.7.0", "fr": fps, "ip": 0, "op": len(frames), "w": w, "h": h, "nm": name, "ddd": 0,
+            "assets": [_lottie_image(f, i) for i, f in enumerate(frames)], "layers": layers}
+
+
+def lottie_motion(art, kind, count, amt, lo, size, fps, px, name="gptkit"):
+    """Lottie of one embedded image driven by transform keyframes (smooth at any frame rate)."""
+    k = min(1.0, px / max(size))
+    w, h = art.size
+    img = art.resize((max(1, round(w * k)), max(1, round(h * k))), Image.LANCZOS)
+    params = [_motion(kind, i / count, amt) for i in range(count + 1)]
+    pivot = (w / 2, h if params[0][5] == "bottom" else h / 2)
+
+    def track(vals):
+        if all(v == vals[0] for v in vals):
+            return {"a": 0, "k": vals[0] if len(vals[0]) > 1 else vals[0][0]}
+        return {"a": 1, "k": [{"t": i, "s": v, "o": {"x": [0], "y": [0]}, "i": {"x": [1], "y": [1]}}
+                              for i, v in enumerate(vals[:-1])] + [{"t": count, "s": vals[-1]}]}
+    ks = {"a": {"a": 0, "k": [pivot[0] * k, pivot[1] * k, 0]},
+          "p": {"s": True, "x": {"a": 0, "k": (pivot[0] - lo[0]) * k},
+                "y": track([[(pivot[1] + p[3] * h - lo[1]) * k] for p in params])},
+          "s": track([[p[0] * 100, p[1] * 100, 100] for p in params]),
+          "r": track([[p[2]] for p in params]), "o": track([[p[4] * 100] for p in params])}
+    layer = {"ddd": 0, "ind": 1, "ty": 2, "nm": name, "refId": "img_0", "sr": 1, "ip": 0, "op": count, "st": 0, "bm": 0,
+             "ks": ks}
+    return {"v": "5.7.0", "fr": fps, "ip": 0, "op": count, "w": round(size[0] * k), "h": round(size[1] * k), "nm": name,
+            "ddd": 0, "assets": [_lottie_image(img, 0)], "layers": [layer]}
+
+
+def _lottie_html(lot, bg, size=512):
+    return ("<!doctype html><meta charset=utf-8><body style='margin:0;background:" + bg + "'>"
+            f"<div id=a style='width:{size}px;height:{size}px'></div>"
+            "<script src='https://cdnjs.cloudflare.com/ajax/libs/lottie-web/5.12.2/lottie.min.js'></script>"
+            "<script>const f=parseFloat(location.hash.slice(1));const an=lottie.loadAnimation({container:a,renderer:'svg',"
+            f"loop:true,autoplay:isNaN(f),animationData:{json.dumps(lot, separators=(',', ':'))}}});"
+            "if(!isNaN(f))an.addEventListener('DOMLoaded',()=>an.goToAndStop(f,true))</script>")
+
+
+def _fit_px(img, px):
+    if max(img.size) <= px:
+        return img
+    k = px / max(img.size)
+    return img.resize((max(1, round(img.width * k)), max(1, round(img.height * k))), Image.LANCZOS)
+
+
+def _write_anim(out, anim, seq, fps, a, labels=None, lottie=None):
+    """preview.gif, animated WebP/APNG, Lottie, animation-list XML and the review sheet for a frame sequence."""
+    formats = {f.strip() for f in a.formats.split(",")}
+    dur = round(1000 / fps)
+    small = [_fit_px(f, a.px) for f in seq]
+    wrote = []
+    if "gif" in formats:
+        bg = Image.new("RGBA", small[0].size, a.preview_bg)
+        gif = [Image.alpha_composite(bg, f).convert("P", palette=Image.ADAPTIVE) for f in small]
+        gif[0].save(out / "preview.gif", save_all=True, append_images=gif[1:], duration=dur, loop=0, disposal=2)
+        wrote.append("preview.gif")
+    if "webp" in formats:
+        small[0].save(out / f"{anim}.webp", save_all=True, append_images=small[1:], duration=dur, loop=0, quality=90,
+                      method=4)
+        wrote.append(f"{anim}.webp")
+    if "apng" in formats:
+        small[0].save(out / f"{anim}.apng", format="PNG", save_all=True, append_images=small[1:], duration=dur, loop=0)
+        wrote.append(f"{anim}.apng")
+    if "lottie" in formats:
+        lot = lottie or lottie_frames(small, fps, anim)
+        (out / f"{anim}.json").write_text(json.dumps(lot, separators=(",", ":")))
+        (out / "preview.html").write_text(_lottie_html(lot, a.preview_bg))
+        wrote += [f"{anim}.json", "preview.html"]
+    items = "\n".join(f'    <item android:drawable="@drawable/{anim}_frame_{i + 1:02d}" android:duration="{dur}" />'
+                      for i in range(len(seq)))
+    (out / f"{anim}_anim.xml").write_text(
+        '<?xml version="1.0" encoding="utf-8"?>\n<animation-list xmlns:android="http://schemas.android.com/apk/res/android"\n'
+        f'    android:oneshot="false">\n{items}\n</animation-list>\n')
+    labels = labels or [f"f{i + 1}" for i in range(len(seq))]
+    sheet([list(zip(labels, seq))[j:j + 8] for j in range(0, len(seq), 8)], out / "frames_review.png", T=200)
+    print(f"{len(seq)} frames @ {fps:g} fps -> {out}  ({', '.join(wrote + ['frames_review.png', anim + '_anim.xml'])})")
+
+
+def _frames_procedural(a, src, out):
+    period = MOTIONS[a.procedural]
+    fps = a.fps or (24 if period * 24 <= 48 else 12)
+    count = a.count or max(8, round(period * fps))
+    frames, params, lo, art = _procedural(src, a.procedural, count, a.amount)
+    for i, f in enumerate(frames):
+        f.save(out / f"frame_{i + 1:02d}.png")
+    (out / "motion.json").write_text(json.dumps({
+        "motion": a.procedural, "amount": a.amount, "seconds": round(count / fps, 3), "fps": round(fps, 3),
+        "pivot": params[0][5],
+        "frames": [{"scale_x": round(p[0], 4), "scale_y": round(p[1], 4), "rotation_deg": round(p[2], 3),
+                    "translate_y_of_height": round(p[3], 4), "opacity": round(p[4], 3)} for p in params]},
+        indent=1))
+    lot = lottie_motion(art, a.procedural, count, a.amount, lo, frames[0].size, fps, a.px, f"{a.name}_{a.procedural}")
+    _write_anim(out, f"{a.name}_{a.procedural}", frames, fps, a, lottie=lot)
+
+
+FRAME_REROLL = ("The attached image is frame {j} of {n} of a seamless looping animation of {moving} ({motion}). Draw "
+                "frame {i}: the SAME element in exactly the same style, colours, gradients, glow, size and anchor, with "
+                "only the small natural change of shape between neighbouring frames. Only this one element, centred, "
+                "transparent background, nothing else.")
+
+
+def _reroll(a, crops, qa, bad, ref, ref_mask, motion, out):
+    """Redraw flagged frames from their nearest good neighbour; keep a redraw only if its QA badness drops."""
+    good = [i for i in range(len(crops)) if i not in bad]
+    if not good:
+        print("  ! every frame is flagged; re-roll skipped (re-run the sheet instead)")
+        return crops, qa
+
+    def job(i):
+        j = min(good, key=lambda g: min(abs(g - i), len(crops) - abs(g - i)))
+        prompt = FRAME_REROLL.format(i=i + 1, j=j + 1, n=len(crops), moving=a.moving, motion=motion)
+        return i, j, edit(_png_bytes(_square(crops[j])[0]), prompt, "1024x1024", "transparent", a.model)[0]
+    with cf.ThreadPoolExecutor(2) as ex:
+        redraws = list(ex.map(job, bad))
+    for i, j, raw in redraws:
+        p = out / f"reroll_f{i + 1:02d}.png"
+        p.write_bytes(raw)
+        img = _rgba(p)
+        bb = _robust_box(np.asarray(img.getchannel("A")))
+        if not bb:
+            continue
+        img = img.crop(bb)
+        k = math.sqrt(_alpha_stats(crops[j])[1] / _alpha_stats(img)[1])
+        img = img.resize((max(1, round(img.width * k)), max(1, round(img.height * k))), Image.LANCZOS)
+        trial = crops[:i] + [img] + crops[i + 1:]
+        tq = _frame_qa(_align(trial, a.anchor), ref, ref_mask)
+        old, new = _badness(qa["frames"][i]), _badness(tq["frames"][i])
+        keep = new < old
+        print(f"  re-roll f{i + 1}: badness {old:.2f} -> {new:.2f} {'KEPT' if keep else 'discarded'}")
+        if keep:
+            crops, qa = trial, tq
+    return crops, qa
+
+
 def cmd_frames(a):
     d, m, mock = _load(a.dir)
     src = _rgba(d / "assets" / f"{a.name}.png")
-    out = d / "frames" / a.name
+    out = d / "frames" / (f"{a.name}_{a.procedural}" if a.procedural else a.name)
     out.mkdir(parents=True, exist_ok=True)
-    rows_n = math.ceil(a.count / a.cols)
+    for old in list(out.glob("frame_*.png")) + list(out.glob("moving_f*.png")):
+        old.unlink()
+    if a.procedural:
+        return _frames_procedural(a, src, out)
+    if not a.moving:
+        sys.exit("frames: --moving is required (or use --procedural)")
+    count, fps = a.count or 8, a.fps or 12
+    rows_n = math.ceil(count / a.cols)
+    sheet_size = _size_for(a.cols * src.width, rows_n * src.height)
+    canvas = {"1536x1024": "wide landscape", "1024x1536": "tall portrait"}.get(sheet_size, "square")
     motion = a.motion or "a gentle, natural looping motion"
     moving_prompt = (f"The attached image is an APPROVED asset. Produce ONLY its moving part — {a.moving} — "
-                     f"{'with NO ' + a.static + ' at all' if a.static else ''}, as {a.count} animation frames of {motion}, "
-                     f"laid out as a {a.cols} x {rows_n} sprite sheet of equal cells (left-to-right, top-to-bottom). "
+                     f"{'with NO ' + a.static + ' at all' if a.static else ''}, as {count} animation frames of {motion}, "
+                     f"laid out as a sprite sheet of {a.cols} columns x {rows_n} rows of equal cells on a {canvas} canvas "
+                     "(left-to-right, top-to-bottom). "
                      "Every frame: same style, colours, gradients and glow as the attached asset; same overall size and "
-                     "the SAME anchor point at the bottom centre of its cell; only the natural motion changes, and the "
+                     f"the SAME anchor point at the {'bottom centre' if a.anchor == 'bottom' else 'centre'} of its cell; "
+                     "only the natural motion changes, and the "
                      "last frame flows back into the first. Transparent background everywhere. Absolutely no grid lines, "
                      "dividers, borders, numbers or labels. Leave empty transparent space between cells.")
-    jobs = {"sheet": (moving_prompt, "1536x1024" if a.cols >= rows_n else "1024x1536")}
-    if a.static:
+    jobs = {}
+    if a.reuse != "all":
+        jobs["sheet"] = (moving_prompt, sheet_size)
+    if a.static and not a.reuse:
         jobs["static"] = (f"The attached image is an APPROVED asset. Keep ONLY {a.static}, exactly as drawn: same size, "
                           f"position, angle and colours on the same canvas. Remove {a.moving} completely and repair "
                           "what it covered. Transparent background.", "1024x1024")
+    for k in {"sheet", "static"} - set(jobs):
+        if (k == "sheet" or a.static) and not (out / f"{k}_raw.png").exists():
+            sys.exit(f"frames: --reuse needs {out / (k + '_raw.png')} from a previous run")
+    sq_src, sq_off = _square(src)
     with cf.ThreadPoolExecutor(2) as ex:
-        sq_src, sq_off = _square(src)
         futs = {k: ex.submit(edit, _png_bytes(sq_src if k == "static" else src), p, sz, "transparent", a.model)
                 for k, (p, sz) in jobs.items()}
-        res = {k: f.result() for k, f in futs.items()}
-    (out / "sheet_raw.png").write_bytes(res["sheet"][0])
-    sheet_img = _remove_dividers(_rgba(out / "sheet_raw.png"))
-    W, H = sheet_img.size
-    cw, ch = W / a.cols, H / rows_n
-    crops = []
-    for i in range(a.count):
-        c, r = i % a.cols, i // a.cols
-        cell = sheet_img.crop((round(c * cw), round(r * ch), round((c + 1) * cw), round((r + 1) * ch)))
-        bb = content_box(cell, 24)
-        if not bb:
-            print(f"  ! frame {i + 1} empty")
-            continue
-        if bb[0] <= 1 or bb[1] <= 1 or bb[2] >= cell.width - 1 or bb[3] >= cell.height - 1:
-            print(f"  ! frame {i + 1} touches its cell edge (may be cut off)")
-        crops.append(cell.crop(bb))
-    fw = max(c.width for c in crops)
-    fh = max(c.height for c in crops)
-    pad = int(max(fw, fh) * 0.06)
-    FW, FH = fw + 2 * pad, fh + 2 * pad
-    frames = []
-    for i, c in enumerate(crops):
-        f = Image.new("RGBA", (FW, FH), (0, 0, 0, 0))
-        x = (FW - c.width) // 2
-        y = FH - pad - c.height if a.anchor == "bottom" else (FH - c.height) // 2
-        f.alpha_composite(c, (x, y))
-        f.save(out / f"moving_f{i + 1:02d}.png")
-        frames.append(f)
-    comps = []
+        for k, f in futs.items():
+            (out / f"{k}_raw.png").write_bytes(f.result()[0])
+    crops = _slice_sheet(_remove_dividers(_rgba(out / "sheet_raw.png")), count, a.cols)
+    if not crops:
+        sys.exit("frames: no frames found in the sheet")
+    static = ref_mask = None
     if a.static:
-        (out / "static_raw.png").write_bytes(res["static"][0])
         sq_static = _register(_rgba(out / "static_raw.png").resize(sq_src.size, Image.LANCZOS), sq_src)
         static = sq_static.crop((sq_off[0], sq_off[1], sq_off[0] + src.width, sq_off[1] + src.height))
         static.save(out / "static.png")
-        mid = frames[len(frames) // 2]
-        fit = _fit_moving(src, static, mid)
-        if not fit:
-            print("  ! could not locate the moving part in the asset; composites skipped")
-        else:
-            s, cx, by, _ = fit
-            P = max(src.size)
-            size = (src.width + 2 * P, src.height + 2 * P)
-            st = Image.new("RGBA", size, (0, 0, 0, 0))
-            st.alpha_composite(static, (P, P))
-            mid_bottom = content_box(mid, 100)[3]
-            for f in frames:
-                # all frames share one scale and the anchor found for the middle frame
-                fc = f.resize((max(1, round(f.width * s)), max(1, round(f.height * s))), Image.LANCZOS)
-                layer = Image.new("RGBA", size, (0, 0, 0, 0))
-                layer.alpha_composite(fc, (P + round(cx - fc.width / 2), P + round(by - mid_bottom * s)))
-                comp = Image.new("RGBA", size, (0, 0, 0, 0))
-                for lyr in ((layer, st) if a.static_order == "front" else (st, layer)):
-                    comp.alpha_composite(lyr)
-                comps.append(comp)
-            # one shared crop box keeps every frame registered
-            boxes = [content_box(c, 8) for c in comps]
-            box = (min(b[0] for b in boxes), min(b[1] for b in boxes), max(b[2] for b in boxes), max(b[3] for b in boxes))
-            comps = [c.crop(box) for c in comps]
-            for i, c in enumerate(comps):
-                c.save(out / f"frame_{i + 1:02d}.png")
-    seq = comps or frames
-    bg = Image.new("RGBA", seq[0].size, a.preview_bg)
-    gif = [Image.alpha_composite(bg, f.resize(seq[0].size)).convert("P", palette=Image.ADAPTIVE) for f in seq]
-    gif[0].save(out / "preview.gif", save_all=True, append_images=gif[1:], duration=int(1000 / a.fps), loop=0, disposal=2)
-    dur = int(1000 / a.fps)
-    base = "frame" if comps else "moving_f"
-    items = "\n".join(f'    <item android:drawable="@drawable/{a.name}_{base.strip("_")}_{i + 1:02d}" android:duration="{dur}" />'
-                      for i in range(len(seq)))
-    (out / f"{a.name}_anim.xml").write_text(
-        '<?xml version="1.0" encoding="utf-8"?>\n<animation-list xmlns:android="http://schemas.android.com/apk/res/android"\n'
-        f'    android:oneshot="false">\n{items}\n</animation-list>\n')
-    sheet([[(f"f{i + 1}", f) for i, f in enumerate(seq)][j:j + 8] for j in range(0, len(seq), 8)],
-          out / "frames_review.png", T=200)
-    print(f"{len(seq)} frames -> {out}  (preview.gif, frames_review.png, {a.name}_anim.xml)")
+        ref_mask = _moving_mask(static)
+    qa = _frame_qa(_align(crops, a.anchor), src, ref_mask)
+    bad = _qa_report(qa)
+    if a.reroll and bad:
+        crops, qa = _reroll(a, crops, qa, bad, src, ref_mask, motion, out)
+        _qa_report(qa, " after re-roll")
+    frames = _align(crops, a.anchor)
+    if a.match_colors:
+        frames = _match_colors(frames, src, ref_mask)
+        qa = _frame_qa(frames, src, ref_mask)
+        _qa_report(qa, " after colour match")
+    for i, f in enumerate(frames):
+        f.save(out / f"moving_f{i + 1:02d}.png")
+    (out / "qa.json").write_text(json.dumps(qa, indent=1))
+    seq = (_composite(src, static, frames, a.static_order) if static is not None else []) or frames
+    for i, f in enumerate(seq):
+        f.save(out / f"frame_{i + 1:02d}.png")
+    labels = [f"f{r['frame']} {' '.join(r['flags'])}".strip() for r in qa["frames"]]
+    _write_anim(out, a.name, seq, fps, a, labels)
 
 
 # ---- vector keyframes + Lottie
@@ -2451,12 +3007,22 @@ def main():
     p = sub.add_parser("vd", help="convert SVG files to Android VectorDrawable XML")
     p.add_argument("svgs", nargs="+"); p.add_argument("--out", required=True); p.add_argument("--dp", type=float)
     p.add_argument("--prefix", default="ic_"); p.set_defaults(fn=cmd_vd)
-    p = sub.add_parser("frames", help="frame-by-frame animation from a forged asset (moving layer sprite sheet)")
-    p.add_argument("dir"); p.add_argument("name"); p.add_argument("--moving", required=True)
+    p = sub.add_parser("frames", help="frame-by-frame animation from a forged asset (moving layer sprite sheet, "
+                                      "or --procedural local motion)")
+    p.add_argument("dir"); p.add_argument("name"); p.add_argument("--moving", help="part that moves (generated route)")
     p.add_argument("--static", help="part that stays still (generated once, composited)")
     p.add_argument("--static-order", choices=["front", "back"], default="front")
-    p.add_argument("--motion"); p.add_argument("--count", type=int, default=8); p.add_argument("--cols", type=int, default=4)
-    p.add_argument("--anchor", choices=["bottom", "center"], default="bottom"); p.add_argument("--fps", type=float, default=12)
+    p.add_argument("--motion"); p.add_argument("--count", type=int, help="frames (default 8; procedural: one loop)")
+    p.add_argument("--cols", type=int, default=4)
+    p.add_argument("--anchor", choices=["bottom", "center"], default="bottom")
+    p.add_argument("--fps", type=float, help="default 12 (procedural 24, or 12 for slow loops)")
+    p.add_argument("--procedural", choices=sorted(MOTIONS), help="no API calls: eased affine motion of the asset")
+    p.add_argument("--amount", type=float, default=1.0, help="procedural motion strength multiplier")
+    p.add_argument("--reuse", choices=["all", "static"], help="reuse sheet_raw/static_raw.png from a previous run")
+    p.add_argument("--reroll", action="store_true", help="redraw QA-flagged frames from a good neighbour (1 call each)")
+    p.add_argument("--match-colors", action="store_true", help="shift frame colours onto the approved asset (Lab)")
+    p.add_argument("--formats", default="gif,webp,apng,lottie", help="comma list of gif,webp,apng,lottie")
+    p.add_argument("--px", type=int, default=480, help="long side of the animated WebP/APNG/Lottie/GIF")
     p.add_argument("--preview-bg", default="#1b1d33"); p.add_argument("--model", default=None); p.set_defaults(fn=cmd_frames)
     p = sub.add_parser("vectorize", help="morphable vector keyframes -> Lottie JSON + preview")
     p.add_argument("dir"); p.add_argument("name"); p.add_argument("--moving", required=True); p.add_argument("--static")
