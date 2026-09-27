@@ -518,9 +518,14 @@ severe first:
 - text: every string that is garbled, misspelled, nonsense, truncated or oddly cased (quote it exactly).
 - alignment/spacing: misaligned edges or baselines, uneven gaps between repeated items, inconsistent margins.
 - icons: mixed icon styles (outline vs filled, stroke weight, corners), ambiguous or malformed glyphs.
-- contrast/accessibility: text or icons below WCAG AA (4.5:1 body, 3:1 large text and icons), text under 11dp,
+- contrast/accessibility: text or icons below WCAG AA (4.5:1 body, 3:1 large text and icons), text illegibly small
+  RELATIVE to the rest of the screen (not absolute sizes: the drawing scale is inexact and is calibrated later),
   controls that cannot get a {touch}dp touch target (a smaller visible pill or icon with room around it is fine).
-- platform: {platform} guideline problems (navigation pattern, tab count, safe areas, standard controls).
+- overlap: a floating element (FAB, snackbar, sheet, badge, mini player) covering text, numbers, list rows or
+  artwork; elements colliding, or hidden under the navigation bar or system bars. High when it hides content.
+- platform: {platform} guideline problems (navigation pattern, tab count, safe areas, standard controls), and system
+  UI that belongs to another platform (e.g. an iOS "9:41" status bar or Dynamic Island on Android, Android status
+  icons or a gesture pill on iOS).
 - implementability: what code can't build cleanly (text baked into artwork, impossible overlaps, inconsistent radii,
   content cut off).{ref_rule}
 Report each root cause ONCE: group repeated instances (e.g. several labels with the same size problem) into one
@@ -538,7 +543,7 @@ ISSUE_ITEM = {"type": "object", "additionalProperties": False,
               "properties": {
                   "severity": {"type": "string", "enum": ["high", "medium", "low"]},
                   "category": {"type": "string", "enum": ["text", "alignment", "icons", "contrast", "accessibility",
-                                                          "platform", "implementability", "consistency"]},
+                                                          "overlap", "platform", "implementability", "consistency"]},
                   "bbox": {"type": "object", "additionalProperties": False, "required": ["x", "y", "w", "h"],
                            "properties": {k: {"type": "integer"} for k in "xywh"}},
                   "problem": {"type": "string"}, "edit": {"type": "string"}}}
@@ -4509,6 +4514,25 @@ def _icon_metrics(img, ref=None):
     return m
 
 
+def _copied_illustration(img, mockup_path):
+    """(name, fid) of the design illustration a concept's subject reproduces, or None (needs assets.json by the mockup)."""
+    mp = Path(mockup_path)
+    man = next((d / "assets.json" for d in (mp.parent, mp.parent.parent) if (d / "assets.json").exists()), None)
+    if man is None:
+        return None
+    m = json.loads(man.read_text())
+    arts = [x for x in m["assets"] if x["format"] == "png" and x["kind"] not in ("background", "photo")]
+    if not arts:
+        return None
+    mock = _rgba(man.parent / m["mockup"])
+    fg, _, _ = _bg_fit(img)
+    sub = img.convert("RGBA")
+    sub.putalpha(Image.fromarray((np.clip(np.asarray(fg, float).squeeze(), 0, 1) * 255).astype(np.uint8)).resize(img.size))
+    sub = trim(sub, pad=0.02)
+    name, fid = min(((x["name"], score(mock, x["bbox"], sub, None, True)["fid"]) for x in arts), key=lambda t: t[1])
+    return (name, round(fid, 1)) if fid < 35 else None
+
+
 def cmd_appicon_concepts(a):
     out = Path(a.out)
     (out / "review").mkdir(parents=True, exist_ok=True)
@@ -4544,6 +4568,10 @@ def cmd_appicon_concepts(a):
         for p, direction, prompt, meta in ex.map(one, range(a.variants)):
             img = _rgba(p)
             m = _icon_metrics(img, ref)
+            copied = _copied_illustration(img.convert("RGB"), a.mockup) if a.mockup else None
+            if copied:
+                m["flags"].append(f"COPIED-ILLUSTRATION:{copied[0]}")
+                m["copy_fid"] = copied[1]
             report[p.name] = {"path": str(p), "direction": direction, "prompt": prompt, "metrics": m,
                               "reference": a.mockup, "quality": meta["quality"]}
             print(f"{p}  {direction}\n    {m}")
