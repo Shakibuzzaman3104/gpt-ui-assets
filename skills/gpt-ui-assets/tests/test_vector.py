@@ -49,7 +49,7 @@ def test_build():
     assert heart["s"]["a"] == 1 and heart["r"]["a"] == 1 and heart["a"]["k"][:2] == [22, 22]
     assert all(k["o"]["y"][0] <= 1 for k in heart["o"]["k"][:-1]), "opacity must not overshoot"
     fit = gk._fit_viewbox(v)
-    assert fit and gk._vb(dict(v, viewBox=fit))[2] > 44
+    assert fit and gk._vec_vb(dict(v, viewBox=fit))[2] > 44
     root = ET.fromstring(gk.build_avd(v, 1.2, 24))
     names = [t.get("{http://schemas.android.com/apk/res/android}name") for t in root.findall("target")]
     assert "heart" in names and {"blob_0", "blob_1", "blob_2"} <= set(names), names

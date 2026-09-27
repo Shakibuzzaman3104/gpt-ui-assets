@@ -54,13 +54,13 @@ def test_slice_twelve_with_grid_lines():
 
 
 def test_qa_flags_bad_frame_and_seam():
-    fr = g._align([flame(i) for i in range(8)], "bottom")
+    fr = g._align_frames([flame(i) for i in range(8)], "bottom")
     ref = fr[0]
     assert not any(r["flags"] for r in g._frame_qa(fr, ref)["frames"])
     bad = list(fr)
     bad[3] = ImageEnhance.Color(bad[3]).enhance(0.2)
     assert "colour" in g._frame_qa(bad, ref)["frames"][3]["flags"]
-    sway = g._align([flame(i, 16) for i in range(16)], "bottom")
+    sway = g._align_frames([flame(i, 16) for i in range(16)], "bottom")
     assert not g._frame_qa(sway, ref)["sequence"]["flags"]
     assert "loop-seam" in g._frame_qa(sway[:5], ref)["sequence"]["flags"]
 
@@ -73,7 +73,7 @@ def test_procedural_loops_and_lottie():
         assert g._frame_qa(frames, src)["sequence"]["loop_ratio"] < 2
         lot = g.lottie_motion(art, kind, 16, 1.0, lo, frames[0].size, 24, 240)
         assert lot["op"] == 16 and len(lot["assets"]) == 1
-    seq = g.lottie_frames(frames[:4], 12)
+    seq = g.lottie_image_sequence(frames[:4], 12)
     assert [l["ip"] for l in seq["layers"]] == [0, 1, 2, 3] and len(seq["assets"]) == 4
 
 
