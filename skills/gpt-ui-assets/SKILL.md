@@ -78,8 +78,9 @@ python3 $K critique design/profile/mockup_v1.png --style-ref design/home/mockup_
     guidelines and implementability. With `--style-ref` it also catches a wrong app name, nav items, typeface or data.
   - `--apply` edits the fixes in and keeps the revision only if the issue weight drops. The verifier is lenient and the
     editor never sees the approved screen, so Read the revision. Give concrete follow-ups with `--edit`.
-  - Almost every mockup is flagged "text under 11dp", because gpt-image draws small labels whatever the prompt says.
-    Set real type sizes in code from `spec` rather than editing the mockup.
+  - Vision QA is weak at spatial collisions: it can miss a FAB, snackbar or mini player covering content. **Check
+    floating elements yourself**, and fix them with `--edit` (e.g. "move the FAB above the last row").
+  - Don't chase absolute text sizes in the mockup. gpt-image draws everything small, and `spec` calibrates the real scale.
 
 ## Phase 2: "go ahead" → inventory and spec
 
@@ -99,9 +100,15 @@ Edit `assets.json` directly to fix the inventory:
 - Give art behind UI `kind: background` and `transparent: false`. It gets redrawn with the UI removed.
 - `material_symbol` / `sf_symbol` name the equivalent platform glyph. Ship the generated SVG (it is 1:1 with the
   design) unless the user asks for platform icons.
-- Treat `dp` sizes as estimates, because image models don't draw to scale. Snap them to platform norms (24 dp icons,
-  48 dp / 44 pt touch targets, an 8 dp grid). `spec` maps each component to the native widget to build it with
-  (`native`) and each text style to the platform type scale (`platform_style`); build with those.
+- **Scale.** GPT draws native components at about 0.65–0.7× platform size, for example a 56 dp nav bar where M3 uses 80 dp. `spec`
+  measures its native anchors (the M3 navigation bar, FAB, top app bar and search bar; the iOS switch and segmented control),
+  calibrates `px_to_dp` from them and rewrites the asset `dp` estimates. It prints that the design depicts a ~N dp-wide screen
+  (`effective_width_dp`). All later commands (`tokens`, `fonts`, `redline`, `compare`) use the calibrated scale.
+  - `spec --scale design` keeps the proportional width scale.
+  - `spec DIR --recalibrate` re-runs the calibration on an existing spec with no API call.
+  - Still snap to platform norms (24 dp icons, 48 dp / 44 pt touch targets, an 8 dp grid).
+- `spec` maps each component to the native widget to build it with (`native`) and each text style to the platform type
+  scale (`platform_style`). Build with those.
 
 ## Phase 3: produce assets (run `forge` and `svg` in parallel)
 
@@ -189,10 +196,19 @@ python3 $K appicon build icon/concept_v2.png --out icon/build \
   - Pass `--mockup` whenever an approved design exists. It's sent at low input fidelity with a "new icon, not the screen's
     illustration" prompt. Without it, concepts come out generic.
   - **Read the concepts sheet.** It shows each concept full-bleed, in circle/squircle/rounded/teardrop masks and at 48 px.
-    Reject `BUSY-BACKGROUND` (a scene, not an icon), `SUBJECT-TOO-BIG` and `BLEEDS-OFF-EDGE`. Lower `palette_de` is closer to the
+    Reject these flags:
+    - `BUSY-BACKGROUND`: a scene, not an icon.
+    - `COPIED-ILLUSTRATION:<asset>`: the concept is the screen's own illustration re-posed. This needs `assets.json` next to
+      the mockup. Re-run with a stronger `--directions` ("a minimal emblem of X, not the mascot"), `--crop` a small motif,
+      or drop `--mockup` and pass `--colors`.
+    - `SUBJECT-TOO-BIG` and `BLEEDS-OFF-EDGE`.
+
+    Lower `palette_de` is closer to the
     design. Let the user pick.
 - **Build** defaults are the measured best:
-  - The foreground is matted locally against the background that actually ships, so the icon recomposes the concept almost exactly.
+  - The foreground is matted locally against the background that actually ships, so the icon recomposes the concept almost
+    exactly. `--separate auto` (the default) switches to an image-edit foreground (1 call) when the matte leaves the subject
+    mostly translucent, which happens with a light subject on a light background. Otherwise iOS dark/tinted and the silhouette would look ghosted.
   - The background is a fitted VectorDrawable gradient (or a colour).
   - The subject is shrunk into the 66 dp safe circle only when measurement says so.
   - The monochrome (themed) layer is a gpt-6 glyph converted to a VectorDrawable.
@@ -234,6 +250,11 @@ python3 $K vectorize build/home campfire --rebuild      # after YOU edit layers.
   - `colour`/`size`/`drift`/`pop`: run `--reuse all --reroll`, which redraws only those frames, 1 call each, kept only if better.
     Fades and growth can flag legitimate frames, so look first.
   - `loop-seam`: re-roll the sheet.
+  - `misregistered` (registration IoU < 0.3): the composites are wrong, usually because `static.png` still contains part of the
+    moving element. Check it and describe `--moving`/`--static` more precisely, or run `--reuse static`. `moving_fNN.png`
+    are still usable on their own.
+  - `--procedural` moves the whole asset, including a baked ground shadow. Forge the shadow as its own asset, or `rig` the
+    asset, when the shadow must stay put.
   - `--count 12 --cols 4` gives more frames. `--formats gif,webp,apng,lottie` and `--px 480` control the outputs; the
     image-sequence Lottie costs about 280 KB per 480 px frame.
   - AnimationDrawable decodes every frame into memory, so ship the WebP or Lottie for long loops.
@@ -300,7 +321,13 @@ python3 $K compare build/home shot.png [--vision] [--crop-top PX] [--crop-bottom
   - `element … missing`
 - It detects a status bar and a taller screen automatically. "Differs inside the artwork" regions come from the forged assets, not
   your code. `--vision` adds qualitative descriptions; trust the measured numbers for sizes and positions.
+- **Screenshot at the design's effective width** (`effective_width_dp`, printed by `spec` and `compare`) for a 1:1 check.
+  Use a Compose `@Preview(widthDp = N)` rendered with Paparazzi/Roborazzi, an emulator display override, or a Chrome window N
+  CSS px wide. A narrower real device reflows the layout, and `compare` will report that as differences.
 - Fix, re-screenshot and re-run until the only remaining items are ones you accept.
+- **Custom lettering** (a wordmark or handwritten caption) that `fonts` reports as having no reliable match: forge it as a PNG asset and
+  `trace` it, or `svg` it, and ship it as a VectorDrawable rather than forcing a font.
+- `redline` misses very low-contrast surfaces (white cards on cream, about ΔE 1.5). Take those from `spec`.
 
 ## Rules learned from probing (don't relearn them)
 
@@ -315,7 +342,8 @@ python3 $K compare build/home shot.png [--vision] [--crop-top PX] [--crop-bottom
 - Forged art drifts in colour (yellower, more saturated). The Lab colour match fixes that for transparent assets; never apply
   it to opaque backgrounds, because it washes out their accents.
 - For app-icon concepts, a full-mockup reference at high fidelity copies the hero illustration, so use low fidelity. Never
-  ask the image model for the foreground layer; the local matte is far more faithful.
+  ask the image model for the foreground layer when the subject contrasts with its background, because the local matte is far more
+  faithful. For light-on-light concepts the kit switches to the image-edit foreground itself.
 - For animation, never ask for the whole object in every frame (static parts drift, grid lines appear). Generate only
   the moving layer. Use `--procedural` for rigid motion.
 - gpt-6 animates too subtly by default, and the kit's motion check retries. AVD `pathType` keyframes crash the inflater, so the
