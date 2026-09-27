@@ -1,0 +1,13 @@
+{
+  "name": "gpt-ui-assets",
+  "version": "1.0.0",
+  "description": "Turn GPT-generated UI designs into production assets: every icon, illustration and background redrawn from scratch 1:1 (never cropped), SVG/VectorDrawable icons, animation frames and Lottie.",
+  "author": {
+    "name": "Shakibuzzaman",
+    "url": "https://github.com/Shakibuzzaman3104"
+  },
+  "homepage": "https://github.com/Shakibuzzaman3104/gpt-ui-assets",
+  "repository": "https://github.com/Shakibuzzaman3104/gpt-ui-assets",
+  "license": "MIT",
+  "keywords": ["design", "ui", "assets", "icons", "gpt-image", "openai", "lottie", "android", "vectordrawable"]
+}

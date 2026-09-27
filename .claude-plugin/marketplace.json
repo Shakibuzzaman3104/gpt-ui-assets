@@ -1,0 +1,19 @@
+{
+  "name": "gpt-ui-assets",
+  "owner": {
+    "name": "Shakibuzzaman",
+    "url": "https://github.com/Shakibuzzaman3104"
+  },
+  "metadata": {
+    "description": "GPT design-to-assets skill for Claude Code"
+  },
+  "plugins": [
+    {
+      "name": "gpt-ui-assets",
+      "source": "./",
+      "description": "Turn GPT-generated UI designs into production assets: every icon, illustration and background redrawn from scratch 1:1 (never cropped), SVG/VectorDrawable icons, animation frames and Lottie.",
+      "version": "1.0.0",
+      "license": "MIT"
+    }
+  ]
+}
