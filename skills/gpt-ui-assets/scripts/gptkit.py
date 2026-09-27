@@ -4831,6 +4831,19 @@ def cmd_appicon_build(a):
         report["warnings"] = [f"busy background (fit residual {resid:.1f} > {BUSY_RESID}): scenery ends up in the "
                               "foreground; use --bg image"]
     report["separation"] = {"local": _sep_metrics(fg, C, B), "used": a.separate}
+    semi = report["separation"]["local"]["semi_transparent"]
+    if a.separate == "auto":
+        a.separate = "api" if semi > 0.5 and _config()["key"] else "local"
+        report["separation"]["used"] = a.separate
+        if semi > 0.5:
+            msg = (f"local matte left {semi:.0%} of the subject semi-transparent (subject close in colour to its "
+                   "background): iOS dark/tinted, the silhouette and light backgrounds would look ghosted")
+            print(f"  ! {msg}; " + ("separating with an image edit instead (1 call)" if a.separate == "api"
+                                     else "set an API key or pass --separate api"))
+            report.setdefault("warnings", []).append(msg)
+    elif a.separate == "local" and semi > 0.5:
+        report.setdefault("warnings", []).append(f"local matte {semi:.0%} semi-transparent; --separate api is cleaner here")
+        print(f"  ! local matte left {semi:.0%} of the subject semi-transparent; --separate api (1 call) is cleaner here")
     if a.separate == "api":
         raw, _ = edit(_png_bytes(concept), ICON_FG_PROMPT.format(subject=a.subject), "1024x1024", "transparent", a.model)
         (work / "fg_api_raw.png").write_bytes(raw)
@@ -8820,8 +8833,9 @@ def main():
     q = isub.add_parser("build", help="Android adaptive (fg/bg/monochrome) + legacy + Play, iOS AppIcon, web icons")
     q.add_argument("concept", help="chosen square concept PNG"); q.add_argument("--out", required=True)
     q.add_argument("--subject", default="the main subject", help='what the foreground is, e.g. "the crescent moon and stars"')
-    q.add_argument("--separate", choices=["local", "api"], default="local",
-                   help="foreground: local matte against the shipped background (exact), or an image-edit redraw (1 call)")
+    q.add_argument("--separate", choices=["auto", "local", "api"], default="auto",
+                   help="foreground: local matte against the shipped background (exact, 0 calls), an image-edit redraw "
+                        "(1 call), or auto: local unless it leaves the subject mostly semi-transparent")
     q.add_argument("--bg", choices=["auto", "color", "gradient", "model", "image"], default="auto",
                    help="background layer: colour resource, VectorDrawable gradient, fitted bitmap, or an image-edit "
                         "plate (1 call; auto picks it only for busy backgrounds)")
