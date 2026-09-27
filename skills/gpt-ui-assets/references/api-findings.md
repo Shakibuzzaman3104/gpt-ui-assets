@@ -69,3 +69,266 @@ It uses Q/H/V commands and userSpaceOnUse gradients, which VectorDrawable suppor
 Each image call takes 35–80 s. Vision/text calls take 40–110 s, and the full design spec about 3 min. Eight concurrent image calls
 run fine. On a ChatGPT-subscription gateway, about 15 image calls used roughly 10% of one account's 5-hour window.
 On the official API, budget per image call at the provider's image pricing.
+
+---
+
+# v2 measurements (2026-09-27)
+
+## Platform-native design
+
+One brief ("habit tracker home ... 4-tab nav; mint + warm white"), `mockup --platform android` vs `--platform ios`, 1 call each:
+
+| | android | ios |
+|---|---|---|
+| status bar | Android status bar | Dynamic Island |
+| header | top app bar with search + overflow | large title with `…` and `+` toolbar buttons |
+| content | outlined cards | inset-grouped list |
+| action | tonal "Add Habit" button | "Add a Habit" row |
+| navigation | M3 navigation bar with the pill indicator | floating Liquid Glass tab bar |
+| bottom edge | gesture handle | home indicator |
+
+- `manifest` inherits the platform and screen width (412 dp / 393 pt) from `design.json`.
+- Without an explicit exclusion rule, `manifest` listed the status-bar wifi/signal/battery glyphs as assets. The prompt now
+  excludes system UI, and a deterministic filter drops system glyphs found in the top/bottom 5% strip.
+- `spec` with a platform maps components to native widgets, e.g. `NavigationBar (4 destinations, pill active indicator)`,
+  `Cards (outlined)`, `ListItem`, `Buttons (tonal)`, and text styles to the M3 type scale. Its sizes follow the mockup's
+  small drawn text (11–16 sp), so snap them to the scale's intended roles in code.
+
+## Multi-screen design with a style reference (2026-09-27)
+
+These arms add new screens to the approved 1024×1536 "Hush" home mockup. Each arm is one image call; style-ref edits took 35–49 s.
+`layout_diff` is the mean absolute luminance difference of 64×96 thumbnails against the approved screen. `palette_err` is the
+mean RGB distance of pixels to the approved screen's 16-colour palette. palette_err depends on content, so compare it only
+between arms of the same screen.
+
+| Screen | Method | layout_diff | palette_err | Observed |
+|---|---|---|---|---|
+| player | text-only, style brief (vision) in the prompt | 22.4 | 12.5 | new layout; wordmark centred, bolder and more saturated; painterly art with a dock and a full moon; title and tagline baked into the art |
+| player | **edit, approved screen as the single reference** | 19.8 | 11.2 | new layout; identical wordmark, crescent-lake art matching the approved mini-player thumbnail, eyebrow and serif styles |
+| player | edit + style brief | 19.8 | 11.0 | as above, but copied the gear onto a full-screen player and baked "A QUIETER TOMORROW" into the art |
+| profile | **edit, approved screen as reference** | 15.4 | 7.3 | new layout; identical 4-tab bar with Profile active; tinted icon wells like the mood discs |
+| profile | edit + style brief | 15.7 | 7.4 | equally consistent; also added the persistent mini player |
+| profile | edit, design-system board as reference | 17.0 | 9.9 | board furniture leaked in ("A DESIGN FOR BETTER SLEEP", header tagline, boxed nav bar); accent drifted to the board's colours |
+| (probe) | multi-image edit copy failure | 5.0 | – | returned the mockup |
+| (probe) | same-layout revision (critique --apply) | 4.4 | – | – |
+
+- The single-reference edit did **not** copy the reference layout (5/5 new layouts) when the prompt said "design a
+  DIFFERENT screen … use the attached screen ONLY as the style guide … do NOT copy its layout, sections, cards or copy".
+  A threshold of layout_diff < 10 separates a copy or same-layout image from a new screen.
+- A vision-extracted style brief adds nothing reliable. It transfers incidental elements such as the gear, a baked-in
+  tagline and the mini player. It also leaks the reference's layout unless the brief prompt forbids that.
+- A design-system board (one edit of the screen) invents hex labels (#A78BFA where #AD9AF7 was measured) and garbled
+  one label ("Regglar").
+
+## Design QA (critique)
+
+- One gpt-6 critique call takes 32–34 s. critique + fix edit + verify took 92 s in total.
+- The 11dp threshold assumes a 390 dp screen width, and every screen tested (5 of 5) was flagged "text under 11dp".
+  Measured label cap heights are 16–21 px on a 1024-wide canvas, about 9–10 dp.
+- On the text-only stats screen with `--style-ref` home, critique flagged the app name ("Mindful" vs "Hush"), the
+  5-tab vs 4-tab navigation, sans vs serif headings, and a data error (average shown as 7h28m while the daily values
+  average 7h25m).
+- `--apply` on that screen kept the layout (drift 6.0, layout_diff 4.4). The verifier reported weight 12 → 5; an
+  independent re-critique found 12 → 8. The verifier is optimistic.
+- The editor never sees the approved screen, because edits take a single reference. So "use the approved wordmark"
+  produced a white serif "Hush", and the Library icon became books instead of a heart.
+- The model's contrast estimates can be wrong. It claimed ~3.5:1 for #0A6EDC links on white; pixel sampling gives
+  4.8–4.9:1. The local estimator matches spec-hex ratios within ~10% (17.6 vs 17.1, 7.9 vs 7.5, 6.4 vs 5.7).
+- gpt-6 rated every issue "medium" in 5 of 5 runs, so the weight is effectively an issue count.
+
+## MOCKUP_WRAP A/B (negative)
+
+Adding explicit sizes ("body ~16 pt, no label under 12 pt"), 44 pt targets, an 8 pt grid and a highlighted nav item
+to the same weather prompt left layout and density nearly identical. Label ink heights grew by 1–3 px (still about
+9 dp). Critique scored both versions 4 issues, weight 8.
+
+## Ranking and colour fidelity (forge)
+
+Measured on the 1024×1536 meditation mockup. "fid" = 0.3·diff + 0.5·de + col + 40·(1−iou). The design element is segmented from its backdrop (Lab ΔE > min(22, 0.45·p95)) at a 128 px working scale. The candidate is composited on that backdrop and aligned by maximising IoU (scale 0.88–1.13, offset ±10%). de = mean ΔE over the union of both masks; col = mean 1-D quantile EMD of L, a, b.
+
+| Candidates | old diff (rank) | fid (rank) |
+|---|---|---|
+| rain_drop c1 / c2 / vision-fix | 15.1 (2) / 14.7 (1) / 20.0 (3) | **23.5 (1)** / 26.7 (2) / 30.2 (3) |
+| campfire cropref / full-mockup edit / vision-fix | 13.8 / 21.8 / 25.9 | 23.1 / 35.4 / 45.0 |
+| campfire text-only gen (img2, img1.5, sunburst, flare) | 40.8 / 36.2 / 36.3 / 36.5 | 59.0 / 59.1 / 59.2 / 60.5 (worst 4) |
+| multiref_wind (returned the mockup) | 31.8 | 92.0, iou 0.107, 4 flags |
+
+- rain_drop c2 loses on de (19.1 vs 15.1) and iou (0.796 vs 0.825): its rings are brighter and thicker than the design's muted rings.
+- Icon identity test: 9 SVG icons, rasterised with Chrome, each scored against every icon bbox. fid puts the right icon first 9/9; own fid 8.9–39.7 vs the best wrong icon ≥ 58.2.
+- With unconstrained scale (0.82–1.18), the proportion-wrong vision-fix reached the best IoU at the scale limit. That's why the fixed-placement diff term stays in fid.
+- Cost: about 0.25 s per candidate.
+
+## Colour drift and Lab colour matching
+
+- Forged transparent assets drift in colour. Campfire mean Lab vs design: a −4…−5, b +4…+13 (yellower). The rain drop is more cyan: a 1.1 vs 4.9.
+- The design has less chroma spread: the a/b std ratio design/asset hit the 0.75 clamp on every test asset.
+- Reinhard-style transfer (mean + std, clamped 0.75–1.33) at strength 0.75, fid before → after:
+
+| Asset | fid | de |
+|---|---|---|
+| campfire (cropref) | 23.1 → 20.0 | 15.9 → 13.6 |
+| campfire (full-mockup edit) | 35.4 → 28.9 | 26.2 → 20.4 |
+| campfire c1 | 23.2 → 19.9 | |
+| campfire c2 | 24.0 → 19.5 | |
+| rain c1 | 23.5 → 21.3 | 15.1 → 12.9 |
+| rain c2 | 26.7 → 24.6 | |
+
+- The old RGB diff also drops by 0.4–1.6.
+- Mean-only and L-only transfers are weaker (e.g. rain c1 22.8 / 23.2 vs 21.3).
+- On opaque backgrounds fid also improves (21.3 → 13.7), but the peach moon turns white. The UI drawn over the design region skews the stats.
+
+## Prompt emphasis per candidate
+
+| Asset | base prompt | + colour priority | + silhouette priority |
+|---|---|---|---|
+| campfire | 23.2 / 24.0 / 25.0 | 19.9 / 21.9 | 22.6 |
+| rain_drop | 23.5 / 26.7 | 26.3 | 24.1 |
+
+All draws were quality=medium, 44–49 s.
+
+## Background reference and the quality field
+
+| Reference | moonlit 926×443 | quiet_lake 110×99 |
+|---|---|---|
+| full mockup (old) | low 2/2, fid 18.1 / 22.2 | low 2/2, fid 21.3 / 21.9, diff 27.3 / 27.5 |
+| full mockup + "high-quality, richly detailed" wording | low 1/1, fid 19.6 | – |
+| tight crop of the region (2% margin, 1536 long side) | **medium** 1/1, fid 17.9 | low 2/2, fid 16.3 / 20.2, diff 19.8 / 20.9 |
+
+- Output image tokens: 429 for the medium result vs 258 for the low one.
+- The crop-reference redraws keep the design's composition closer: moon position and the left-forest framing.
+- They differ from their reference crop by 19.9–24.2 at 64 px, so COPY:returned-reference (< 8) does not false-fire.
+
+## Alpha edges
+
+- Fully transparent pixels in every gpt-image-2 output are RGB (0,0,0).
+- Semi-transparent pixels carry their own colour, not a premultiplied one: their luminance is 0.70–0.97 of the nearby solid colour at every alpha band. There are no greenish pixels.
+- Pillow 12 premultiplies in resize and thumbnail.
+- Filling transparent RGB with nearby colour changes composites by < 0.05 ΔE through export, lossy WebP q92 and a straight-alpha bilinear scaler. No defringe is needed.
+
+## SVG icons (measured 2026-09-27)
+
+Tested on the e2e meditation mockup (9 svg assets) and the unseen sleep-stats screen (6 icons).
+
+### Rendering
+- Headless Chrome rasterises a grid page of `<img src="data:image/svg+xml;base64,...">` with real alpha when run with `--default-background-color=00000000`: 9 icons in 1.5 s. Passing `--user-data-dir=<temp dir>` made it hang for more than 120 s here.
+- Quick Look (`qlmanage -t`) pads and clips SVG thumbnails: content comes out at about 0.85x, anchored top-left. The fallback renders at 0.75 of the target size on white and on black, detects the frame and mattes the two. Its alpha is within 1.8–3.4/255 of Chrome and its rel within ±0.012.
+- cairosvg imports but has no libcairo on this machine.
+
+### Fidelity metric
+- The design element is segmented from its backdrop, taken as the median colour of a ring around the bbox.
+- Strict soft IoU punishes 1 px offsets on thin strokes (equalizer 0.555 while it looks right) and is biased toward heavier strokes.
+- A registration search (±1 design px, ±5% scale) raised the equalizer to IoU 0.74 and rel 0.355.
+- `rel` is the composited error divided by the error of drawing nothing. It ranked 8/8 controlled perturbation pairs correctly: stroke 2.5/3.5/4.5, wrong colour (dE 70), outlined vs filled home, bigger head, equal bar heights, dot vs ring.
+- The 1 px-tolerant F-score (`fit`) saturates at about 0.98 whatever the stroke weight.
+- Baseline e2e SVGs (rel): home 0.09, play 0.11, chevron 0.22, heart 0.28, profile 0.31, compass 0.35 (ink 1.18), equalizer 0.36, wind 0.44, settings 0.54. Settings is also the worst visually (angular gear teeth).
+
+### Icon-set spec
+- gpt-6 vision, one call:
+  - e2e: stroke 3.5 px, i.e. 1.67 on the 24 grid (the SVGs measure 1.61), round caps and joins, 8 states with colours.
+  - Symbol names: 9/9 correct on e2e. On the sleep screen 13/15 were mapped, and the 2 custom lotus glyphs correctly got "".
+- Two runs with the spec vs two without, all else equal:
+  - Gear: rel 0.346/0.33 with, 0.538/0.607 without. With the spec the teeth are rounded like the design.
+  - Mean rel over the 9 icons: 0.276/0.283 vs 0.297/0.299.
+  - Worst icon: 0.412/0.438 vs 0.538/0.607.
+- Negative result: the wind glyph's first pass got worse with the spec (0.518/0.531 vs 0.437/0.458).
+- The vision retry, which shows the design|render side-by-side plus the metrics, improved 2/2: 0.518→0.412 and 0.531→0.444.
+- Not fixed in any run: the gear centre (the design has a solid dot, every run drew a ring) and the compass weight (ink 1.15–1.18).
+- Sleep screen with the spec: all 6 icons passed on the first try (rel 0.13–0.34).
+
+### New icons and 24-grid
+- New icons from 6 concepts in one call came out at the set's measured stroke (1.61), round caps and joins, and the set colour. They look like members of the same set.
+- 24-grid normalisation rescales coordinates from a measured content box, with 2 units of padding and no transforms. It changes rel by at most 0.04, and the tab-icon strokes land at 1.59–1.64.
+
+### VectorDrawable validation
+- aapt2 `compile` accepts invalid colours, unknown attributes and bad pathData.
+- `aapt2 link -I android.jar` rejects bad attribute names, formats and enums. pathData is never validated by aapt2.
+- Bugs in the previous converter, found by rendering the SVG and the converted VD and comparing (mean diff, 0–255):
+  - Root `<svg fill="none" stroke=…>` attributes were ignored, so Lucide/Feather-style icons became black filled shapes (56).
+  - Group opacity was overridden instead of multiplied (8.3).
+  - `currentColor`, `rgb()` and named colours crashed.
+  - All transforms were rejected, although VD `<group>` supports translate, scale and rotate.
+- The new converter scores 0.00–0.04 on all fixtures and 24 generated icons. Exceptions: dashes (1.52, with a warning) and overlapping children under group opacity (0.98), which VD cannot express exactly.
+
+## App launcher icons (appicon, 2026-09-27)
+
+Concepts: brief "Hush, a calm sleep app; dark navy and lavender; moon motif", direction "one bold emblem of the core motif", gpt-image-2, one sample per arm. palette ΔE is the mean CIELAB distance to the mockup's 12 main colours; bg residual is the rms of a quadratic+radial background fit.
+
+| reference | input_fidelity | prompt | palette ΔE ↓ | bg residual | result |
+|---|---|---|---|---|---|
+| full mockup (padded square) | high | "same visual language" | 8.9 | 10.5 | reproduced the hero card's moon-over-lake scene; muddy at 48 px |
+| none (text only) | – | – | 16.3 | 3.9 | clean flat emblem, generic lavender style |
+| **full mockup** | **low** | **"NEW icon; no landscape, horizon, water or card"** | **7.3** | 5.6 | icon composition in the design's language (peach glowing crescent + lavender wind strokes) |
+| crop of the moon | high | new | 19.3 | 8.8 | bold emblem; brighter blue background, off-palette |
+
+- With the first prompt, 2 of 3 full-mockup concepts were scenes (residual 10.5 and 11.3); the "minimal mark" one was 6.8.
+- All 6 concept calls returned 1254×1254 for `size=1024x1024` (square prompt + square reference). No aspect retries.
+- Median-cut quantize of the mockup yields only navy shades. Octree + ΔE≥20 de-duplication yields #0D1429, #5C5A91, #A69DF1, #ECE3E7, …
+
+Layer separation (chosen concept, 1024 px; diffs are mean abs RGB, 0–255):
+
+| foreground | background layer | recomposite diff (subject zone) | composite vs concept | image calls |
+|---|---|---|---|---|
+| local min-alpha matte | fitted VD radial gradient (rms 2.99) | 1.78 | 2.17 | 0 |
+| local matte | image-edit plate | 2.3 | 2.05 | 1 |
+| image-edit foreground (transparent), registered | image-edit plate | 28.2 | 7.65 | 2 |
+
+- The edit foreground had hard alpha (21% semi-transparent vs 71% for the matte) and kept no backdrop. It redrew the subject: the moon glow was lost and the swoosh came out thicker and more saturated.
+- The plate edit ("keep only its background") removed the subject completely. Outside the subject it was within 1.9 of the concept.
+- An unrestricted matte leaks background drift as haze out to 50 dp. Limiting alpha to a 3% feathered zone around the subject brings that to ~27 dp for +0.6 composite diff.
+- Matting against a solid colour without finding the subject against the concept's own background pulled the vignette into the foreground (shrink 0.66, composite 32.0). With subject detection against the fitted background: shrink 1.0, composite 5.2.
+
+Monochrome (themed icon):
+- 2 of 2 gpt-6 glyph calls (viewBox 108, all shapes inside r=30, black fills) returned clean crescent + swoosh + star glyphs. They used C and Q commands, which pass straight into a VectorDrawable.
+- After fitting to the silhouette's box, the glyphs sat at 22.9–23.7 dp radius, with IoU 0.53 and 0.76 against the silhouette.
+- The matte's silhouette at alpha > 0.5 broke translucent parts. At alpha > 0.3 its IoU against a hard-alpha silhouette rose from 0.69 to 0.77, but it was still less legible than the glyph at 48 and 36 px.
+
+Tools:
+- `aapt2 compile` + `link` (build-tools 36, android-37.0 android.jar) accepts `<adaptive-icon>` with `<monochrome>`, a VD `<group>` with scale/translate, and a VD `aapt:attr` gradient background.
+- `xcrun actool` (Xcode 27) compiles a single-size 1024 appiconset with dark/tinted luminosity appearances without warnings. It warns on a wrong size (500×500) but NOT on an alpha channel.
+- qlmanage renders a 108-viewBox SVG at 432 px pixel-aligned (a test rect came out exactly at 27–81 × 54–81 units).
+
+Cost: 8 image calls (6 concepts, 1 plate, 1 foreground) and 2 gpt-6 glyph calls (~60–90 s each).
+
+## Raster animation frames (measured 2026-09-27, gpt-image-2 edits)
+
+- **Sheet layout:** all 5 real sprite sheets (e2e 4x2, probe 4x2 x2, live 4x2 ripples, live 4x3 campfire) respected the requested equal grid. The equal-grid cut lines had 0.0% of pixels at alpha > 64. Frames can still nearly touch (ripple glows 5 px apart), so plain gutter detection found only 6 of 8.
+- **Canvas:** asking for "a sprite sheet of 4 columns x 3 rows of equal cells on a square canvas" returned a square 1254x1254 sheet (frames ~280x345 px). Sheet alpha has noisy low-alpha glow specks in the gutters (up to ~1% of a gutter line's pixels at alpha > 8).
+- **Style drift of the moving layer vs the approved asset** (alpha-weighted mean Lab): e2e 8-frame ΔE 6.3, 12-frame 9.3, probe sheets 12.5 / 11.3. The sheets come back more saturated orange. One LCh transform (lightness mean/std, chroma ratio, hue rotation) brings them to 0.3–1.3 and looks closer to the asset. A plain Lab mean/std shift turned dark inner flames mauve (hue −8.7°).
+- **Within-sheet consistency:** max ΔE to the sheet median 1.0–2.2, size ±5%, centre drift ≤ 3.4% of the frame. Flicker frames are not temporally ordered (last→first step is 0.2–0.5x a typical step).
+- **Single-frame re-roll** (edit with a neighbouring frame as the only reference): keeps style and colours but returns at ~3x the sheet-frame scale. Rescaled to the neighbour's alpha mass, its QA badness was 0.87 (a genuine frame: 0.59; the injected bad frame: 2.08).
+- **Moving/static split beyond flicker:** ripple rings (moving) + teardrop (static) gave a clean loop: small ring, expanding, fading, new ring. The model drew the rings as a filled glowing disc rather than the asset's hollow rings. Silhouette registration then placed them at ~55% size (IoU 0.39); an extent fit reached 0.48 and matches the design visually.
+- **Whole object, no static layer** (bobbing drop): consistent colours (ΔE 4.3, nothing flagged), but proportions drift. The drop is smaller relative to its rings than in the asset and varies between frames, and neither colour/size QA nor a normalised-silhouette IoU detects it.
+- **Formats:** Pillow writes animated WebP/APNG with exact frame counts and per-frame durations (loop=0). A Lottie image sequence (one ty:2 layer per frame, base64 PNG assets) renders frame-exact in lottie-web 5.12.2 (mean diff 0.8 vs 2.6–5.7 for a wrong frame) and costs ~280 KB per 480 px frame. A single-image transform-keyframe Lottie costs 124–220 KB and renders within 0.3–0.8 mean diff.
+
+## Vector animation (measured 2026-09-27)
+
+- gpt-6 follows the extended vector schema (strict json_schema with nested motion/glow objects) in one call: heart 17-26 s,
+  rain 91 s, campfire about 100 s per attempt.
+- Motion is too small by default. First answers measured 2.9% (campfire) and 3.0% (rain) mean point displacement relative
+  to layer size. The old campfire measured 1.1% and its frames look identical. One retry that sends back the previous JSON
+  and the measured numbers raised them to 5.5% and 7.3%.
+  `--strength strong` on the heart gave 11.2% vs 4.9% at normal, with the same prompt.
+- A gate on the most-moving layer is fooled: the rain drop's bob (5.0%) passed while the requested ripples moved 2.6-4.2%.
+  Gate on the mean over animated layers instead.
+- gpt-6 repeats the first morph keyframe as the last one. That stalled the Lottie loop for 25% of its length. Drop it.
+- gpt-6 staggers repeated parts correctly (three ripples offset by 1/3, scale reset while opacity is 0), but keeps
+  ripple growth small (0.8 -> 1.08) even after the retry.
+- lottie-web renders the kit's Lottie within 0.04-0.14 mean pixel diff (0-255) of Chrome's native SVG of the same
+  state. This covers layer anchor/position/scale/rotation/opacity keys with bezier easing including overshoot,
+  gradient fills with alpha stops, and a group non-uniform scale.
+- Headless Chrome writes the `--screenshot` of a lottie-web page but does not exit (it lingers until killed). Poll for the file.
+- A thin stroke outline changes 65-86% of its drawn pixels for a 5-11% move, so pixel change is not a motion-strength measure.
+
+## AnimatedVectorDrawable (API 36 emulator, framework AVD)
+
+- `<propertyValuesHolder android:valueType="pathType">` with `<keyframe>`s passes aapt2 compile but crashes inflation
+  (Resources$NotFoundException caused by a NullPointerException). pathData can only go valueFrom -> valueTo.
+- A looping N-key morph works in XML alone: one path copy per segment. Each copy runs valueFrom=key j, valueTo=key j+1
+  for the whole loop with a windowed `pathInterpolator android:pathData` (flat, eased, flat), and fillAlpha is 1 only
+  inside its window. Emulator frames matched lottie-web phases (diff 0.84-1.23 vs 0.79-0.88 between adjacent phases).
+- Keyframed fillAlpha overshooting above 1 (overshoot easing) makes the fill vanish for that span. Clamp or avoid overshoot on alpha.
+- Group rotation/scale/translate with pivots, PVH keyframes with inline aapt:attr pathInterpolator per keyframe,
+  repeatCount=infinite, gradients via aapt:attr, and strokeAlpha/fillAlpha all behaved like the Lottie. There is no group alpha,
+  so fades are per path.
+- The RenderThread AVD subsamples keyframed animators past 300 frames and logs "Duration for the animation is too
+  long". This happened with the animator duration scale at 5x (6 s); it matters for loops longer than about 5 s.
