@@ -299,7 +299,7 @@ def _design_view(mock, bbox):
     return {"L": L, "mask": _clean(dist > thr), "backdrop": backdrop, "bl": bl, "thr": thr, "size": size, "up": s}
 
 
-def _align(asset, view):
+def _align_view(asset, view):
     """Scale/offset of the asset (composited on the design backdrop) that best overlaps the design silhouette."""
     w, h = view["size"]
     M = max(w, h) // 5
@@ -355,7 +355,7 @@ def perceptual(mock, bbox, asset, transparent=True):
     view = _design_view(mock, bbox)
     L, dm = view["L"], view["mask"]
     if transparent:
-        iou, AL, am = _align(asset, view)
+        iou, AL, am = _align_view(asset, view)
         if dm.sum() >= 16:
             return {"iou": float(iou), "de": float(np.linalg.norm(AL - L, axis=-1)[am | dm].mean()),
                     "col": _qemd(AL[am], L[dm]) if am.sum() > 8 else 50.0}
@@ -372,7 +372,7 @@ def _fid(diff, p):
 def color_match(mock, bbox, asset, strength=0.75):
     """Reinhard-style transfer of the design element's Lab mean/std onto a transparent asset; alpha is kept."""
     view = _design_view(mock, bbox)
-    _, AL, am = _align(asset, view)
+    _, AL, am = _align_view(asset, view)
     src, dst = AL[_morph(am, "min")], view["L"][_morph(view["mask"], "min")]
     if len(src) < 16 or len(dst) < 16:
         return asset
@@ -1148,13 +1148,6 @@ def _render_svg(svg_path, out_dir, size=256):
     return final
 
 
-def _lab(rgb):
-    c = np.asarray(rgb, dtype=float) / 255
-    c = np.where(c > 0.04045, ((c + 0.055) / 1.055) ** 2.4, c / 12.92)
-    xyz = c @ np.array([[0.4124, 0.2126, 0.0193], [0.3576, 0.7152, 0.1192], [0.1805, 0.0722, 0.9505]])
-    xyz /= np.array([0.9505, 1.0, 1.089])
-    f = np.where(xyz > 0.008856, np.cbrt(xyz), 7.787 * xyz + 16 / 116)
-    return np.stack([116 * f[..., 1] - 16, 500 * (f[..., 0] - f[..., 1]), 200 * (f[..., 1] - f[..., 2])], -1)
 
 
 def _element_mask(mock, bbox):
@@ -1628,7 +1621,7 @@ def _android_sdk():
             jars = sorted(sdk.glob("platforms/android-*/android.jar"), key=ver)
             if tools:
                 return str(tools[-1]), str(jars[-1]) if jars else None
-    return None
+    return (shutil.which("aapt2"), None) if shutil.which("aapt2") else None
 
 
 def aapt2_check(xml_files):
@@ -2408,7 +2401,7 @@ def _anchor_point(img, anchor):
     return float(xs.mean()), float(ys.mean())
 
 
-def _align(crops, anchor):
+def _align_frames(crops, anchor):
     """Place crops on one shared canvas with their anchor points coincident."""
     pts = [_anchor_point(c, anchor) for c in crops]
     left, up = max(p[0] for p in pts), max(p[1] for p in pts)
@@ -2567,12 +2560,6 @@ _XYZ = np.array([[0.4124, 0.3576, 0.1805], [0.2126, 0.7152, 0.0722], [0.0193, 0.
 _D65 = np.array([0.95047, 1.0, 1.08883])
 
 
-def _lab(rgb):
-    c = np.asarray(rgb, np.float64) / 255
-    c = np.where(c > 0.04045, ((c + 0.055) / 1.055) ** 2.4, c / 12.92)
-    t = c @ _XYZ.T / _D65
-    f = np.where(t > 0.008856, np.cbrt(t), 7.787 * t + 16 / 116)
-    return np.stack([116 * f[..., 1] - 16, 500 * (f[..., 0] - f[..., 1]), 200 * (f[..., 1] - f[..., 2])], -1)
 
 
 def _lab_rgb(lab):
@@ -2897,7 +2884,7 @@ def _reroll(a, crops, qa, bad, ref, ref_mask, motion, out):
         k = math.sqrt(_alpha_stats(crops[j])[1] / _alpha_stats(img)[1])
         img = img.resize((max(1, round(img.width * k)), max(1, round(img.height * k))), Image.LANCZOS)
         trial = crops[:i] + [img] + crops[i + 1:]
-        tq = _frame_qa(_align(trial, a.anchor), ref, ref_mask)
+        tq = _frame_qa(_align_frames(trial, a.anchor), ref, ref_mask)
         old, new = _badness(qa["frames"][i]), _badness(tq["frames"][i])
         keep = new < old
         print(f"  re-roll f{i + 1}: badness {old:.2f} -> {new:.2f} {'KEPT' if keep else 'discarded'}")
@@ -2956,12 +2943,12 @@ def cmd_frames(a):
         static = sq_static.crop((sq_off[0], sq_off[1], sq_off[0] + src.width, sq_off[1] + src.height))
         static.save(out / "static.png")
         ref_mask = _moving_mask(static)
-    qa = _frame_qa(_align(crops, a.anchor), src, ref_mask)
+    qa = _frame_qa(_align_frames(crops, a.anchor), src, ref_mask)
     bad = _qa_report(qa)
     if a.reroll and bad:
         crops, qa = _reroll(a, crops, qa, bad, src, ref_mask, motion, out)
         _qa_report(qa, " after re-roll")
-    frames = _align(crops, a.anchor)
+    frames = _align_frames(crops, a.anchor)
     if a.match_colors:
         frames = _match_colors(frames, src, ref_mask)
         qa = _frame_qa(frames, src, ref_mask)
@@ -3267,13 +3254,6 @@ def _palette(img, k=6, min_de=20):
     return [_hex(c) for c in picked[:k]]
 
 
-def _lab(rgb):
-    c = np.asarray(rgb, float) / 255
-    c = np.where(c > 0.04045, ((c + 0.055) / 1.055) ** 2.4, c / 12.92)
-    xyz = c @ np.array([[0.4124, 0.2126, 0.0193], [0.3576, 0.7152, 0.1192], [0.1805, 0.0722, 0.9505]])
-    xyz /= [0.9505, 1.0, 1.089]
-    f = np.where(xyz > 0.008856, np.cbrt(xyz), 7.787 * xyz + 16 / 116)
-    return np.stack([116 * f[..., 1] - 16, 500 * (f[..., 0] - f[..., 1]), 200 * (f[..., 1] - f[..., 2])], -1)
 
 
 def _palette_de(img, ref, k=12):
@@ -3571,18 +3551,13 @@ def _vd_group(xml, s, tx, ty):
             f'android:translateY="{ty:.3f}">' + body.replace("</vector>", "").rstrip() + "\n    </group>\n</vector>\n")
 
 
-def _android_sdk():
-    sdk = Path(os.environ.get("ANDROID_HOME") or os.environ.get("ANDROID_SDK_ROOT") or "~/Library/Android/sdk").expanduser()
-    ver = lambda p: [int(x) for x in re.findall(r"\d+", p.parent.name)]
-    aapt = sorted((sdk / "build-tools").glob("*/aapt2"), key=ver)
-    jars = sorted((sdk / "platforms").glob("android-*/android.jar"), key=ver)
-    return (aapt[-1] if aapt else shutil.which("aapt2")), (jars[-1] if jars else None)
 
 
 def _aapt2_check(res, name, work):
-    aapt, jar = _android_sdk()
-    if not aapt:
+    sdk = _android_sdk()
+    if not sdk:
         return "skipped (aapt2 not found; set ANDROID_HOME)"
+    aapt, jar = sdk
     work.mkdir(parents=True, exist_ok=True)
     r = subprocess.run([str(aapt), "compile", "--dir", str(res), "-o", str(work / "res.zip")], capture_output=True, text=True)
     if r.returncode:
