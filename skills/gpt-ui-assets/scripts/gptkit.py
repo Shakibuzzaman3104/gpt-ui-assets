@@ -440,6 +440,70 @@ MOCKUP_WRAP = ("High-fidelity production UI design render of a single app screen
                "Flat, pixel-crisp screen render at 1:1, no device frame, no hands, no perspective, no watermark. "
                "Real, legible UI text. Consistent spacing grid and one cohesive icon style.")
 
+PLATFORMS = {
+    "android": {
+        "label": "native Android app (Material 3 / Material 3 Expressive, Jetpack Compose)",
+        "system_ui": "Android status bar at the top (time, signal, battery) and the gesture navigation handle at the bottom; edge-to-edge layout",
+        "components": ("TopAppBar (small/center-aligned/medium/large), NavigationBar (3-5 destinations, pill active indicator), "
+                       "NavigationRail (tablets), FloatingActionButton / ExtendedFAB, Cards (elevated/filled/outlined), "
+                       "Buttons (filled/tonal/outlined/text), SegmentedButton, Chips (assist/filter/input/suggestion), "
+                       "Switch, Checkbox, RadioButton, Slider, SearchBar, Tabs, ListItem, Badge, ModalBottomSheet, "
+                       "Dialog, Snackbar, progress indicators"),
+        "metrics": "4 dp baseline / 8 dp spacing grid, 48 dp minimum touch targets, 24 dp icons, "
+                   "corner radii 4/8/12/16/28 dp (extra-small..extra-large)",
+        "type": "Material 3 type scale: Display/Headline/Title/Body/Label in Large/Medium/Small (e.g. Headline Small 24 sp, "
+                "Title Large 22 sp, Body Large 16 sp, Label Large 14 sp)",
+        "icons": "Material Symbols (Outlined or Rounded, consistent weight), filled variant for the selected tab",
+        "screen_dp": 412,
+    },
+    "ios": {
+        "label": "native iOS app (Human Interface Guidelines, iOS 26 Liquid Glass, SwiftUI)",
+        "system_ui": "iOS status bar with Dynamic Island at the top and the home indicator at the bottom; respect safe areas",
+        "components": ("NavigationStack bar with large title, floating Liquid Glass TabBar (up to 5 tabs), Toolbar, "
+                       "List (inset grouped), Section, sheet with detents, Menu, context menu, Alert, "
+                       "confirmation dialog, Picker / segmented control, Toggle, Slider, Stepper, searchable field, "
+                       "DatePicker, ProgressView, swipe actions"),
+        "metrics": "44 pt minimum touch targets, 16-20 pt margins, 8 pt spacing rhythm, continuous-corner rounded rectangles",
+        "type": "SF Pro with Dynamic Type styles: Large Title 34, Title 1 28, Title 2 22, Title 3 20, Headline 17 semibold, "
+                "Body 17, Callout 16, Subheadline 15, Footnote 13, Caption 12/11",
+        "icons": "SF Symbols (matching weight to adjacent text), filled variant for the selected tab",
+        "screen_dp": 393,
+    },
+    "web": {
+        "label": "responsive web app (semantic HTML/CSS, accessible)",
+        "system_ui": "no device chrome; a browser viewport",
+        "components": ("header with primary navigation, sidebar or top nav, breadcrumbs, buttons, links, form fields with "
+                       "labels, selects, checkboxes, toggles, cards, tables, tabs, modals/dialogs, toasts, pagination"),
+        "metrics": "8 px spacing grid, 44 px minimum touch targets on mobile, visible focus states, "
+                   "breakpoints 390 / 768 / 1280 / 1440 px",
+        "type": "a web font pairing with a clear rem-based type scale (e.g. 14/16/20/24/32/40 px)",
+        "icons": "one consistent icon set (e.g. Material Symbols or Lucide)",
+        "screen_dp": 390,
+    },
+}
+
+PLATFORM_RULE = ("Target platform: {label}. Build the screen from this platform's native components wherever one fits: "
+                 "{components}. Show the {system_ui}. Metrics: {metrics}. Typography: {type}. Icons: {icons}. "
+                 "Anything custom must still look and behave native to this platform.")
+
+
+def _platform_rule(platform):
+    return " " + PLATFORM_RULE.format(**PLATFORMS[platform]) if platform else ""
+
+
+def _design_meta(path):
+    """design.json written by `mockup` next to a mockup (platform, screen width), if any."""
+    for d in (Path(path).parent, Path(path).parent.parent):
+        f = d / "design.json"
+        if f.exists():
+            return json.loads(f.read_text())
+    return {}
+
+
+def _screen_dp(platform, given=None):
+    return given or (PLATFORMS[platform]["screen_dp"] if platform else 390)
+
+
 STYLE_REF_PROMPT = ("The attached image is an APPROVED screen of this app. Design a DIFFERENT screen of the same app on a "
                     "{aspect} canvas: {prompt} Use the attached screen ONLY as the style guide: the same design language "
                     "(palette, typefaces and weights, text colours, eyebrow/label treatment, corner radii, surfaces, "
@@ -527,6 +591,8 @@ MANIFEST_PROMPT = """This is an APPROVED mobile/web UI design ({W}x{H} px). Inve
 needs as a separate file to build it in code: icons, illustrations, images/photos, logos, decorative graphics, and
 artwork that sits behind UI (kind "background"). Rules:
 - Exclude plain text, solid/gradient fills, simple shapes, dividers, shadows and standard containers code can draw.
+- Exclude system UI the OS draws: status bar (time, wifi, signal, battery, notification icons), Dynamic Island,
+  home indicator, gesture handle, system navigation buttons.
 - One entry per distinct graphic. Identical repeats (same icon used twice) appear once.
 - bbox is TIGHT around the graphic itself in this image's pixels (exclude any circle/card behind an icon unless that
   backdrop is part of the artwork).
@@ -635,8 +701,9 @@ SPEC_SCHEMA = {
                                                "properties": {"name": {"type": "string"}, "hex": {"type": "string"},
                                                               "usage": {"type": "string"}}}},
         "typography": {"type": "array", "items": {"type": "object", "additionalProperties": False,
-                                                  "required": ["role", "sample", "family_guess", "size_px", "weight", "letter_spacing_em", "color"],
+                                                  "required": ["role", "sample", "family_guess", "size_px", "weight", "letter_spacing_em", "color", "platform_style"],
                                                   "properties": {"role": {"type": "string"}, "sample": {"type": "string"},
+                                                                 "platform_style": {"type": "string"},
                                                                  "family_guess": {"type": "string"}, "size_px": {"type": "number"},
                                                                  "weight": {"type": "integer"}, "letter_spacing_em": {"type": "number"},
                                                                  "color": {"type": "string"}}}},
@@ -645,8 +712,9 @@ SPEC_SCHEMA = {
         "spacing": {"type": "array", "items": {"type": "object", "additionalProperties": False, "required": ["between", "px"],
                                                "properties": {"between": {"type": "string"}, "px": {"type": "number"}}}},
         "components": {"type": "array", "items": {"type": "object", "additionalProperties": False,
-                                                  "required": ["name", "bbox", "notes"],
+                                                  "required": ["name", "bbox", "native", "notes"],
                                                   "properties": {"name": {"type": "string"}, "notes": {"type": "string"},
+                                                                 "native": {"type": "string"},
                                                                  "bbox": {"type": "object", "additionalProperties": False,
                                                                           "required": ["x", "y", "w", "h"],
                                                                           "properties": {k: {"type": "integer"} for k in "xywh"}}}}},
@@ -687,9 +755,18 @@ def cmd_mockup(a):
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
     aspect = ASPECTS.get(a.size, a.size)
-    prompt = a.prompt if a.raw else MOCKUP_WRAP.format(prompt=a.prompt, aspect=aspect)
+    platform = a.platform or (_design_meta(a.edit or a.style_ref).get("platform") if (a.edit or a.style_ref) else None)
+    if not platform:
+        print("  (no --platform: designing platform-neutral; pass --platform android|ios|web for native components)")
+    rule = _platform_rule(platform)
+    prompt = a.prompt if a.raw else MOCKUP_WRAP.format(prompt=a.prompt, aspect=aspect) + rule
     edit_prompt = f"{a.prompt} Keep the {aspect} canvas and everything not mentioned exactly as it is."
-    style_prompt = a.prompt if a.raw else STYLE_REF_PROMPT.format(prompt=a.prompt, aspect=aspect)
+    style_prompt = a.prompt if a.raw else STYLE_REF_PROMPT.format(prompt=a.prompt, aspect=aspect) + rule
+    if platform:
+        meta_path = out / "design.json"
+        meta = json.loads(meta_path.read_text()) if meta_path.exists() else {}
+        meta.update({"platform": platform, "screen_dp": _screen_dp(platform)})
+        meta_path.write_text(json.dumps(meta, indent=2))
     ref = _rgba(a.style_ref) if a.style_ref else None
 
     def one(i):
@@ -739,7 +816,8 @@ def measured_contrast(img, bbox):
 def critique(img, dp=390, platform="android", style_ref=None, note=None):
     rule = CRITIQUE_REF_RULE if style_ref is not None else ""
     touch = 48 if platform == "android" else 44
-    text = CRITIQUE_PROMPT.format(W=img.width, H=img.height, dp=dp, k=img.width / dp, platform=platform, touch=touch,
+    label = PLATFORMS[platform]["label"] if platform in PLATFORMS else platform
+    text = CRITIQUE_PROMPT.format(W=img.width, H=img.height, dp=dp, k=img.width / dp, platform=label, touch=touch,
                                   ref_rule=rule) + (f"\nThe user also says: {note}" if note else "")
     parts = [text, img.convert("RGB")] + ([style_ref.convert("RGB")] if style_ref is not None else [])
     issues = ask(parts, CRITIQUE_SCHEMA, "design_qa")["issues"]
@@ -783,6 +861,8 @@ def cmd_critique(a):
     out.mkdir(parents=True, exist_ok=True)
     ref = _rgba(a.style_ref) if a.style_ref else None
     cur_path, cur = src, _rgba(src)
+    a.platform = a.platform or _design_meta(src).get("platform") or "android"
+    a.screen_dp = _screen_dp(a.platform, a.screen_dp)
     issues = critique(cur, a.screen_dp, a.platform, ref, a.note)
     log = {"mockup": str(src), "rounds": [{"image": str(src), "issues": issues, "weight": _weight(issues)}]}
     print(f"{src.name}: {len(issues)} issues, weight {_weight(issues)}")
@@ -836,7 +916,19 @@ def cmd_manifest(a):
     local = out / "mockup.png"
     if mock_path != local.resolve():
         mock.save(local)
-    res = ask([MANIFEST_PROMPT.format(W=mock.width, H=mock.height), mock], MANIFEST_SCHEMA, "asset_manifest")
+    platform = a.platform or _design_meta(mock_path).get("platform")
+    screen_dp = _screen_dp(platform, a.screen_dp)
+    native = (f"\n- Target platform: {PLATFORMS[platform]['label']}. Native components ({PLATFORMS[platform]['components']}) "
+              "are built in code with the platform toolkit: never list a component itself (tab bar, app bar, switch, slider, "
+              "chip, button, sheet) as an asset, only custom glyphs/artwork inside it (e.g. the tab icons, not the tab bar).") \
+        if platform else ""
+    res = ask([MANIFEST_PROMPT.format(W=mock.width, H=mock.height) + native, mock], MANIFEST_SCHEMA, "asset_manifest")
+    system = re.compile(r"wifi|wi_fi|signal|cellular|battery|status_bar|clock|dynamic_island|home_indicator|gesture")
+    dropped = [x["name"] for x in res["assets"] if system.search(x["name"].lower()) and
+               (x["bbox"]["y"] + x["bbox"]["h"] < 0.05 * mock.height or x["bbox"]["y"] > 0.95 * mock.height)]
+    if dropped:
+        print(f"  (dropped system UI the OS draws: {', '.join(dropped)})")
+        res["assets"] = [x for x in res["assets"] if x["name"] not in dropped]
     seen = set()
     for x in res["assets"]:
         n = re.sub(r"_(svg|png|icon|asset)$", "", re.sub(r"[^a-z0-9_]", "_", x["name"].lower()).strip("_"))
@@ -845,10 +937,10 @@ def cmd_manifest(a):
         seen.add(n)
         x["name"] = n
         x["material_symbol"], x["sf_symbol"] = _symbol_names(x.get("material_symbol", ""), x.get("sf_symbol", ""))
-        x["dp"] = {"w": round(x["bbox"]["w"] * a.screen_dp / mock.width, 1),
-                   "h": round(x["bbox"]["h"] * a.screen_dp / mock.width, 1)}
-    manifest = {"mockup": "mockup.png", "width": mock.width, "height": mock.height,
-                "screen_dp": a.screen_dp, "assets": res["assets"]}
+        x["dp"] = {"w": round(x["bbox"]["w"] * screen_dp / mock.width, 1),
+                   "h": round(x["bbox"]["h"] * screen_dp / mock.width, 1)}
+    manifest = {"mockup": "mockup.png", "width": mock.width, "height": mock.height, "platform": platform,
+                "screen_dp": screen_dp, "assets": res["assets"]}
     (out / "assets.json").write_text(json.dumps(manifest, indent=2))
     ov = mock.convert("RGB")
     d = ImageDraw.Draw(ov)
@@ -868,10 +960,17 @@ def cmd_manifest(a):
 
 def cmd_spec(a):
     d, m, mock = _load(a.dir)
+    platform = m.get("platform")
+    target = (f" Target platform: {PLATFORMS[platform]['label']}. For every component set 'native' to the native "
+              f"component that should implement it (from: {PLATFORMS[platform]['components']}; add its variant, e.g. "
+              "'Card (elevated)'), 'system' for UI the OS draws (status bar, home indicator), or 'custom' when none fits. For every text style set 'platform_style' to the closest "
+              f"style of {PLATFORMS[platform]['type']}.") if platform else \
+        " Set 'native' to 'custom' and 'platform_style' to '' (no target platform given)."
     res = ask([f"This is an APPROVED UI design ({mock.width}x{mock.height}px; the screen is {m['screen_dp']}dp wide). "
                "Extract the design spec a developer needs to rebuild it 1:1: palette (hex), every text style "
                "(role, a sample string, likely font family, size in px of THIS image, weight, letter spacing, colour), "
-               "corner radii, key spacings, and the component list with pixel bboxes.", mock], SPEC_SCHEMA, "design_spec")
+               "corner radii, key spacings, and the component list with pixel bboxes." + target, mock], SPEC_SCHEMA, "design_spec")
+    res["platform"] = platform
     res["px_to_dp"] = round(m["screen_dp"] / mock.width, 5)
     (d / "design_spec.json").write_text(json.dumps(res, indent=2))
     print(f"-> {d / 'design_spec.json'}  (multiply px values by px_to_dp={res['px_to_dp']} for dp/pt)")
@@ -4830,19 +4929,21 @@ def main():
     p.add_argument("--size", default="1024x1536"); p.add_argument("--variants", type=int, default=1)
     p.add_argument("--edit", help="existing mockup PNG to revise with the prompt"); p.add_argument("--raw", action="store_true")
     p.add_argument("--style-ref", help="approved screen PNG: design a NEW screen in its exact design language")
+    p.add_argument("--platform", choices=list(PLATFORMS), help="target platform: native components, system UI, metrics")
     p.add_argument("--model", default=None); p.set_defaults(fn=cmd_mockup)
     p = sub.add_parser("critique", help="vision design QA of a mockup; --apply edits the fixes in, kept only if better")
     p.add_argument("mockup"); p.add_argument("--out", help="output dir (default: the mockup's dir)")
     p.add_argument("--style-ref", help="approved screen of the same app: also check consistency with it")
-    p.add_argument("--platform", choices=["android", "ios", "web"], default="android")
-    p.add_argument("--screen-dp", type=float, default=390); p.add_argument("--note", help="extra focus for the review")
+    p.add_argument("--platform", choices=list(PLATFORMS), help="default: design.json next to the mockup, else android")
+    p.add_argument("--screen-dp", type=float); p.add_argument("--note", help="extra focus for the review")
     p.add_argument("--apply", action="store_true", help="edit the issues' fixes into the mockup, verify, keep if better")
     p.add_argument("--min-severity", choices=["high", "medium", "low"], default="medium")
     p.add_argument("--rounds", type=int, default=1); p.add_argument("--model", default=None)
     p.set_defaults(fn=cmd_critique)
     p = sub.add_parser("manifest", help="inventory assets of an approved mockup -> DIR/assets.json")
     p.add_argument("mockup"); p.add_argument("--out", required=True)
-    p.add_argument("--screen-dp", type=float, default=390, help="logical screen width the mockup represents")
+    p.add_argument("--platform", choices=list(PLATFORMS), help="default: design.json written by mockup")
+    p.add_argument("--screen-dp", type=float, help="logical screen width (default: the platform's, else 390)")
     p.set_defaults(fn=cmd_manifest)
     p = sub.add_parser("spec", help="extract palette/typography/spacing -> DIR/design_spec.json")
     p.add_argument("dir"); p.set_defaults(fn=cmd_spec)
