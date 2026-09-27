@@ -578,14 +578,14 @@ MOTION_MIN = {"subtle": 0.015, "normal": 0.04, "strong": 0.08}
 EASES = {"linear": (0, 0, 1, 1), "ease_in_out": (0.42, 0, 0.58, 1), "ease_out": (0, 0, 0.58, 1),
          "ease_in": (0.42, 0, 1, 1), "overshoot": (0.34, 1.56, 0.64, 1)}
 
-_NUM = {"type": "number"}
+_NUMBER_T = {"type": "number"}
 _MOTION = {"type": "object", "additionalProperties": False, "required": ["anchor_x", "anchor_y", "keys"],
-           "properties": {"anchor_x": _NUM, "anchor_y": _NUM, "keys": {"type": "array", "items": {
+           "properties": {"anchor_x": _NUMBER_T, "anchor_y": _NUMBER_T, "keys": {"type": "array", "items": {
                "type": "object", "additionalProperties": False,
                "required": ["t", "dx", "dy", "sx", "sy", "rotate", "opacity", "ease"],
-               "properties": {**{k: _NUM for k in ("t", "dx", "dy", "sx", "sy", "rotate", "opacity")},
+               "properties": {**{k: _NUMBER_T for k in ("t", "dx", "dy", "sx", "sy", "rotate", "opacity")},
                               "ease": {"type": "string", "enum": list(EASES)}}}}}}
-_PAINT = {"fill": {"type": "string"}, "opacity": _NUM, "stroke": {"type": "string"}, "stroke_width": _NUM}
+_PAINT = {"fill": {"type": "string"}, "opacity": _NUMBER_T, "stroke": {"type": "string"}, "stroke_width": _NUMBER_T}
 
 VECTOR_SCHEMA = {
     "type": "object", "additionalProperties": False,
@@ -605,7 +605,7 @@ VECTOR_SCHEMA = {
         "glows": {"type": "array", "items": {
             "type": "object", "additionalProperties": False,
             "required": ["name", "cx", "cy", "rx", "ry", "color", "opacity", "motion"],
-            "properties": {"name": {"type": "string"}, **{k: _NUM for k in ("cx", "cy", "rx", "ry", "opacity")},
+            "properties": {"name": {"type": "string"}, **{k: _NUMBER_T for k in ("cx", "cy", "rx", "ry", "opacity")},
                            "color": {"type": "string"}, "motion": _MOTION}}},
     },
 }
@@ -1061,12 +1061,6 @@ def _cairosvg():
 
 
 @functools.cache
-def _chrome():
-    names = ("google-chrome", "google-chrome-stable", "chromium", "chromium-browser", "chrome", "msedge")
-    cands = [os.environ.get("GPTKIT_CHROME"), "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-             "/Applications/Chromium.app/Contents/MacOS/Chromium",
-             "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"] + [shutil.which(n) for n in names]
-    return next((c for c in cands if c and Path(c).exists()), None)
 
 
 def _renderer_name():
@@ -2778,7 +2772,7 @@ def _procedural(src, kind, count, amt):
 
 # -- outputs
 
-def _lottie_ks(w, h):
+def _lottie_ks_image(w, h):
     return {"o": {"a": 0, "k": 100}, "r": {"a": 0, "k": 0}, "p": {"a": 0, "k": [w / 2, h / 2, 0]},
             "a": {"a": 0, "k": [w / 2, h / 2, 0]}, "s": {"a": 0, "k": [100, 100, 100]}}
 
@@ -2790,11 +2784,11 @@ def _lottie_image(img, i):
             "p": "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()}
 
 
-def lottie_frames(frames, fps, name="gptkit"):
+def lottie_image_sequence(frames, fps, name="gptkit"):
     """Lottie image sequence: each frame is an embedded PNG shown for exactly one Lottie frame."""
     w, h = frames[0].size
     layers = [{"ddd": 0, "ind": i + 1, "ty": 2, "nm": f"frame {i + 1}", "refId": f"img_{i}", "sr": 1, "ip": i,
-               "op": i + 1, "st": 0, "bm": 0, "ks": _lottie_ks(w, h)} for i in range(len(frames))]
+               "op": i + 1, "st": 0, "bm": 0, "ks": _lottie_ks_image(w, h)} for i in range(len(frames))]
     return {"v": "5.7.0", "fr": fps, "ip": 0, "op": len(frames), "w": w, "h": h, "nm": name, "ddd": 0,
             "assets": [_lottie_image(f, i) for i, f in enumerate(frames)], "layers": layers}
 
@@ -2858,7 +2852,7 @@ def _write_anim(out, anim, seq, fps, a, labels=None, lottie=None):
         small[0].save(out / f"{anim}.apng", format="PNG", save_all=True, append_images=small[1:], duration=dur, loop=0)
         wrote.append(f"{anim}.apng")
     if "lottie" in formats:
-        lot = lottie or lottie_frames(small, fps, anim)
+        lot = lottie or lottie_image_sequence(small, fps, anim)
         (out / f"{anim}.json").write_text(json.dumps(lot, separators=(",", ":")))
         (out / "preview.html").write_text(_lottie_html(lot, a.preview_bg))
         wrote += [f"{anim}.json", "preview.html"]
@@ -3135,15 +3129,15 @@ def _subpaths(d):
     return subs
 
 
-def _fmt(v, nd=2):
+def _fmtn(v, nd=2):
     return f"{round(v, nd) + 0:g}"
 
 
 def _d(subs):
     out = []
     for sp in subs:
-        out.append(f"M{_fmt(sp['pts'][0][0])},{_fmt(sp['pts'][0][1])}")
-        out += [s[0] + " ".join(f"{_fmt(p[0])},{_fmt(p[1])}" for p in s[1:]) for s in sp["segs"]]
+        out.append(f"M{_fmtn(sp['pts'][0][0])},{_fmtn(sp['pts'][0][1])}")
+        out += [s[0] + " ".join(f"{_fmtn(p[0])},{_fmtn(p[1])}" for p in s[1:]) for s in sp["segs"]]
         if sp["closed"]:
             out.append("Z")
     return " ".join(out)
@@ -3384,13 +3378,13 @@ def _validate_vec(vec):
     return errs
 
 
-def _vb(vec):
+def _vec_vb(vec):
     return [float(x) for x in re.split(r"[\s,]+", vec["viewBox"].strip())]
 
 
 def _fit_viewbox(vec, margin=0.02):
     """viewBox grown symmetrically so every pose of the animation (plus stroke) stays inside; None if it already fits."""
-    x, y, w, h = _vb(vec)
+    x, y, w, h = _vec_vb(vec)
     rest, pts = [(x, y), (x + w, y + h)], []
     for L in _layers(vec):
         if L["kind"] == "glow":
@@ -3412,7 +3406,7 @@ def _fit_viewbox(vec, margin=0.02):
     hw = max(w / 2, cx - bx0, bx1 - cx)
     hh = max(h / 2, cy - by0, by1 - cy)
     hw, hh = hw * (1 + margin), hh * (1 + margin)
-    return f"{_fmt(cx - hw)} {_fmt(cy - hh)} {_fmt(2 * hw)} {_fmt(2 * hh)}"
+    return f"{_fmtn(cx - hw)} {_fmtn(cy - hh)} {_fmtn(2 * hw)} {_fmtn(2 * hh)}"
 
 
 def _matrix(tf):
@@ -3566,7 +3560,7 @@ def _lottie_ks(L, vb, k, op):
 
 
 def build_lottie(vec, size=512, seconds=1.2, fps=30):
-    vb = _vb(vec)
+    vb = _vec_vb(vec)
     k = size / max(vb[2], vb[3])
     op = round(seconds * fps)
     defs_root = _defs_root(vec)
@@ -3617,7 +3611,7 @@ def _avd_pvh(prop, frames, ind):
     """frames: [(fraction, value, ease into this frame)]."""
     out = [f'{ind}<propertyValuesHolder android:propertyName="{prop}">']
     for f, v, e in frames:
-        head = f'{ind}    <keyframe android:fraction="{_fmt(f, 4)}" android:value="{_fmt(v, 4)}"'
+        head = f'{ind}    <keyframe android:fraction="{_fmtn(f, 4)}" android:value="{_fmtn(v, 4)}"'
         out.append(head + (f">\n{_avd_interp(e, ind + '        ')}\n{ind}    </keyframe>" if e and e != "linear" else " />"))
     return "\n".join(out + [f"{ind}</propertyValuesHolder>"])
 
@@ -3667,10 +3661,10 @@ def _avd_paint(p, defs_root, ind):
             attrs.append(f'android:{attr}="{_color(val)}"')
             return
         linear, s, e, stops = p["_grad"] if "_grad" in p else _gradient(defs_root, ref.group(1))
-        head = (f'android:type="linear" android:startX="{_fmt(s[0])}" android:startY="{_fmt(s[1])}" '
-                f'android:endX="{_fmt(e[0])}" android:endY="{_fmt(e[1])}"' if linear else
-                f'android:type="radial" android:centerX="{_fmt(s[0])}" android:centerY="{_fmt(s[1])}" '
-                f'android:gradientRadius="{_fmt(max(math.dist(s, e), 0.01))}"')
+        head = (f'android:type="linear" android:startX="{_fmtn(s[0])}" android:startY="{_fmtn(s[1])}" '
+                f'android:endX="{_fmtn(e[0])}" android:endY="{_fmtn(e[1])}"' if linear else
+                f'android:type="radial" android:centerX="{_fmtn(s[0])}" android:centerY="{_fmtn(s[1])}" '
+                f'android:gradientRadius="{_fmtn(max(math.dist(s, e), 0.01))}"')
         items = "".join(f'\n{ind}        <item android:offset="{o:g}" android:color="{_color(c, al)}" />' for o, c, al in stops)
         kids.append(f'{ind}<aapt:attr name="android:{attr}">\n{ind}    <gradient {head}>{items}\n{ind}    </gradient>\n{ind}</aapt:attr>')
     if p.get("fill") == "glow":
@@ -3679,14 +3673,14 @@ def _avd_paint(p, defs_root, ind):
         color("fillColor", p["fill"])
     if (p.get("stroke") or "none") != "none" and float(p.get("stroke_width") or 0) > 0:
         color("strokeColor", p["stroke"])
-        attrs.append(f'android:strokeWidth="{_fmt(float(p["stroke_width"]))}"')
+        attrs.append(f'android:strokeWidth="{_fmtn(float(p["stroke_width"]))}"')
         attrs.append(f'android:strokeLineCap="{p.get("cap", "round")}" android:strokeLineJoin="{p.get("join", "round")}"')
     return attrs, kids
 
 
 def build_avd(vec, seconds=1.2, width_dp=48):
     """<animated-vector> with the vector inlined: group transforms, fillAlpha fades and pathData morphs, all looping."""
-    vb = _vb(vec)
+    vb = _vec_vb(vec)
     ms = round(seconds * 1000)
     defs_root = _defs_root(vec)
     safe = lambda s: re.sub(r"\W", "_", s)
@@ -3737,7 +3731,7 @@ def build_avd(vec, seconds=1.2, width_dp=48):
                 fr = _alpha_frames(ks, base, window)
                 v0 = fr[0][1]
                 if v0 < 1:
-                    attrs.append(f'android:{prop}="{_fmt(v0, 4)}"')
+                    attrs.append(f'android:{prop}="{_fmtn(v0, 4)}"')
                 if len({round(f[1], 4) for f in fr}) > 1:
                     fades.append(_avd_pvh(prop, fr, "                "))
             if fades:
@@ -3749,14 +3743,14 @@ def build_avd(vec, seconds=1.2, width_dp=48):
             xml.append(head + tail + (">\n" + "\n".join(kids) + "\n        </path>" if kids else " />"))
         if L["kind"] == "glow" and L["glow"]["ry"] != L["glow"]["rx"]:
             g = L["glow"]
-            xml = [f'        <group android:pivotX="{_fmt(g["cx"])}" android:pivotY="{_fmt(g["cy"])}" '
+            xml = [f'        <group android:pivotX="{_fmtn(g["cx"])}" android:pivotY="{_fmtn(g["cy"])}" '
                    f'android:scaleY="{g["ry"] / g["rx"]:.4g}">'] + xml + ["        </group>"]
         if ks:
             chans = {"translateX": ("dx", 0), "translateY": ("dy", 0), "scaleX": ("sx", 1), "scaleY": ("sy", 1), "rotation": ("rotate", 0)}
-            pvhs, gattrs = [], [f'android:name="{gname}"', f'android:pivotX="{_fmt(ax)}"', f'android:pivotY="{_fmt(ay)}"']
+            pvhs, gattrs = [], [f'android:name="{gname}"', f'android:pivotX="{_fmtn(ax)}"', f'android:pivotY="{_fmtn(ay)}"']
             for prop, (c, rest) in chans.items():
                 if abs(m0[c] - rest) > 1e-6:
-                    gattrs.append(f'android:{prop}="{_fmt(m0[c], 4)}"')
+                    gattrs.append(f'android:{prop}="{_fmtn(m0[c], 4)}"')
                 if len({round(k[c], 5) for k in ks}) > 1:
                     pvhs.append(_avd_pvh(prop, _frames(ks, lambda k, c=c: k[c]), "                "))
             if pvhs:
@@ -3764,11 +3758,11 @@ def build_avd(vec, seconds=1.2, width_dp=48):
             xml = [f'        <group {" ".join(gattrs)}>'] + ["    " + ln for x in xml for ln in x.split("\n")] + ["        </group>"]
         body += xml
     if vb[0] or vb[1]:
-        body = [f'        <group android:translateX="{_fmt(-vb[0])}" android:translateY="{_fmt(-vb[1])}">'] + \
+        body = [f'        <group android:translateX="{_fmtn(-vb[0])}" android:translateY="{_fmtn(-vb[1])}">'] + \
                ["    " + ln for x in body for ln in x.split("\n")] + ["        </group>"]
     hdp = width_dp * vb[3] / vb[2]
-    vector = (f'    <aapt:attr name="android:drawable">\n        <vector android:width="{_fmt(width_dp)}dp" android:height="{_fmt(hdp)}dp"\n'
-              f'            android:viewportWidth="{_fmt(vb[2])}" android:viewportHeight="{_fmt(vb[3])}">\n' +
+    vector = (f'    <aapt:attr name="android:drawable">\n        <vector android:width="{_fmtn(width_dp)}dp" android:height="{_fmtn(hdp)}dp"\n'
+              f'            android:viewportWidth="{_fmtn(vb[2])}" android:viewportHeight="{_fmtn(vb[3])}">\n' +
               "\n".join("    " + ln for x in body for ln in x.split("\n")) + "\n        </vector>\n    </aapt:attr>")
     return ('<?xml version="1.0" encoding="utf-8"?>\n<animated-vector xmlns:android="http://schemas.android.com/apk/res/android"\n'
             '    xmlns:aapt="http://schemas.android.com/aapt">\n' + vector + "\n" + "\n".join(targets) + "\n</animated-vector>\n")
@@ -3785,7 +3779,8 @@ def _chrome():
         return None
     for c in (os.environ.get("GPTKIT_CHROME"), "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
               "/Applications/Chromium.app/Contents/MacOS/Chromium",
-              *(shutil.which(n) for n in ("google-chrome", "google-chrome-stable", "chromium", "chromium-browser", "chrome"))):
+              "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+              *(shutil.which(n) for n in ("google-chrome", "google-chrome-stable", "chromium", "chromium-browser", "chrome", "msedge"))):
         if c and Path(c).exists():
             return c
     return None
@@ -3835,7 +3830,7 @@ def _chrome_shot(html, out, w, h):
     return _rgba(out) if out.exists() else None
 
 
-def lottie_frames(lot, times, out_png, T=256):
+def render_lottie(lot, times, out_png, T=256):
     """Render the Lottie at loop fractions `times` with lottie-web; returns RGBA frames (transparent) or None."""
     js = _lottie_js()
     if not js:
@@ -3954,7 +3949,7 @@ def _merge_imported(vec, imported):
 def _review_sheet(vec, lot, src, out, bg, n=8):
     """keys_review.png: the source, then n evenly spaced frames of the real Lottie (lottie-web) or SVG fallback."""
     times = [i / n for i in range(n)]
-    frames = lottie_frames(lot, times, out / ".strip.png")
+    frames = render_lottie(lot, times, out / ".strip.png")
     (out / ".strip.png").unlink(missing_ok=True)
     how = "lottie-web"
     if frames is None:
@@ -4057,7 +4052,7 @@ def cmd_vectorize(a):
     lot = build_lottie(built, a.size, a.seconds, a.fps)
     (out / f"{a.name}.json").write_text(json.dumps(lot, separators=(",", ":")))
     dp = a.dp or ((asset or {}).get("dp") or {}).get("w") or 48
-    dp = round(dp * _vb(built)[2] / _vb(vec)[2], 1)
+    dp = round(dp * _vec_vb(built)[2] / _vec_vb(vec)[2], 1)
     (out / f"{a.name}_avd.xml").write_text(build_avd(built, a.seconds, dp))
     (out / "preview.html").write_text(
         "<!doctype html><meta charset=utf-8><body style='margin:0;background:" + a.preview_bg + "'>"
