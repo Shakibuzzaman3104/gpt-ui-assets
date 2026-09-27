@@ -7880,6 +7880,11 @@ def cmd_fonts(a):
         ranking = sorted(((fam, sum(sc * ar for sc, ar in v) / sum(ar for _, ar in v)) for fam, v in fam_score.items()
                           if len(v) == n_ok), key=lambda t: -t[1])
         if not ranking:
+            best = max((per[m["role"]][0][2]["similarity"] for m in members if per[m["role"]]), default=0)
+            print(f"  ! no reliable match (best similarity {best:.2f} < 0.45): likely custom lettering or a family outside "
+                  "the shortlist; ship it as an SVG/VectorDrawable, or pass --family/--extra. Styles: "
+                  + ", ".join(m["role"] for m in members))
+            skipped += [m["role"] for m in members]
             continue
         named = [f["family"] for f in _named_families(guess)]
         best = ranking[0][1]
