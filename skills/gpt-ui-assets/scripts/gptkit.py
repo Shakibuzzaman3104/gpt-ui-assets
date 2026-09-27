@@ -335,29 +335,64 @@ corner rounding, colours). Hard rules so it converts to Android VectorDrawable:
 - Square viewBox (e.g. "0 0 24 24") for icons unless the graphic is clearly non-square.
 - Keep stroke-based icons stroke-based (stroke, stroke-width, stroke-linecap, stroke-linejoin); fill="none" on them."""
 
-VECTOR_PROMPT = """Vectorise this asset from an APPROVED design for a looping Lottie animation. The MOVING part is:
-{moving}. The STATIC part is: {static}. Rules:
+VECTOR_PROMPT = """Vectorise this asset from an APPROVED design for a looping vector animation (Lottie and Android
+AnimatedVectorDrawable). The MOVING part is: {moving}. The STATIC part is: {static}. Motion: {motion}, one loop is
+{seconds}s. {strength} Rules:
 - Every path "d" uses ONLY absolute M, L, C and Z commands (no H/V/S/Q/A, no relative commands).
-- For each animated layer, all {k} keyframes must have the IDENTICAL command sequence (same count and order of
-  M/L/C/Z) so they can be morphed; together they form a seamless, natural loop ({motion}).
-- fill is a hex colour or url(#id) referencing a gradient defined in "defs" (gradientUnits="userSpaceOnUse").
-- Match the design's silhouette, proportions and colours; layer_order lists layer names bottom to top."""
+- Shape change (flame, liquid, cloth, smoke): an animated layer with {k} keyframes that all have the IDENTICAL command
+  sequence (same count and order of M/L/C/Z) and morph into each other. The loop runs back from the last keyframe to
+  the first, so never repeat the first keyframe at the end.
+- Rigid motion (bounce, sway, tilt, spin, pulse, pop, fade, expanding rings): the layer's "motion". anchor_x/anchor_y
+  is the pivot in viewBox units. keys: t (0..1 of the loop, first key t=0), dx/dy offset, sx/sy scale factor (1 = rest),
+  rotate (degrees, clockwise), opacity (multiplier 0..1), ease (curve towards the next key). If the last key is before
+  t=1 the loop eases back to the first key. keys: [] means the layer does not move. A layer can morph AND move.
+- glows: soft radial halos (centre, radii, colour, peak opacity) drawn as a gradient fading to transparent. Add one for
+  every glow or light in the design (behind a flame, around a lamp) and animate its opacity/scale; otherwise [].
+- Several copies of a moving part (ripples, sparks, notes) are separate layers with time-shifted keys.
+- fill is a hex colour, url(#id) of a gradient in "defs" (gradientUnits="userSpaceOnUse", no gradientTransform) or
+  "none"; stroke is a hex colour or "none", stroke_width in viewBox units (0 without stroke).
+- Match the design's silhouette, proportions and colours. layer_order lists every layer and glow, bottom to top."""
+
+MOTION_STRENGTH = {
+    "subtle": "Keep the motion calm: moving parts shift or deform by about 2-4% of their size.",
+    "normal": "The motion must read clearly at icon size: moving parts shift, deform or scale by about 6-12% of their size.",
+    "strong": "Make the motion pronounced and lively: moving parts shift, deform or scale by 12-25% of their size "
+              "(flame tips sway widely, pulses scale by 20%).",
+}
+MOTION_MIN = {"subtle": 0.015, "normal": 0.04, "strong": 0.08}
+
+EASES = {"linear": (0, 0, 1, 1), "ease_in_out": (0.42, 0, 0.58, 1), "ease_out": (0, 0, 0.58, 1),
+         "ease_in": (0.42, 0, 1, 1), "overshoot": (0.34, 1.56, 0.64, 1)}
+
+_NUM = {"type": "number"}
+_MOTION = {"type": "object", "additionalProperties": False, "required": ["anchor_x", "anchor_y", "keys"],
+           "properties": {"anchor_x": _NUM, "anchor_y": _NUM, "keys": {"type": "array", "items": {
+               "type": "object", "additionalProperties": False,
+               "required": ["t", "dx", "dy", "sx", "sy", "rotate", "opacity", "ease"],
+               "properties": {**{k: _NUM for k in ("t", "dx", "dy", "sx", "sy", "rotate", "opacity")},
+                              "ease": {"type": "string", "enum": list(EASES)}}}}}}
+_PAINT = {"fill": {"type": "string"}, "opacity": _NUM, "stroke": {"type": "string"}, "stroke_width": _NUM}
 
 VECTOR_SCHEMA = {
     "type": "object", "additionalProperties": False,
-    "required": ["viewBox", "defs", "static_layers", "animated_layers", "layer_order"],
+    "required": ["viewBox", "defs", "static_layers", "animated_layers", "glows", "layer_order"],
     "properties": {
         "viewBox": {"type": "string"}, "defs": {"type": "string"},
         "layer_order": {"type": "array", "items": {"type": "string"}},
         "static_layers": {"type": "array", "items": {
-            "type": "object", "additionalProperties": False, "required": ["name", "paths"],
-            "properties": {"name": {"type": "string"}, "paths": {"type": "array", "items": {
-                "type": "object", "additionalProperties": False, "required": ["d", "fill", "opacity"],
-                "properties": {"d": {"type": "string"}, "fill": {"type": "string"}, "opacity": {"type": "number"}}}}}}},
+            "type": "object", "additionalProperties": False, "required": ["name", "paths", "motion"],
+            "properties": {"name": {"type": "string"}, "motion": _MOTION, "paths": {"type": "array", "items": {
+                "type": "object", "additionalProperties": False, "required": ["d", *_PAINT],
+                "properties": {"d": {"type": "string"}, **_PAINT}}}}}},
         "animated_layers": {"type": "array", "items": {
-            "type": "object", "additionalProperties": False, "required": ["name", "fill", "opacity", "keyframes"],
-            "properties": {"name": {"type": "string"}, "fill": {"type": "string"}, "opacity": {"type": "number"},
+            "type": "object", "additionalProperties": False, "required": ["name", *_PAINT, "keyframes", "motion"],
+            "properties": {"name": {"type": "string"}, **_PAINT, "motion": _MOTION,
                            "keyframes": {"type": "array", "items": {"type": "string"}}}}},
+        "glows": {"type": "array", "items": {
+            "type": "object", "additionalProperties": False,
+            "required": ["name", "cx", "cy", "rx", "ry", "color", "opacity", "motion"],
+            "properties": {"name": {"type": "string"}, **{k: _NUM for k in ("cx", "cy", "rx", "ry", "opacity")},
+                           "color": {"type": "string"}, "motion": _MOTION}}},
     },
 }
 
@@ -1090,42 +1125,482 @@ def cmd_frames(a):
     print(f"{len(seq)} frames -> {out}  (preview.gif, frames_review.png, {a.name}_anim.xml)")
 
 
-# ---- vector keyframes + Lottie
+# ---- vector keyframes + Lottie + AnimatedVectorDrawable
 
-_TOK = re.compile(r"[MLCZmlczHhVvSsQqTtAa]|-?(?:\d+\.?\d*|\.\d+)(?:e-?\d+)?")
+_TOK = re.compile(r"[MLCZmlczHhVvSsQqTtAa]|[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?")
+
+
+def _arc(p0, rx, ry, phi, fa, fs, p1, n=4):
+    """SVG endpoint arc -> n cubic segments (fixed n keeps morph structures aligned)."""
+    (x1, y1), (x2, y2) = p0, p1
+    if (x1, y1) == (x2, y2):
+        return []
+    rx, ry = abs(rx), abs(ry)
+    if not rx or not ry:
+        return [("L", p1)]
+    cp, sp = math.cos(math.radians(phi)), math.sin(math.radians(phi))
+    dx, dy = (x1 - x2) / 2, (y1 - y2) / 2
+    xp, yp = cp * dx + sp * dy, -sp * dx + cp * dy
+    lam = xp * xp / (rx * rx) + yp * yp / (ry * ry)
+    if lam > 1:
+        rx, ry = rx * math.sqrt(lam), ry * math.sqrt(lam)
+    num = rx * rx * ry * ry - rx * rx * yp * yp - ry * ry * xp * xp
+    co = math.sqrt(max(0.0, num / (rx * rx * yp * yp + ry * ry * xp * xp))) * (-1 if fa == fs else 1)
+    cxp, cyp = co * rx * yp / ry, -co * ry * xp / rx
+    cx, cy = cp * cxp - sp * cyp + (x1 + x2) / 2, sp * cxp + cp * cyp + (y1 + y2) / 2
+    ang = lambda ux, uy, vx, vy: math.atan2(ux * vy - uy * vx, ux * vx + uy * vy)
+    t1 = ang(1, 0, (xp - cxp) / rx, (yp - cyp) / ry)
+    dt = ang((xp - cxp) / rx, (yp - cyp) / ry, (-xp - cxp) / rx, (-yp - cyp) / ry)
+    if not fs and dt > 0:
+        dt -= 2 * math.pi
+    elif fs and dt < 0:
+        dt += 2 * math.pi
+    step = dt / n
+    k = 4 / 3 * math.tan(step / 4)
+    pt = lambda u, v: (cx + rx * u * cp - ry * v * sp, cy + rx * u * sp + ry * v * cp)
+    segs = []
+    for j in range(n):
+        a1, a2 = t1 + j * step, t1 + (j + 1) * step
+        c1, s1, c2, s2 = math.cos(a1), math.sin(a1), math.cos(a2), math.sin(a2)
+        segs.append(("C", pt(c1 - k * s1, s1 + k * c1), pt(c2 + k * s2, s2 - k * c2), pt(c2, s2)))
+    segs[-1] = segs[-1][:3] + (p1,)
+    return segs
 
 
 def _subpaths(d):
-    toks = _TOK.findall(d)
-    bad = {t for t in toks if t.isalpha() and t not in "MLCZ"}
-    if bad:
-        raise ValueError(f"unsupported path commands {sorted(bad)}")
-    subs, cur, i, cmd = [], None, 0, None
-    while i < len(toks):
+    """Any SVG path data -> subpaths of absolute L/C segments: [{pts: [start], segs, closed}]."""
+    toks = _TOK.findall(d or "")
+    subs, cur, i = [], None, 0
+    x = y = sx = sy = 0.0
+    cmd, prev, ctrl = None, None, None
+
+    def take(n):
+        nonlocal i
+        if i + n > len(toks) or any(t.isalpha() for t in toks[i:i + n]):
+            raise ValueError(f"truncated path data near token {i}")
+        v = [float(t) for t in toks[i:i + n]]
+        i += n
+        return v
+
+    def flag():
+        nonlocal i
         t = toks[i]
-        if t.isalpha():
-            cmd = t
+        if len(t) > 1 and t[0] in "01" and not t.startswith(("0.", "1.")):
+            toks[i] = t[1:]
+            return int(t[0])
+        i += 1
+        return int(float(t))
+
+    def add(s):
+        nonlocal cur
+        if cur is None or cur["closed"]:
+            cur = {"pts": [(sx, sy)], "segs": [], "closed": False}
+            subs.append(cur)
+        cur["segs"].append(s)
+
+    while i < len(toks):
+        if toks[i].isalpha():
+            cmd = toks[i]
             i += 1
-            if cmd == "Z":
+            if cmd in "Zz":
                 if cur:
                     cur["closed"] = True
+                x, y, prev = sx, sy, cmd
                 continue
-        if cmd == "M":
-            cur = {"pts": [(float(toks[i]), float(toks[i + 1]))], "segs": [], "closed": False}
+        elif cmd is None or cmd in "Zz":
+            raise ValueError("path data must start with a command")
+        rel = cmd.islower()
+        ox, oy = (x, y) if rel else (0.0, 0.0)
+        c = cmd.upper()
+        if c == "M":
+            x, y = take(2)
+            x, y = x + ox, y + oy
+            sx, sy = x, y
+            cur = {"pts": [(x, y)], "segs": [], "closed": False}
             subs.append(cur)
-            i += 2
-            cmd = "L"
-        elif cmd == "L":
-            cur["segs"].append(("L", (float(toks[i]), float(toks[i + 1]))))
-            i += 2
-        elif cmd == "C":
-            v = [float(x) for x in toks[i:i + 6]]
-            cur["segs"].append(("C", (v[0], v[1]), (v[2], v[3]), (v[4], v[5])))
-            i += 6
+            cmd = "l" if rel else "L"
+        elif c in "LHV":
+            if c == "L":
+                nx, ny = take(2)
+                nx, ny = nx + ox, ny + oy
+            elif c == "H":
+                nx, ny = take(1)[0] + ox, y
+            else:
+                nx, ny = x, take(1)[0] + oy
+            add(("L", (nx, ny)))
+            x, y = nx, ny
+        elif c in "CS":
+            if c == "C":
+                v = take(6)
+                c1 = (v[0] + ox, v[1] + oy)
+                v = v[2:]
+            else:
+                v = take(4)
+                c1 = (2 * x - ctrl[0], 2 * y - ctrl[1]) if prev and prev.upper() in "CS" else (x, y)
+            c2, p = (v[0] + ox, v[1] + oy), (v[2] + ox, v[3] + oy)
+            add(("C", c1, c2, p))
+            ctrl, (x, y) = c2, p
+        elif c in "QT":
+            if c == "Q":
+                v = take(4)
+                q, p = (v[0] + ox, v[1] + oy), (v[2] + ox, v[3] + oy)
+            else:
+                v = take(2)
+                q = (2 * x - ctrl[0], 2 * y - ctrl[1]) if prev and prev.upper() in "QT" else (x, y)
+                p = (v[0] + ox, v[1] + oy)
+            add(("C", (x + 2 / 3 * (q[0] - x), y + 2 / 3 * (q[1] - y)),
+                 (p[0] + 2 / 3 * (q[0] - p[0]), p[1] + 2 / 3 * (q[1] - p[1])), p))
+            ctrl, (x, y) = q, p
+        elif c == "A":
+            rx, ry, phi = take(3)
+            fa, fs = flag(), flag()
+            p = tuple(v + o for v, o in zip(take(2), (ox, oy)))
+            for s in _arc((x, y), rx, ry, phi, fa, fs, p):
+                add(s)
+            x, y = p
+        prev = cmd
     return subs
 
 
-def _lottie_shape(sp):
+def _fmt(v, nd=2):
+    return f"{round(v, nd) + 0:g}"
+
+
+def _d(subs):
+    out = []
+    for sp in subs:
+        out.append(f"M{_fmt(sp['pts'][0][0])},{_fmt(sp['pts'][0][1])}")
+        out += [s[0] + " ".join(f"{_fmt(p[0])},{_fmt(p[1])}" for p in s[1:]) for s in sp["segs"]]
+        if sp["closed"]:
+            out.append("Z")
+    return " ".join(out)
+
+
+def _points(subs):
+    return [p for sp in subs for p in sp["pts"][:1] + [q for s in sp["segs"] for q in s[1:]]]
+
+
+def _as_cubic(p0, s):
+    if s[0] == "C":
+        return s
+    (x0, y0), (x1, y1) = p0, s[1]
+    return ("C", (x0 + (x1 - x0) / 3, y0 + (y1 - y0) / 3), (x0 + 2 * (x1 - x0) / 3, y0 + 2 * (y1 - y0) / 3), s[1])
+
+
+def _align_keys(keys):
+    """Make parsed keyframes morph-compatible: same subpath/segment counts required, L promoted to C where they differ."""
+    shape = lambda subs: [(len(sp["segs"]), sp["closed"]) for sp in subs]
+    if any(shape(k) != shape(keys[0]) for k in keys):
+        raise ValueError("keyframes differ in command sequence (subpath or segment counts)")
+    for si in range(len(keys[0])):
+        for j in range(len(keys[0][si]["segs"])):
+            if len({k[si]["segs"][j][0] for k in keys}) > 1:
+                for k in keys:
+                    sp = k[si]
+                    p0 = sp["segs"][j - 1][-1] if j else sp["pts"][0]
+                    sp["segs"][j] = _as_cubic(p0, sp["segs"][j])
+    return keys
+
+
+def _bbox(pts):
+    xs, ys = [p[0] for p in pts], [p[1] for p in pts]
+    return min(xs), min(ys), max(xs), max(ys)
+
+
+def _ellipse(cx, cy, rx, ry):
+    k = 0.5522847498
+    return {"pts": [(cx + rx, cy)], "closed": True, "segs": [
+        ("C", (cx + rx, cy + k * ry), (cx + k * rx, cy + ry), (cx, cy + ry)),
+        ("C", (cx - k * rx, cy + ry), (cx - rx, cy + k * ry), (cx - rx, cy)),
+        ("C", (cx - rx, cy - k * ry), (cx - k * rx, cy - ry), (cx, cy - ry)),
+        ("C", (cx + k * rx, cy - ry), (cx + rx, cy - k * ry), (cx + rx, cy))]}
+
+
+def _ease(name, p):
+    x1, y1, x2, y2 = EASES.get(name, EASES["ease_in_out"])
+    bz = lambda u, a, b: 3 * (1 - u) ** 2 * u * a + 3 * (1 - u) * u * u * b + u ** 3
+    lo, hi = 0.0, 1.0
+    for _ in range(40):
+        u = (lo + hi) / 2
+        lo, hi = (u, hi) if bz(u, x1, x2) < p else (lo, u)
+    return bz((lo + hi) / 2, y1, y2)
+
+
+CHANNELS = ("dx", "dy", "sx", "sy", "rotate", "opacity")
+REST = {"dx": 0.0, "dy": 0.0, "sx": 1.0, "sy": 1.0, "rotate": 0.0, "opacity": 1.0}
+
+
+def _keys(motion):
+    """Motion keys sorted into [0, 1] and closed into a loop (back to the first key unless a t=1 key exists)."""
+    ks = sorted(({**REST, "ease": "ease_in_out", **k} for k in (motion or {}).get("keys") or []), key=lambda k: k["t"])
+    if not ks:
+        return []
+    for k in ks:
+        k["t"] = min(1.0, max(0.0, float(k["t"])))
+        k["opacity"] = min(1.0, max(0.0, float(k["opacity"])))
+    if ks[0]["t"] > 0:
+        ks.insert(0, {**(ks[-1] if ks[-1]["t"] == 1 else ks[0]), "t": 0.0})
+    if ks[-1]["t"] < 1:
+        ks.append({**ks[0], "t": 1.0})
+    return ks
+
+
+def _motion_at(ks, t):
+    if not ks:
+        return dict(REST)
+    for a, b in zip(ks, ks[1:]):
+        if a["t"] <= t <= b["t"]:
+            f = 0.0 if b["t"] == a["t"] else (t - a["t"]) / (b["t"] - a["t"])
+            m = {c: a[c] + (b[c] - a[c]) * _ease(a["ease"], f) for c in CHANNELS}
+            m["opacity"] = a["opacity"] + (b["opacity"] - a["opacity"]) * _ease(_fade_keys([a])[0]["ease"], f)
+            return m
+    return {c: ks[-1][c] for c in CHANNELS}
+
+
+def _xf(pts, m, ax, ay):
+    c, s = math.cos(math.radians(m["rotate"])), math.sin(math.radians(m["rotate"]))
+    out = []
+    for x, y in pts:
+        u, v = (x - ax) * m["sx"], (y - ay) * m["sy"]
+        out.append((ax + m["dx"] + u * c - v * s, ay + m["dy"] + u * s + v * c))
+    return out
+
+
+def _morph_at(keys, t):
+    """Parsed keyframes at loop time t (ease_in_out between evenly spaced keys, wrapping to the first)."""
+    n = len(keys)
+    f = (t % 1.0) * n
+    j = int(f) % n
+    p = _ease("ease_in_out", f - int(f))
+    a, b = keys[j], keys[(j + 1) % n]
+    mix = lambda P, Q: (P[0] + (Q[0] - P[0]) * p, P[1] + (Q[1] - P[1]) * p)
+    return [{"pts": [mix(sa["pts"][0], sb["pts"][0])], "closed": sa["closed"],
+             "segs": [(x[0],) + tuple(mix(P, Q) for P, Q in zip(x[1:], y[1:])) for x, y in zip(sa["segs"], sb["segs"])]}
+            for sa, sb in zip(a, b)]
+
+
+def _layers(vec):
+    """Normalised layers bottom to top: {name, kind, paths: [(subs, paint)] or keys, motion keys, anchor}."""
+    out = {}
+    for sl in vec.get("static_layers", []):
+        out[sl["name"]] = {"name": sl["name"], "kind": "static", "motion": sl.get("motion"),
+                           "paths": [(_subpaths(p["d"]), p) for p in sl["paths"]]}
+    for al in vec.get("animated_layers", []):
+        out[al["name"]] = {"name": al["name"], "kind": "morph", "motion": al.get("motion"), "paint": al,
+                           "keys": _align_keys([_subpaths(k) for k in al["keyframes"]])}
+    for g in vec.get("glows", []):
+        out[g["name"]] = {"name": g["name"], "kind": "glow", "motion": g.get("motion"), "glow": g,
+                          "paths": [([_ellipse(g["cx"], g["cy"], g["rx"], g["rx"])], {"fill": "glow"})]}
+    order = [n for n in vec.get("layer_order", []) if n in out]
+    rest = [n for n in out if n not in order]
+    order = [n for n in rest if out[n]["kind"] == "glow"] + order + [n for n in rest if out[n]["kind"] != "glow"]
+    res = []
+    for n in order:
+        L = out[n]
+        L["ks"] = _keys(L["motion"])
+        L["anchor"] = (float((L["motion"] or {}).get("anchor_x", 0)), float((L["motion"] or {}).get("anchor_y", 0)))
+        res.append(L)
+    return res
+
+
+def _curve_pts(subs, n=6):
+    out = []
+    for sp in subs:
+        p0 = sp["pts"][0]
+        out.append(p0)
+        for s in sp["segs"]:
+            if s[0] == "C":
+                c1, c2, p1 = s[1:]
+                out += [tuple((1 - u) ** 3 * p0[k] + 3 * (1 - u) ** 2 * u * c1[k] + 3 * (1 - u) * u * u * c2[k] + u ** 3 * p1[k]
+                              for k in (0, 1)) for u in (i / n for i in range(1, n + 1))]
+            else:
+                out.append(s[1])
+            p0 = s[-1]
+    return out
+
+
+def _layer_pts(L, t, curve=False, moving=True):
+    """The layer's points at loop time t (control points, or points on the curves with curve=True)."""
+    pick = _curve_pts if curve else _points
+    if L["kind"] == "morph":
+        pts = pick(_morph_at(L["keys"], t) if moving else L["keys"][0])
+    elif L["kind"] == "glow":
+        g = L["glow"]
+        pts = pick([_ellipse(g["cx"], g["cy"], g["rx"], g["ry"])])
+    else:
+        pts = [p for subs, _ in L["paths"] for p in pick(subs)]
+    return _xf(pts, _motion_at(L["ks"], t), *L["anchor"]) if L["ks"] and moving else pts
+
+
+def _times(L, n=48):
+    ts = {i / n for i in range(n)} | {k["t"] for k in L["ks"] if k["t"] < 1}
+    if L["kind"] == "morph":
+        ts |= {j / len(L["keys"]) for j in range(len(L["keys"]))}
+    return sorted(ts)
+
+
+def motion_report(vec):
+    """Per layer: 'move' = max mean point displacement from the t=0 pose / the layer's size; 'fade' = opacity range."""
+    rep = {}
+    for L in _layers(vec):
+        if L["kind"] != "morph" and not L["ks"]:
+            continue
+        p0 = _layer_pts(L, 0.0)
+        x0, y0, x1, y1 = _bbox(p0)
+        size = max(math.hypot(x1 - x0, y1 - y0), 1e-6)
+        move = max(sum(math.hypot(a[0] - b[0], a[1] - b[1]) for a, b in zip(_layer_pts(L, t), p0)) / len(p0)
+                   for t in _times(L)) / size
+        ops = [_motion_at(L["ks"], t)["opacity"] for t in _times(L)] if L["ks"] else [1.0]
+        rep[L["name"]] = {"kind": L["kind"], "move": round(move, 4), "fade": round(max(ops) - min(ops), 3)}
+    moving = [r["move"] for r in rep.values() if r["kind"] != "glow"]
+    return {"layers": rep, "motion": round(sum(moving) / len(moving), 4) if moving else None}
+
+
+def _normalize_vec(vec):
+    """Drop a closing keyframe that repeats the first (it stalls the loop) and store canonical path data."""
+    for al in vec.get("animated_layers", []):
+        keys = _align_keys([_subpaths(k) for k in al["keyframes"]])
+        if len(keys) > 2:
+            a, b = _points(keys[0]), _points(keys[-1])
+            x0, y0, x1, y1 = _bbox(a)
+            if max(math.hypot(p[0] - q[0], p[1] - q[1]) for p, q in zip(a, b)) < 0.005 * math.hypot(x1 - x0, y1 - y0):
+                keys = keys[:-1]
+        al["keyframes"] = [_d(k) for k in keys]
+    return vec
+
+
+def _validate_vec(vec):
+    errs = []
+    ids = set(re.findall(r'\bid="([^"]+)"', vec.get("defs", "")))
+    names = []
+
+    def paint(where, p):
+        for k in ("fill", "stroke"):
+            ref = re.match(r"url\(#([^)]+)\)", p.get(k) or "")
+            if ref and ref.group(1) not in ids:
+                errs.append(f"{where}: {k} references missing gradient #{ref.group(1)}")
+            elif not ref and (p.get(k) or "none") != "none" and not re.fullmatch(r"#[0-9a-fA-F]{3,8}", p[k]):
+                errs.append(f"{where}: {k} {p[k]!r} is not a hex colour, url(#id) or none")
+    for sl in vec.get("static_layers", []):
+        names.append(sl["name"])
+        if not sl["paths"]:
+            errs.append(f"static {sl['name']}: no paths")
+        for p in sl["paths"]:
+            try:
+                _subpaths(p["d"])
+            except (ValueError, IndexError, TypeError) as e:
+                errs.append(f"static {sl['name']}: {e}")
+            paint(f"static {sl['name']}", p)
+    for al in vec.get("animated_layers", []):
+        names.append(al["name"])
+        try:
+            if len(al["keyframes"]) < 2:
+                errs.append(f"animated {al['name']}: needs at least 2 keyframes")
+            _align_keys([_subpaths(k) for k in al["keyframes"]])
+        except (ValueError, IndexError, TypeError) as e:
+            errs.append(f"animated {al['name']}: {e}")
+        paint(f"animated {al['name']}", al)
+    for g in vec.get("glows", []):
+        names.append(g["name"])
+        if g["rx"] <= 0 or g["ry"] <= 0:
+            errs.append(f"glow {g['name']}: rx/ry must be > 0")
+        if not re.fullmatch(r"#[0-9a-fA-F]{3,8}", g["color"]):
+            errs.append(f"glow {g['name']}: color must be a hex colour")
+    if len(set(names)) != len(names):
+        errs.append("layer names must be unique")
+    return errs
+
+
+def _vb(vec):
+    return [float(x) for x in re.split(r"[\s,]+", vec["viewBox"].strip())]
+
+
+def _fit_viewbox(vec, margin=0.02):
+    """viewBox grown symmetrically so every pose of the animation (plus stroke) stays inside; None if it already fits."""
+    x, y, w, h = _vb(vec)
+    rest, pts = [(x, y), (x + w, y + h)], []
+    for L in _layers(vec):
+        if L["kind"] == "glow":
+            continue
+        sw = max([float(p.get("stroke_width") or 0) for _, p in L.get("paths", [])] +
+                 [float(L.get("paint", {}).get("stroke_width") or 0)]) / 2
+        bx0, by0, bx1, by1 = _bbox(_layer_pts(L, 0.0, True, False))
+        rest += [(bx0 - sw, by0 - sw), (bx1 + sw, by1 + sw)]
+        for t in _times(L, 24) if (L["ks"] or L["kind"] == "morph") else []:
+            bx0, by0, bx1, by1 = _bbox(_layer_pts(L, t, True))
+            pts += [(bx0 - sw, by0 - sw), (bx1 + sw, by1 + sw)]
+    if not pts:
+        return None
+    rx0, ry0, rx1, ry1 = _bbox(rest)
+    bx0, by0, bx1, by1 = _bbox(pts)
+    if bx0 >= rx0 and by0 >= ry0 and bx1 <= rx1 and by1 <= ry1:
+        return None
+    cx, cy = x + w / 2, y + h / 2
+    hw = max(w / 2, cx - bx0, bx1 - cx)
+    hh = max(h / 2, cy - by0, by1 - cy)
+    hw, hh = hw * (1 + margin), hh * (1 + margin)
+    return f"{_fmt(cx - hw)} {_fmt(cy - hh)} {_fmt(2 * hw)} {_fmt(2 * hh)}"
+
+
+def _matrix(tf):
+    """SVG transform list -> (a, b, c, d, e, f)."""
+    m = (1.0, 0.0, 0.0, 1.0, 0.0, 0.0)
+    mul = lambda p, q: (p[0] * q[0] + p[2] * q[1], p[1] * q[0] + p[3] * q[1], p[0] * q[2] + p[2] * q[3],
+                        p[1] * q[2] + p[3] * q[3], p[0] * q[4] + p[2] * q[5] + p[4], p[1] * q[4] + p[3] * q[5] + p[5])
+    for fn, args in re.findall(r"(\w+)\s*\(([^)]*)\)", tf or ""):
+        v = [float(n) for n in re.findall(r"[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?", args)]
+        if fn == "matrix" and len(v) == 6:
+            q = tuple(v)
+        elif fn == "translate":
+            q = (1, 0, 0, 1, v[0], v[1] if len(v) > 1 else 0)
+        elif fn == "scale":
+            q = (v[0], 0, 0, v[1] if len(v) > 1 else v[0], 0, 0)
+        elif fn == "rotate":
+            r = math.radians(v[0])
+            cx, cy = (v[1], v[2]) if len(v) > 2 else (0, 0)
+            q = mul(mul((1, 0, 0, 1, cx, cy), (math.cos(r), math.sin(r), -math.sin(r), math.cos(r), 0, 0)), (1, 0, 0, 1, -cx, -cy))
+        else:
+            continue
+        m = mul(m, q)
+    return m
+
+
+def _defs_root(vec):
+    defs = vec.get("defs", "") or ""
+    return ET.fromstring(f'<svg xmlns="http://www.w3.org/2000/svg">{defs if "<defs" in defs else f"<defs>{defs}</defs>"}</svg>')
+
+
+def _gradient(defs_root, gid):
+    """(linear, start, end, [(offset, hex, alpha)]) with any gradientTransform baked in (radius scaled by sqrt|det|)."""
+    gel = next((e for e in defs_root.iter() if e.get("id") == gid), None)
+    if gel is None:
+        raise ValueError(f"gradient {gid} not found in defs")
+    stops = []
+    for s in gel:
+        if s.tag.replace(SVG_NS, "") != "stop":
+            continue
+        style = dict(kv.split(":", 1) for kv in (s.get("style") or "").replace(" ", "").split(";") if ":" in kv)
+        off = s.get("offset", "0")
+        off = _num(off) / 100 if off.strip().endswith("%") else _num(off)
+        stops.append((min(1.0, max(0.0, off)), s.get("stop-color") or style.get("stop-color", "#000000"),
+                      _num(s.get("stop-opacity") or style.get("stop-opacity"), 1.0)))
+    a, b, c, d, e, f = _matrix(gel.get("gradientTransform"))
+    ap = lambda x, y: [a * x + c * y + e, b * x + d * y + f]
+    if gel.tag.endswith("linearGradient"):
+        return True, ap(_num(gel.get("x1")), _num(gel.get("y1"))), ap(_num(gel.get("x2")), _num(gel.get("y2"))), stops
+    s = ap(_num(gel.get("cx")), _num(gel.get("cy")))
+    r = _num(gel.get("r")) * math.sqrt(abs(a * d - b * c))
+    return False, s, [s[0] + r, s[1]], stops
+
+
+GLOW_STOPS = ((0, 1.0), (0.25, 0.8), (0.5, 0.42), (0.75, 0.14), (1, 0.0))
+
+
+def _glow_grad(g):
+    return False, [g["cx"], g["cy"]], [g["cx"] + g["rx"], g["cy"]], [(o, g["color"], al) for o, al in GLOW_STOPS]
+
+
+def _lottie_shape(sp, drop_last=None):
     v = [sp["pts"][0]]
     ins, outs = [[0, 0]], [[0, 0]]
     for s in sp["segs"]:
@@ -1140,7 +1615,9 @@ def _lottie_shape(sp):
             v.append(p1)
             ins.append([c2[0] - p1[0], c2[1] - p1[1]])
             outs.append([0, 0])
-    if sp["closed"] and len(v) > 1 and abs(v[-1][0] - v[0][0]) < 1e-3 and abs(v[-1][1] - v[0][1]) < 1e-3:
+    if drop_last is None:
+        drop_last = sp["closed"] and len(v) > 1 and abs(v[-1][0] - v[0][0]) < 1e-3 and abs(v[-1][1] - v[0][1]) < 1e-3
+    if drop_last:
         ins[0] = ins[-1]
         v, ins, outs = v[:-1], ins[:-1], outs[:-1]
     return {"i": ins, "o": outs, "v": [list(p) for p in v], "c": sp["closed"]}
@@ -1152,63 +1629,38 @@ def _hex_rgb(h):
     return [int(h[i:i + 2], 16) / 255 for i in (0, 2, 4)]
 
 
-def _lottie_fill(fill, opacity, defs_root):
-    m_ = re.match(r"url\(#([^)]+)\)", fill or "")
-    if not m_:
-        return {"ty": "fl", "c": {"a": 0, "k": _hex_rgb(fill) + [1]}, "o": {"a": 0, "k": opacity * 100}, "r": 1}
-    gel = next((e for e in defs_root.iter() if e.get("id") == m_.group(1)), None)
-    if gel is None:
-        raise ValueError(f"gradient {m_.group(1)} not found in defs")
-    stops = []
-    for s in gel:
-        if s.tag.replace(SVG_NS, "") != "stop":
-            continue
-        off = s.get("offset", "0")
-        off = _num(off) / 100 if off.strip().endswith("%") else _num(off)
-        stops.append((off, _hex_rgb(s.get("stop-color", "#000")), _num(s.get("stop-opacity"), 1.0)))
-    colors = [x for o, c, _ in stops for x in [o] + c]
-    alphas = [x for o, _, al in stops for x in (o, al)] if any(al < 1 for *_, al in stops) else []
-    linear = gel.tag.endswith("linearGradient")
-    s = [_num(gel.get("x1")), _num(gel.get("y1"))] if linear else [_num(gel.get("cx")), _num(gel.get("cy"))]
-    e = [_num(gel.get("x2")), _num(gel.get("y2"))] if linear else [s[0] + _num(gel.get("r")), s[1]]
-    return {"ty": "gf", "t": 1 if linear else 2, "s": {"a": 0, "k": s}, "e": {"a": 0, "k": e},
-            "g": {"p": len(stops), "k": {"a": 0, "k": colors + alphas}}, "o": {"a": 0, "k": opacity * 100}, "r": 1}
+LOTTIE_CAP = {"butt": 1, "round": 2, "square": 3}
+LOTTIE_JOIN = {"miter": 1, "round": 2, "bevel": 3}
 
 
-def build_lottie(vec, size=512, seconds=1.2, fps=30):
-    vb = [float(x) for x in re.split(r"[\s,]+", vec["viewBox"].strip())]
-    scale = size / max(vb[2], vb[3]) * 100
-    op = round(seconds * fps)
-    defs_root = ET.fromstring(f'<svg xmlns="http://www.w3.org/2000/svg"><defs>{vec.get("defs", "")}</defs></svg>'
-                              if "<defs" not in vec.get("defs", "") else f'<svg xmlns="http://www.w3.org/2000/svg">{vec["defs"]}</svg>')
-    named = {}
-    for sl in vec["static_layers"]:
-        items = []
-        for p in sl["paths"]:
-            shapes = [{"ty": "sh", "ks": {"a": 0, "k": _lottie_shape(sp)}} for sp in _subpaths(p["d"])]
-            items.append({"ty": "gr", "it": shapes + [_lottie_fill(p["fill"], p.get("opacity", 1), defs_root), _tr()]})
-        # Lottie draws earlier shapes on top; SVG paths are listed bottom-to-top
-        named[sl["name"]] = items[::-1]
-    for al in vec["animated_layers"]:
-        kfs = [[_lottie_shape(sp) for sp in _subpaths(k)] for k in al["keyframes"]]
-        n = len(kfs)
-        shapes = []
-        for si in range(len(kfs[0])):
-            ks = [{"t": round(op * j / n), "s": [kfs[j][si]], "i": {"x": [0.45], "y": [1]}, "o": {"x": [0.55], "y": [0]}}
-                  for j in range(n)] + [{"t": op, "s": [kfs[0][si]]}]
-            shapes.append({"ty": "sh", "ks": {"a": 1, "k": ks}})
-        named[al["name"]] = [{"ty": "gr", "it": shapes + [_lottie_fill(al["fill"], al.get("opacity", 1), defs_root), _tr()]}]
-    order = [n for n in vec.get("layer_order", []) if n in named] + [n for n in named if n not in vec.get("layer_order", [])]
-    layers = []
-    for idx, name in enumerate(reversed(order)):
-        layers.append({"ddd": 0, "ind": idx + 1, "ty": 4, "nm": name, "sr": 1, "ip": 0, "op": op, "st": 0, "bm": 0,
-                       "ks": {"o": {"a": 0, "k": 100}, "r": {"a": 0, "k": 0},
-                              "p": {"a": 0, "k": [-vb[0] * scale / 100, -vb[1] * scale / 100, 0]},
-                              "a": {"a": 0, "k": [0, 0, 0]}, "s": {"a": 0, "k": [scale, scale, 100]}},
-                       "shapes": named[name]})
-    w = round(vb[2] * scale / 100)
-    h = round(vb[3] * scale / 100)
-    return {"v": "5.7.0", "fr": fps, "ip": 0, "op": op, "w": w, "h": h, "nm": "gptkit", "ddd": 0, "assets": [], "layers": layers}
+def _lottie_fill(fill, opacity, defs_root, width=None, cap="round", join="round", grad=None):
+    """Lottie fill (or stroke when width is given) for a hex colour or url(#gradient)."""
+    ref = re.match(r"url\(#([^)]+)\)", fill or "")
+    stroke = width is not None
+    if grad is None and not ref:
+        item = {"ty": "st" if stroke else "fl", "c": {"a": 0, "k": _hex_rgb(fill) + [1]}, "o": {"a": 0, "k": opacity * 100}}
+    else:
+        linear, s, e, stops = grad or _gradient(defs_root, ref.group(1))
+        colors = [x for o, c, _ in stops for x in [o] + _hex_rgb(c)]
+        alphas = [x for o, _, al in stops for x in (o, al)] if any(al < 1 for *_, al in stops) else []
+        item = {"ty": "gs" if stroke else "gf", "t": 1 if linear else 2, "s": {"a": 0, "k": s}, "e": {"a": 0, "k": e},
+                "g": {"p": len(stops), "k": {"a": 0, "k": colors + alphas}}, "o": {"a": 0, "k": opacity * 100}}
+    if stroke:
+        item.update({"w": {"a": 0, "k": width}, "lc": LOTTIE_CAP.get(cap, 2), "lj": LOTTIE_JOIN.get(join, 2), "ml": 4})
+    else:
+        item["r"] = 1
+    return item
+
+
+def _lottie_paints(p, defs_root):
+    """SVG paints stroke over fill; Lottie draws earlier items on top, so the stroke goes first."""
+    items = []
+    op = p.get("opacity", 1)
+    if (p.get("stroke") or "none") != "none" and float(p.get("stroke_width") or 0) > 0:
+        items.append(_lottie_fill(p["stroke"], op, defs_root, float(p["stroke_width"]), p.get("cap", "round"), p.get("join", "round")))
+    if (p.get("fill") or "none") != "none":
+        items.append(_lottie_fill(p["fill"], op, defs_root))
+    return items
 
 
 def _tr():
@@ -1216,78 +1668,540 @@ def _tr():
             "r": {"a": 0, "k": 0}, "o": {"a": 0, "k": 100}, "sk": {"a": 0, "k": 0}, "sa": {"a": 0, "k": 0}}
 
 
-def _validate_vec(vec):
-    errs = []
-    for sl in vec["static_layers"]:
-        for p in sl["paths"]:
-            try:
-                _subpaths(p["d"])
-            except ValueError as e:
-                errs.append(f"static {sl['name']}: {e}")
-    for al in vec["animated_layers"]:
+def _lottie_prop(ks, fn, op):
+    vals = [fn(k) for k in ks]
+    if all(v == vals[0] for v in vals):
+        return {"a": 0, "k": vals[0]}
+    frames = []
+    for j, k in enumerate(ks):
+        fr = {"t": round(k["t"] * op, 3), "s": vals[j] if isinstance(vals[j], list) else [vals[j]]}
+        if j < len(ks) - 1:
+            x1, y1, x2, y2 = EASES.get(k["ease"], EASES["ease_in_out"])
+            fr.update({"o": {"x": [x1], "y": [y1]}, "i": {"x": [x2], "y": [y2]}})
+        frames.append(fr)
+    return {"a": 1, "k": frames}
+
+
+def _lottie_ks(L, vb, k, op):
+    ax, ay = L["anchor"] if L["ks"] else (vb[0], vb[1])
+    ks = L["ks"] or [{**REST, "t": 0.0, "ease": "linear"}]
+    return {"a": {"a": 0, "k": [ax, ay, 0]},
+            "p": _lottie_prop(ks, lambda q: [round((ax - vb[0] + q["dx"]) * k, 3), round((ay - vb[1] + q["dy"]) * k, 3), 0], op),
+            "s": _lottie_prop(ks, lambda q: [round(q["sx"] * 100 * k, 3), round(q["sy"] * 100 * k, 3), 100], op),
+            "r": _lottie_prop(ks, lambda q: round(q["rotate"], 3), op),
+            "o": _lottie_prop(_fade_keys(ks), lambda q: round(q["opacity"] * 100, 2), op)}
+
+
+def build_lottie(vec, size=512, seconds=1.2, fps=30):
+    vb = _vb(vec)
+    k = size / max(vb[2], vb[3])
+    op = round(seconds * fps)
+    defs_root = _defs_root(vec)
+    layers = []
+    for L in _layers(vec):
+        if L["kind"] == "static":
+            items = []
+            for subs, p in L["paths"]:
+                shapes = [{"ty": "sh", "ks": {"a": 0, "k": _lottie_shape(sp)}} for sp in subs]
+                items.append({"ty": "gr", "it": shapes + _lottie_paints(p, defs_root) + [_tr()]})
+            shapes = items[::-1]
+        elif L["kind"] == "morph":
+            keys, n = L["keys"], len(L["keys"])
+            sh = []
+            for si in range(len(keys[0])):
+                end = lambda sp: sp["segs"][-1][-1] if sp["segs"] else sp["pts"][0]
+                drop = keys[0][si]["closed"] and all(math.dist(kf[si]["pts"][0], end(kf[si])) < 1e-3 for kf in keys)
+                fr = [{"t": round(op * j / n, 3), "s": [_lottie_shape(keys[j][si], drop)], "i": {"x": [0.58], "y": [1]},
+                       "o": {"x": [0.42], "y": [0]}} for j in range(n)] + [{"t": op, "s": [_lottie_shape(keys[0][si], drop)]}]
+                sh.append({"ty": "sh", "ks": {"a": 1, "k": fr}})
+            shapes = [{"ty": "gr", "it": sh + _lottie_paints(L["paint"], defs_root) + [_tr()]}]
+        else:
+            g = L["glow"]
+            circle = {"ty": "sh", "ks": {"a": 0, "k": _lottie_shape(_ellipse(g["cx"], g["cy"], g["rx"], g["rx"]))}}
+            tr = _tr()
+            tr.update({"p": {"a": 0, "k": [g["cx"], g["cy"]]}, "a": {"a": 0, "k": [g["cx"], g["cy"]]},
+                       "s": {"a": 0, "k": [100, 100 * g["ry"] / g["rx"]]}})
+            shapes = [{"ty": "gr", "it": [circle, _lottie_fill(None, g["opacity"], defs_root, grad=_glow_grad(g)), tr]}]
+        layers.append({"ddd": 0, "ty": 4, "nm": L["name"], "sr": 1, "ip": 0, "op": op, "st": 0, "bm": 0,
+                       "ks": _lottie_ks(L, vb, k, op), "shapes": shapes})
+    layers = layers[::-1]
+    for i, lyr in enumerate(layers):
+        lyr["ind"] = i + 1
+    return {"v": "5.7.0", "fr": fps, "ip": 0, "op": op, "w": round(vb[2] * k), "h": round(vb[3] * k), "nm": "gptkit",
+            "ddd": 0, "assets": [], "layers": layers}
+
+
+# ---- AnimatedVectorDrawable
+
+def _avd_interp(ease, ind, path=None):
+    x1, y1, x2, y2 = EASES.get(ease, EASES["ease_in_out"])
+    attrs = (f'android:pathData="{path}"' if path else
+             f'android:controlX1="{x1:g}" android:controlY1="{y1:g}" android:controlX2="{x2:g}" android:controlY2="{y2:g}"')
+    return (f'{ind}<aapt:attr name="android:interpolator">\n{ind}    <pathInterpolator {attrs} />\n{ind}</aapt:attr>')
+
+
+def _avd_pvh(prop, frames, ind):
+    """frames: [(fraction, value, ease into this frame)]."""
+    out = [f'{ind}<propertyValuesHolder android:propertyName="{prop}">']
+    for f, v, e in frames:
+        head = f'{ind}    <keyframe android:fraction="{_fmt(f, 4)}" android:value="{_fmt(v, 4)}"'
+        out.append(head + (f">\n{_avd_interp(e, ind + '        ')}\n{ind}    </keyframe>" if e and e != "linear" else " />"))
+    return "\n".join(out + [f"{ind}</propertyValuesHolder>"])
+
+
+def _avd_animator(pvhs, ms, ind, attrs=""):
+    return (f'{ind}<objectAnimator android:duration="{ms}" android:repeatCount="infinite"{attrs}\n'
+            f'{ind}    android:interpolator="@android:interpolator/linear">\n' + "\n".join(pvhs) + f"\n{ind}</objectAnimator>")
+
+
+def _avd_target(name, animators, ind="    "):
+    body = animators[0] if len(animators) == 1 else (f"{ind}        <set>\n" + "\n".join(
+        "    " + ln for x in animators for ln in x.split("\n")) + f"\n{ind}        </set>")
+    return (f'{ind}<target android:name="{name}">\n{ind}    <aapt:attr name="android:animation">\n{body}\n'
+            f'{ind}    </aapt:attr>\n{ind}</target>')
+
+
+def _fade_keys(ks):
+    """Opacity must not overshoot: AVD alpha above 1 wraps to near-transparent (seen on API 36)."""
+    return [dict(k, ease="ease_out") if k["ease"] == "overshoot" else k for k in ks]
+
+
+def _frames(ks, fn):
+    return [(k["t"], fn(k), ks[j - 1]["ease"] if j else None) for j, k in enumerate(ks)]
+
+
+def _alpha_frames(ks, base, window=None, eps=0.0005):
+    """fillAlpha keyframes: base x motion opacity, optionally visible only inside window=(a, b)."""
+    ks = _fade_keys(ks)
+    fr = _frames(ks, lambda k: base * k["opacity"]) if ks else [(0.0, base, None), (1.0, base, None)]
+    if not window:
+        return fr
+    a, b = window
+    at = lambda t: base * _motion_at(ks, t)["opacity"] if ks else base
+    inner = [(a, at(a), None)] + [f for f in fr if a < f[0] < b] + [(b, at(b), None)]
+    out = [] if a == 0 else [(0.0, 0.0, None), (a - eps, 0.0, None)]
+    out += inner
+    out += [] if b == 1 else [(b + eps, 0.0, None), (1.0, 0.0, None)]
+    return out
+
+
+def _avd_paint(p, defs_root, ind):
+    attrs, kids = [], []
+
+    def color(attr, val):
+        ref = re.match(r"url\(#([^)]+)\)", val or "")
+        if not ref:
+            attrs.append(f'android:{attr}="{_color(val)}"')
+            return
+        linear, s, e, stops = p["_grad"] if "_grad" in p else _gradient(defs_root, ref.group(1))
+        head = (f'android:type="linear" android:startX="{_fmt(s[0])}" android:startY="{_fmt(s[1])}" '
+                f'android:endX="{_fmt(e[0])}" android:endY="{_fmt(e[1])}"' if linear else
+                f'android:type="radial" android:centerX="{_fmt(s[0])}" android:centerY="{_fmt(s[1])}" '
+                f'android:gradientRadius="{_fmt(max(math.dist(s, e), 0.01))}"')
+        items = "".join(f'\n{ind}        <item android:offset="{o:g}" android:color="{_color(c, al)}" />' for o, c, al in stops)
+        kids.append(f'{ind}<aapt:attr name="android:{attr}">\n{ind}    <gradient {head}>{items}\n{ind}    </gradient>\n{ind}</aapt:attr>')
+    if p.get("fill") == "glow":
+        color("fillColor", "url(#glow)")
+    elif (p.get("fill") or "none") != "none":
+        color("fillColor", p["fill"])
+    if (p.get("stroke") or "none") != "none" and float(p.get("stroke_width") or 0) > 0:
+        color("strokeColor", p["stroke"])
+        attrs.append(f'android:strokeWidth="{_fmt(float(p["stroke_width"]))}"')
+        attrs.append(f'android:strokeLineCap="{p.get("cap", "round")}" android:strokeLineJoin="{p.get("join", "round")}"')
+    return attrs, kids
+
+
+def build_avd(vec, seconds=1.2, width_dp=48):
+    """<animated-vector> with the vector inlined: group transforms, fillAlpha fades and pathData morphs, all looping."""
+    vb = _vb(vec)
+    ms = round(seconds * 1000)
+    defs_root = _defs_root(vec)
+    safe = lambda s: re.sub(r"\W", "_", s)
+    body, targets = [], []
+    for L in _layers(vec):
+        gname = safe(L["name"])
+        ks, (ax, ay) = L["ks"], L["anchor"]
+        m0 = _motion_at(ks, 0.0)
+        paths = []
+        if L["kind"] == "morph":
+            keys, n = L["keys"], len(L["keys"])
+            p = L["paint"]
+            if n == 2:
+                paths.append((f"{gname}_0", _d(keys[0]), p, None, [
+                    f'            <objectAnimator android:propertyName="pathData" android:valueType="pathType"\n'
+                    f'                android:valueFrom="{_d(keys[0])}"\n                android:valueTo="{_d(keys[1])}"\n'
+                    f'                android:duration="{ms // 2}" android:repeatCount="infinite" android:repeatMode="reverse">\n'
+                    f'{_avd_interp("ease_in_out", "                ")}\n            </objectAnimator>']))
+            else:
+                # frameworks can't keyframe pathData, so each segment morphs on its own copy, visible only in its window
+                x1, y1, x2, y2 = EASES["ease_in_out"]
+                for j in range(n):
+                    a, b = j / n, (j + 1) / n
+                    w = b - a
+                    ip = ("M0,0" + (f" L{a:.4g},0" if a > 0 else "") + f" C{a + x1 * w:.4g},{y1:g} {a + x2 * w:.4g},{y2:g} {b:.4g},1" +
+                          (" L1,1" if b < 1 else ""))
+                    paths.append((f"{gname}_{j}", _d(keys[j]), p, (a, b), [
+                        f'            <objectAnimator android:propertyName="pathData" android:valueType="pathType"\n'
+                        f'                android:valueFrom="{_d(keys[j])}"\n                android:valueTo="{_d(keys[(j + 1) % n])}"\n'
+                        f'                android:duration="{ms}" android:repeatCount="infinite">\n'
+                        f'{_avd_interp(None, "                ", ip)}\n            </objectAnimator>']))
+        elif L["kind"] == "glow":
+            g = L["glow"]
+            p = {"fill": "glow", "_grad": _glow_grad(g), "opacity": g["opacity"]}
+            paths.append((f"{gname}_0", _d([_ellipse(g["cx"], g["cy"], g["rx"], g["rx"])]), p, None, []))
+        else:
+            for i, (subs, p) in enumerate(L["paths"]):
+                paths.append((f"{gname}_{i}", _d(subs), p, None, []))
+        xml = []
+        for pname, d, p, window, anims in paths:
+            base = float(p.get("opacity", 1))
+            attrs, kids = _avd_paint(p, defs_root, "            ")
+            fades = []
+            for prop, on in (("fillAlpha", (p.get("fill") or "none") != "none"),
+                             ("strokeAlpha", (p.get("stroke") or "none") != "none" and float(p.get("stroke_width") or 0) > 0)):
+                if not on:
+                    continue
+                fr = _alpha_frames(ks, base, window)
+                v0 = fr[0][1]
+                if v0 < 1:
+                    attrs.append(f'android:{prop}="{_fmt(v0, 4)}"')
+                if len({round(f[1], 4) for f in fr}) > 1:
+                    fades.append(_avd_pvh(prop, fr, "                "))
+            if fades:
+                anims = anims + [_avd_animator(fades, ms, "            ")]
+            if anims:
+                targets.append(_avd_target(pname, anims))
+            head = f'        <path\n            android:name="{pname}"\n            android:pathData="{d}"'
+            tail = "".join(f"\n            {x}" for x in attrs)
+            xml.append(head + tail + (">\n" + "\n".join(kids) + "\n        </path>" if kids else " />"))
+        if L["kind"] == "glow" and L["glow"]["ry"] != L["glow"]["rx"]:
+            g = L["glow"]
+            xml = [f'        <group android:pivotX="{_fmt(g["cx"])}" android:pivotY="{_fmt(g["cy"])}" '
+                   f'android:scaleY="{g["ry"] / g["rx"]:.4g}">'] + xml + ["        </group>"]
+        if ks:
+            chans = {"translateX": ("dx", 0), "translateY": ("dy", 0), "scaleX": ("sx", 1), "scaleY": ("sy", 1), "rotation": ("rotate", 0)}
+            pvhs, gattrs = [], [f'android:name="{gname}"', f'android:pivotX="{_fmt(ax)}"', f'android:pivotY="{_fmt(ay)}"']
+            for prop, (c, rest) in chans.items():
+                if abs(m0[c] - rest) > 1e-6:
+                    gattrs.append(f'android:{prop}="{_fmt(m0[c], 4)}"')
+                if len({round(k[c], 5) for k in ks}) > 1:
+                    pvhs.append(_avd_pvh(prop, _frames(ks, lambda k, c=c: k[c]), "                "))
+            if pvhs:
+                targets.append(_avd_target(gname, [_avd_animator(pvhs, ms, "            ")]))
+            xml = [f'        <group {" ".join(gattrs)}>'] + ["    " + ln for x in xml for ln in x.split("\n")] + ["        </group>"]
+        body += xml
+    if vb[0] or vb[1]:
+        body = [f'        <group android:translateX="{_fmt(-vb[0])}" android:translateY="{_fmt(-vb[1])}">'] + \
+               ["    " + ln for x in body for ln in x.split("\n")] + ["        </group>"]
+    hdp = width_dp * vb[3] / vb[2]
+    vector = (f'    <aapt:attr name="android:drawable">\n        <vector android:width="{_fmt(width_dp)}dp" android:height="{_fmt(hdp)}dp"\n'
+              f'            android:viewportWidth="{_fmt(vb[2])}" android:viewportHeight="{_fmt(vb[3])}">\n' +
+              "\n".join("    " + ln for x in body for ln in x.split("\n")) + "\n        </vector>\n    </aapt:attr>")
+    return ('<?xml version="1.0" encoding="utf-8"?>\n<animated-vector xmlns:android="http://schemas.android.com/apk/res/android"\n'
+            '    xmlns:aapt="http://schemas.android.com/aapt">\n' + vector + "\n" + "\n".join(targets) + "\n</animated-vector>\n")
+
+
+# ---- previews: lottie-web in headless Chrome, SVG fallback
+
+LOTTIE_JS = "https://cdnjs.cloudflare.com/ajax/libs/lottie-web/5.12.2/lottie.min.js"
+
+
+@functools.cache
+def _chrome():
+    if os.environ.get("GPTKIT_CHROME") == "none":
+        return None
+    for c in (os.environ.get("GPTKIT_CHROME"), "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+              "/Applications/Chromium.app/Contents/MacOS/Chromium",
+              *(shutil.which(n) for n in ("google-chrome", "google-chrome-stable", "chromium", "chromium-browser", "chrome"))):
+        if c and Path(c).exists():
+            return c
+    return None
+
+
+@functools.cache
+def _lottie_js():
+    """lottie-web source (cached under ~/.cache/gptkit) for inlining; None if it can't be fetched."""
+    p = Path("~/.cache/gptkit/lottie-5.12.2.min.js").expanduser()
+    if not p.exists():
         try:
-            sigs = {"".join(t for t in _TOK.findall(k) if t.isalpha()) for k in al["keyframes"]}
-            [_subpaths(k) for k in al["keyframes"]]
-            if len(sigs) != 1:
-                errs.append(f"animated {al['name']}: keyframes differ in command sequence")
-        except ValueError as e:
-            errs.append(f"animated {al['name']}: {e}")
-    return errs
+            r = requests.get(LOTTIE_JS, timeout=60)
+            r.raise_for_status()
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_bytes(r.content)
+        except Exception:
+            return None
+    return p.read_text()
 
 
-def _vec_svg(vec, k, size=256, bg=None):
+def _chrome_shot(html, out, w, h):
+    """Screenshot an HTML string with transparent background; returns the RGBA image or None."""
+    import tempfile
+    if not _chrome():
+        return None
+    out = Path(out)
+    out.unlink(missing_ok=True)
+    with tempfile.TemporaryDirectory() as tmp:
+        page = Path(tmp) / "page.html"
+        page.write_text(html)
+        try:
+            proc = subprocess.Popen([_chrome(), "--headless=new", "--disable-gpu", "--hide-scrollbars", f"--user-data-dir={tmp}/p",
+                                     "--default-background-color=00000000", f"--window-size={w},{h}", "--virtual-time-budget=8000",
+                                     f"--screenshot={out}", page.as_uri()], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except OSError:
+            return None
+        # Chrome can linger after writing the screenshot (lottie's web worker), so stop once the file is complete
+        size, end = -1, time.time() + 120
+        while proc.poll() is None and time.time() < end:
+            cur = out.stat().st_size if out.exists() else -1
+            if cur > 0 and cur == size:
+                break
+            size = cur
+            time.sleep(0.5)
+        proc.kill()
+        proc.wait()
+    return _rgba(out) if out.exists() else None
+
+
+def lottie_frames(lot, times, out_png, T=256):
+    """Render the Lottie at loop fractions `times` with lottie-web; returns RGBA frames (transparent) or None."""
+    js = _lottie_js()
+    if not js:
+        return None
+    frames = [round(t * lot["op"], 3) for t in times]
+    html = ("<!doctype html><meta charset=utf-8><style>body{margin:0;display:flex}div{width:%dpx;height:%dpx;flex:none}</style>"
+            "<body>%s<script>%s</script><script>var D=%s;%s.forEach(function(f,i){var a=lottie.loadAnimation({container:"
+            "document.getElementById('f'+i),renderer:'svg',loop:false,autoplay:false,animationData:JSON.parse(JSON.stringify(D))});"
+            "a.addEventListener('DOMLoaded',function(){a.goToAndStop(f,true)});});</script>") % (
+        T, T, "".join(f"<div id=f{i}></div>" for i in range(len(frames))), js, json.dumps(lot), json.dumps(frames))
+    strip = _chrome_shot(html, out_png, T * len(frames), T)
+    if strip is None or strip.width < T * len(frames):
+        return None
+    return [strip.crop((i * T, 0, (i + 1) * T, T)) for i in range(len(frames))]
+
+
+def _pixel_motion(frames):
+    """Largest share of the drawn area (t=0 union frame i) whose colour visibly changes from t=0."""
+    pm = lambda im: (lambda a: np.concatenate([a[..., :3] * a[..., 3:] / 255, a[..., 3:]], -1))(np.asarray(im, dtype=np.float32))
+    f0 = pm(frames[0])
+    best = 0.0
+    for f in map(pm, frames[1:]):
+        area = ((f0[..., 3] > 64) | (f[..., 3] > 64)).sum()
+        best = max(best, float((np.abs(f - f0).max(-1) > 40).sum()) / max(1, area))
+    return round(best, 3)
+
+
+def _vec_svg(vec, t, size=256, bg=None):
+    """Static SVG of the animation at loop time t (morphs, motion and glows applied)."""
     defs = vec.get("defs", "")
     defs = defs if "<defs" in defs else f"<defs>{defs}</defs>"
-    body = {}
-    for sl in vec["static_layers"]:
-        body[sl["name"]] = "".join(f'<path d="{p["d"]}" fill="{p["fill"]}" opacity="{p.get("opacity", 1)}"/>' for p in sl["paths"])
-    for al in vec["animated_layers"]:
-        body[al["name"]] = f'<path d="{al["keyframes"][k]}" fill="{al["fill"]}" opacity="{al.get("opacity", 1)}"/>'
-    order = [n for n in vec.get("layer_order", []) if n in body] + [n for n in body if n not in vec.get("layer_order", [])]
-    rect = f'<rect x="-10000" y="-10000" width="20000" height="20000" fill="{bg}"/>' if bg else ""
+    glow_defs, body = [], []
+
+    def paint(p):
+        s = f' fill="{p.get("fill") or "none"}" opacity="{p.get("opacity", 1)}"'
+        if (p.get("stroke") or "none") != "none" and float(p.get("stroke_width") or 0) > 0:
+            s += (f' stroke="{p["stroke"]}" stroke-width="{p["stroke_width"]}" stroke-linecap="{p.get("cap", "round")}" '
+                  f'stroke-linejoin="{p.get("join", "round")}"')
+        return s
+    for L in _layers(vec):
+        m = _motion_at(L["ks"], t)
+        ax, ay = L["anchor"]
+        tf = (f' transform="translate({ax + m["dx"]:.3f} {ay + m["dy"]:.3f}) rotate({m["rotate"]:.3f}) scale({m["sx"]:.4f} '
+              f'{m["sy"]:.4f}) translate({-ax:.3f} {-ay:.3f})" opacity="{m["opacity"]:.3f}"') if L["ks"] else ""
+        if L["kind"] == "static":
+            inner = "".join(f'<path d="{_d(subs)}"{paint(p)}/>' for subs, p in L["paths"])
+        elif L["kind"] == "morph":
+            inner = f'<path d="{_d(_morph_at(L["keys"], t))}"{paint(L["paint"])}/>'
+        else:
+            g = L["glow"]
+            gid = f"glow_{len(glow_defs)}"
+            glow_defs.append(f'<radialGradient id="{gid}">' + "".join(
+                f'<stop offset="{o}" stop-color="{g["color"]}" stop-opacity="{al}"/>' for o, al in GLOW_STOPS) + "</radialGradient>")
+            inner = f'<ellipse cx="{g["cx"]}" cy="{g["cy"]}" rx="{g["rx"]}" ry="{g["ry"]}" fill="url(#{gid})" opacity="{g["opacity"]}"/>'
+        body.append(f"<g{tf}>{inner}</g>")
+    rect = f'<rect x="-100000" y="-100000" width="200000" height="200000" fill="{bg}"/>' if bg else ""
     return (f'<svg xmlns="http://www.w3.org/2000/svg" width="{size}" height="{size}" viewBox="{vec["viewBox"]}">'
-            f'{defs}{rect}{"".join(body[n] for n in order)}</svg>')
+            f'{defs}<defs>{"".join(glow_defs)}</defs>{rect}{"".join(body)}</svg>')
+
+
+def _svg_layers(svg_text, stem):
+    """Import an SVG icon as static layers: one per top-level element (a <g> keeps its children together)."""
+    root = ET.fromstring(svg_text)
+    vb = root.get("viewBox") or f"0 0 {_num(root.get('width'), 24):g} {_num(root.get('height'), 24):g}"
+    ET.register_namespace("", SVG_NS[1:-1])
+    defs = "".join(ET.tostring(el, encoding="unicode") for el in root.iter()
+                   if el.tag.replace(SVG_NS, "") in ("linearGradient", "radialGradient"))
+    keys = ("fill", "stroke", "stroke-width", "stroke-linecap", "stroke-linejoin", "opacity", "fill-opacity")
+
+    def attrs(el, inh):
+        style = dict(kv.split(":", 1) for kv in (el.get("style") or "").replace(" ", "").split(";") if ":" in kv)
+        out = dict(inh)
+        for k in keys:
+            v = el.get(k) or style.get(k)
+            if v is not None:
+                out[k] = v
+        return out
+
+    def paths(el, inh):
+        a = attrs(el, inh)
+        tag = el.tag.replace(SVG_NS, "")
+        if tag == "g":
+            return [p for ch in el for p in paths(ch, a)]
+        d = _shape_path(el) if tag in ("path", "circle", "ellipse", "rect", "line", "polyline", "polygon") else None
+        if not d:
+            return []
+        stroke = a.get("stroke", "none")
+        return [{"d": _d(_subpaths(d)), "fill": a.get("fill", "#000000"), "stroke": stroke,
+                 "stroke_width": _num(a.get("stroke-width"), 1.0) if stroke != "none" else 0,
+                 "opacity": _num(a.get("opacity"), 1.0) * _num(a.get("fill-opacity"), 1.0),
+                 "cap": a.get("stroke-linecap", "butt"), "join": a.get("stroke-linejoin", "miter")}]
+    layers, base = [], attrs(root, {})
+    for i, el in enumerate(ch for ch in root if ch.tag.replace(SVG_NS, "") not in ("defs", "title", "desc", "metadata")):
+        ps = paths(el, base)
+        if ps:
+            layers.append({"name": re.sub(r"\W", "_", el.get("id") or (stem if i == 0 else f"{stem}_{i + 1}")),
+                           "paths": ps, "motion": {"anchor_x": 0, "anchor_y": 0, "keys": []}})
+    return vb, defs, layers
+
+
+def _merge_imported(vec, imported):
+    """Imported SVG layers are the source of truth for geometry; the model only adds motion and extra layers."""
+    vb, defs, layers = imported
+    vec["viewBox"] = vb
+    if defs and defs not in vec.get("defs", ""):
+        vec["defs"] = defs + vec.get("defs", "")
+    got = {sl["name"]: sl for sl in vec.get("static_layers", [])}
+    for L in layers:
+        if L["name"] in got:
+            got[L["name"]]["paths"] = L["paths"]
+        else:
+            vec.setdefault("static_layers", []).insert(0, dict(L))
+    return vec
+
+
+def _review_sheet(vec, lot, src, out, bg, n=8):
+    """keys_review.png: the source, then n evenly spaced frames of the real Lottie (lottie-web) or SVG fallback."""
+    times = [i / n for i in range(n)]
+    frames = lottie_frames(lot, times, out / ".strip.png")
+    (out / ".strip.png").unlink(missing_ok=True)
+    how = "lottie-web"
+    if frames is None:
+        how, frames = "svg", []
+        for i, t in enumerate(times):
+            p = out / f"key_{i + 1}.svg"
+            p.write_text(_vec_svg(vec, t, bg=bg))
+            prev = _render_svg(p, out)
+            if prev:
+                frames.append(_rgba(prev))
+    px = _pixel_motion(frames) if how == "lottie-web" else None
+    tiles = [("asset", src)] if src is not None else []
+    for t, f in zip(times, frames):
+        base = Image.new("RGBA", f.size, bg)
+        base.alpha_composite(f)
+        tiles.append((f"t={t:.2f}", base))
+    rows = [tiles[i:i + 5] for i in range(0, len(tiles), 5)]
+    sheet(rows, out / "keys_review.png", T=220)
+    return how, px
+
+
+def _svg_image(svg_path, out, size=512):
+    """Rasterise an SVG with transparency (headless Chrome), else with the preview renderer."""
+    b64 = base64.b64encode(Path(svg_path).read_bytes()).decode()
+    img = _chrome_shot(f"<body style='margin:0'><img src='data:image/svg+xml;base64,{b64}' style='width:{size}px;"
+                       f"height:{size}px'>", out, size, size)
+    if img is None:
+        p = _render_svg(svg_path, Path(out).parent, size)
+        img = _rgba(p) if p else None
+    return img
+
+
+def _ask_vector(a, mock, asset, src, imported, bg):
+    thr = a.min_motion if a.min_motion is not None else MOTION_MIN[a.strength]
+    parts = [VECTOR_PROMPT.format(moving=a.moving, static=a.static or "nothing", k=a.keyframes, seconds=a.seconds,
+                                  motion=a.motion or "a gentle natural loop", strength=MOTION_STRENGTH[a.strength])]
+    if imported:
+        parts.append(f"The asset already exists as vector static_layers (viewBox \"{imported[0]}\"). Return each with exactly "
+                     "its name and paths: [] (the geometry is restored from the source) and add the motion, glows and any "
+                     "extra layers the animation needs:\n" + json.dumps(imported[2]))
+    if src is not None:
+        if imported:
+            flat = Image.new("RGBA", src.size, bg)
+            flat.alpha_composite(src)
+            src = flat
+        parts.append(src)
+    if asset:
+        parts += ["For reference, how it appears in the approved design:", ref_crop(mock, asset["bbox"], 0.3, 512)]
+    best, vec = None, None
+    for attempt in range(2):
+        vec = ask(parts, VECTOR_SCHEMA, "vector_layers")
+        if imported:
+            _merge_imported(vec, imported)
+        errs = _validate_vec(vec)
+        rep = None if errs else motion_report(_normalize_vec(vec))
+        weak = rep is not None and rep["motion"] is not None and rep["motion"] < thr
+        if rep and (best is None or (rep["motion"] or 0) > (best[1]["motion"] or 0)):
+            best = (vec, rep)
+        if rep and not weak or attempt:
+            break
+        per = ", ".join(f"{n} {r['move']:.1%}" for n, r in rep["layers"].items() if r["kind"] != "glow") if rep else ""
+        fb = (f"Your previous answer was invalid: {'; '.join(errs)}. Fix it and follow every rule." if errs else
+              f"Your previous answer moves too little: its animated layers move {rep['motion']:.1%} of their size on "
+              f"average ({per}), at least {thr:.0%} is needed. Keep the geometry but exaggerate the keyframes and motion keys.")
+        print("  retrying:", fb, flush=True)
+        parts = parts + [fb + "\nPrevious answer:\n" + json.dumps(vec)]
+    return best[0] if best else vec
 
 
 def cmd_vectorize(a):
     d, m, mock = _load(a.dir)
-    src_path = d / "assets" / f"{a.name}.png"
-    src = _rgba(src_path)
-    asset = next((x for x in m["assets"] if x["name"] == a.name), None)
-    parts = [VECTOR_PROMPT.format(moving=a.moving, static=a.static or "nothing", k=a.keyframes,
-                                  motion=a.motion or "a gentle natural loop"), src]
-    if asset:
-        parts += ["For reference, how it appears in the approved design:", ref_crop(mock, asset["bbox"], 0.3, 512)]
-    vec, errs = None, ["not run"]
-    for attempt in range(2):
-        vec = ask(parts, VECTOR_SCHEMA, "vector_layers")
-        errs = _validate_vec(vec)
-        if not errs:
-            break
-        print("  retrying, validation failed:", *errs, sep="\n    ")
-        parts = parts + [f"Your previous answer was invalid: {'; '.join(errs)}. Fix it and follow every rule."]
     out = d / "vector" / a.name
     out.mkdir(parents=True, exist_ok=True)
-    (out / "layers.json").write_text(json.dumps(vec, indent=2))
+    asset = next((x for x in m["assets"] if x["name"] == a.name), None)
+    png = d / "assets" / f"{a.name}.png"
+    svg = Path(a.svg) if a.svg else d / "svg" / f"{a.name}.svg"
+    src, imported = None, None
+    if png.exists() and not a.svg:
+        src = _rgba(png)
+    elif svg.exists():
+        imported = _svg_layers(svg.read_text(), a.name)
+        src = _svg_image(svg, out / "source.png")
+    elif not a.rebuild:
+        sys.exit(f"vectorize: no source ({png} or {svg})")
+    if a.rebuild:
+        vec = json.loads((out / "layers.json").read_text())
+    elif not a.moving:
+        sys.exit("vectorize: --moving is required (or --rebuild to reuse an edited layers.json)")
+    else:
+        vec = _ask_vector(a, mock, asset, src, imported, a.preview_bg)
+    errs = _validate_vec(vec)
+    (out / "layers.json").write_text(json.dumps(vec if errs else _normalize_vec(vec), indent=2))
     if errs:
         print("! still invalid:", errs)
         return
-    rows = [("asset", src)]
-    for k in range(len(vec["animated_layers"][0]["keyframes"]) if vec["animated_layers"] else 1):
-        p = out / f"key_{k + 1}.svg"
-        p.write_text(_vec_svg(vec, k, bg=a.preview_bg))
-        prev = _render_svg(p, out)
-        if prev:
-            rows.append((f"key {k + 1}", _rgba(prev)))
-    sheet([rows], out / "keys_review.png", T=220)
-    lot = build_lottie(vec, a.size, a.seconds, a.fps)
+    rep = motion_report(vec)
+    thr = a.min_motion if a.min_motion is not None else MOTION_MIN[a.strength]
+    fit = None if a.no_fit else _fit_viewbox(vec)
+    built = dict(vec, viewBox=fit) if fit else vec
+    lot = build_lottie(built, a.size, a.seconds, a.fps)
     (out / f"{a.name}.json").write_text(json.dumps(lot, separators=(",", ":")))
+    dp = a.dp or ((asset or {}).get("dp") or {}).get("w") or 48
+    dp = round(dp * _vb(built)[2] / _vb(vec)[2], 1)
+    (out / f"{a.name}_avd.xml").write_text(build_avd(built, a.seconds, dp))
     (out / "preview.html").write_text(
         "<!doctype html><meta charset=utf-8><body style='margin:0;background:" + a.preview_bg + "'>"
         "<div id=a style='width:512px;height:512px'></div>"
-        "<script src='https://cdnjs.cloudflare.com/ajax/libs/lottie-web/5.12.2/lottie.min.js'></script>"
+        f"<script src='{LOTTIE_JS}'></script>"
         f"<script>lottie.loadAnimation({{container:a,renderer:'svg',loop:true,autoplay:true,animationData:{json.dumps(lot)}}})</script>")
-    print(f"-> {out}/layers.json, keys_review.png, {a.name}.json (Lottie), preview.html")
+    how, px = _review_sheet(built, lot, src, out, a.preview_bg, a.review_frames)
+    for n, r in rep["layers"].items():
+        print(f"  {n:24s} {r['kind']:6s} move={r['move']:.1%} fade={r['fade']:.2f}")
+    mm = rep["motion"]
+    print(f"  motion {'-' if mm is None else f'{mm:.1%}'} (min {thr:.0%} for --strength {a.strength})" +
+          (" TOO SUBTLE: re-run with --strength strong or a stronger --motion" if mm is not None and mm < thr else "") +
+          (f"; rendered frames change up to {px:.0%} of the drawn area" if px is not None else ""))
+    if fit:
+        print(f"  motion leaves the viewBox: canvas grown to \"{fit}\" (AVD {dp:g}dp wide) so nothing clips")
+    print(f"-> {out}/layers.json, {a.name}.json (Lottie), {a.name}_avd.xml (AnimatedVectorDrawable), "
+          f"keys_review.png ({how}), preview.html")
 
 
 # ---- export
@@ -1420,10 +2334,17 @@ def main():
     p.add_argument("--motion"); p.add_argument("--count", type=int, default=8); p.add_argument("--cols", type=int, default=4)
     p.add_argument("--anchor", choices=["bottom", "center"], default="bottom"); p.add_argument("--fps", type=float, default=12)
     p.add_argument("--preview-bg", default="#1b1d33"); p.add_argument("--model", default=None); p.set_defaults(fn=cmd_frames)
-    p = sub.add_parser("vectorize", help="morphable vector keyframes -> Lottie JSON + preview")
-    p.add_argument("dir"); p.add_argument("name"); p.add_argument("--moving", required=True); p.add_argument("--static")
+    p = sub.add_parser("vectorize", help="vector layers (morphs, transforms, glows) -> Lottie + AnimatedVectorDrawable")
+    p.add_argument("dir"); p.add_argument("name"); p.add_argument("--moving"); p.add_argument("--static")
     p.add_argument("--motion"); p.add_argument("--keyframes", type=int, default=4); p.add_argument("--size", type=int, default=512)
     p.add_argument("--seconds", type=float, default=1.2); p.add_argument("--fps", type=int, default=30)
+    p.add_argument("--strength", choices=list(MOTION_STRENGTH), default="normal", help="how much the moving parts move")
+    p.add_argument("--min-motion", type=float, help="retry once below this share of a layer's size (default per --strength)")
+    p.add_argument("--svg", help="animate this SVG (default DIR/svg/NAME.svg when DIR/assets/NAME.png is missing)")
+    p.add_argument("--dp", type=float, help="AnimatedVectorDrawable width in dp (default: the asset's dp, else 48)")
+    p.add_argument("--rebuild", action="store_true", help="rebuild outputs from an edited layers.json, no API call")
+    p.add_argument("--no-fit", action="store_true", help="keep the viewBox even if the motion leaves it (clips)")
+    p.add_argument("--review-frames", type=int, default=8)
     p.add_argument("--preview-bg", default="#1b1d33"); p.set_defaults(fn=cmd_vectorize)
     p = sub.add_parser("export", help="export a PNG to android densities / ios imageset / web")
     p.add_argument("file"); p.add_argument("--dp", type=float, required=True, help="width in dp/pt/css px")
