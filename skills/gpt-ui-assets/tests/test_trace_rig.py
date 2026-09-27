@@ -83,6 +83,30 @@ def test_animate_to_lottie():
     assert lot["layers"] and all(L["ty"] == 4 for L in lot["layers"])
 
 
+def test_animate_traced_file_without_chrome():
+    import argparse
+    import os
+    import tempfile
+    res = g.trace_image(synthetic(), "illustration", work=96)
+    old = os.environ.get("GPTKIT_CHROME")
+    os.environ["GPTKIT_CHROME"] = "none"
+    g._chrome.cache_clear()
+    try:
+        assert g.chrome_shot("<p>x</p>", 16, 16) is None
+        with tempfile.TemporaryDirectory() as td:
+            src = Path(td) / "drop.layers.json"
+            src.write_text(json.dumps(g.layers_vec(res)))
+            g.cmd_animate(argparse.Namespace(layers=str(src), part="art=bob", keyframes=4, seconds=1.0, fps=24, size=128,
+                                             ease="linear", out=None, name=None, preview_bg="#000000"))
+            assert (Path(td) / "anim" / "drop" / "drop.json").exists()
+    finally:
+        if old is None:
+            os.environ.pop("GPTKIT_CHROME")
+        else:
+            os.environ["GPTKIT_CHROME"] = old
+        g._chrome.cache_clear()
+
+
 def test_render_fidelity():
     if not g._chrome():
         print("  (skip: no Chrome)")
