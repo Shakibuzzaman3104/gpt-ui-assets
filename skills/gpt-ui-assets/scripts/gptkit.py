@@ -249,8 +249,141 @@ def _edge_var(img):
     return ImageStat.Stat(img.convert("L").filter(ImageFilter.FIND_EDGES)).var[0]
 
 
+_M_XYZ = np.array([[0.4124, 0.3576, 0.1805], [0.2126, 0.7152, 0.0722], [0.0193, 0.1192, 0.9505]])
+_WHITE = np.array([0.95047, 1.0, 1.08883])
+WORK = 128  # long side of the working view used by the perceptual metrics
+
+
+def _lab(rgb):
+    c = np.asarray(rgb, np.float64)[..., :3] / 255
+    c = np.where(c > 0.04045, ((c + 0.055) / 1.055) ** 2.4, c / 12.92)
+    xyz = c @ _M_XYZ.T / _WHITE
+    f = np.where(xyz > 0.008856, np.cbrt(xyz), 7.787 * xyz + 16 / 116)
+    return np.stack([116 * f[..., 1] - 16, 500 * (f[..., 0] - f[..., 1]), 200 * (f[..., 1] - f[..., 2])], -1)
+
+
+def _lab_to_rgb(lab):
+    fy = (lab[..., 0] + 16) / 116
+    f = np.stack([fy + lab[..., 1] / 500, fy, fy - lab[..., 2] / 200], -1)
+    xyz = np.where(f > 0.206893, f ** 3, (f - 16 / 116) / 7.787) * _WHITE
+    c = np.clip(xyz @ np.linalg.inv(_M_XYZ).T, 0, 1)
+    c = np.where(c > 0.0031308, 1.055 * c ** (1 / 2.4) - 0.055, 12.92 * c)
+    return np.clip(np.round(c * 255), 0, 255).astype(np.uint8)
+
+
+def _morph(mask, *ops):
+    im = Image.fromarray(np.uint8(mask) * 255)
+    for op in ops:
+        im = im.filter(ImageFilter.MinFilter(3) if op == "min" else ImageFilter.MaxFilter(3))
+    return np.asarray(im) > 127
+
+
+def _clean(mask):
+    return _morph(mask, "min", "max", "max", "min")
+
+
+def _design_view(mock, bbox):
+    """The design element at WORK scale in Lab, its backdrop and a foreground mask segmented from it."""
+    x, y, w, h = bbox["x"], bbox["y"], bbox["w"], bbox["h"]
+    s = WORK / max(w, h)
+    size = (max(1, round(w * s)), max(1, round(h * s)))
+    arr = np.asarray(mock.crop((x, y, x + w, y + h)).convert("RGB").resize(size, Image.LANCZOS))
+    ring = np.concatenate([arr[0], arr[-1], arr[:, 0], arr[:, -1]])
+    backdrop = tuple(int(v) for v in np.median(ring, 0))
+    L, bl = _lab(arr), _lab(np.array(backdrop))
+    dist = np.linalg.norm(L - bl, axis=-1)
+    thr = min(22.0, max(8.0, 0.45 * float(np.percentile(dist, 95))))
+    return {"L": L, "mask": _clean(dist > thr), "backdrop": backdrop, "bl": bl, "thr": thr, "size": size, "up": s}
+
+
+def _align(asset, view):
+    """Scale/offset of the asset (composited on the design backdrop) that best overlaps the design silhouette."""
+    w, h = view["size"]
+    M = max(w, h) // 5
+    g = asset.crop(content_box(asset, 40) or (0, 0, asset.width, asset.height))
+    if max(g.size) > 4 * WORK:
+        k = 4 * WORK / max(g.size)
+        g = g.resize((max(1, round(g.width * k)), max(1, round(g.height * k))), Image.LANCZOS)
+    s0 = min(w / g.width, h / g.height)
+    dm = view["mask"]
+    search = dm.sum() >= 16
+    best = None
+    for s in (np.arange(0.88, 1.14, 0.025) if search else [1.0]):
+        gw, gh = max(1, round(g.width * s0 * s)), max(1, round(g.height * s0 * s))
+        big = Image.new("RGBA", (w + 2 * M, h + 2 * M), view["backdrop"] + (255,))
+        big.alpha_composite(g.resize((gw, gh), Image.LANCZOS), ((w + 2 * M - gw) // 2, (h + 2 * M - gh) // 2))
+        big = big.convert("RGB")
+        if view["up"] > 1.25:  # blur like the upscaled low-res design so colours at edges compare fairly
+            small = (max(1, round(big.width / view["up"])), max(1, round(big.height / view["up"])))
+            big = big.resize(small, Image.LANCZOS).resize(big.size, Image.LANCZOS)
+        BL = _lab(np.asarray(big))
+        BM = _clean(np.linalg.norm(BL - view["bl"], axis=-1) > view["thr"])
+        span = range(-M // 2, M // 2 + 1) if search else [0]
+        for dy in span:
+            for dx in span:
+                am = BM[M + dy:M + dy + h, M + dx:M + dx + w]
+                iou = (am & dm).sum() / max((am | dm).sum(), 1)
+                if best is None or iou > best[0]:
+                    best = (iou, BL[M + dy:M + dy + h, M + dx:M + dx + w], am)
+    return best
+
+
+def _qemd(a, b, n=32):
+    """Mean 1-D earth mover's distance of the L, a, b distributions (quantile form)."""
+    q = np.linspace(0.02, 0.98, n)
+    return float(np.mean([np.abs(np.quantile(a[:, i], q) - np.quantile(b[:, i], q)).mean() for i in range(3)]))
+
+
+def _fill_view(asset, view):
+    """An opaque asset cropped to the element's aspect and resized onto the design view, in Lab."""
+    w, h = view["size"]
+    tw, th = asset.size
+    if tw / th > w / h:
+        nw = round(th * w / h)
+        asset = asset.crop(((tw - nw) // 2, 0, (tw - nw) // 2 + nw, th))
+    else:
+        nh = round(tw * h / w)
+        asset = asset.crop((0, (th - nh) // 2, tw, (th - nh) // 2 + nh))
+    return _lab(np.asarray(asset.convert("RGB").resize((w, h), Image.LANCZOS)))
+
+
+def perceptual(mock, bbox, asset, transparent=True):
+    """iou: silhouette overlap after alignment; de: mean CIELAB distance; col: Lab distribution distance."""
+    view = _design_view(mock, bbox)
+    L, dm = view["L"], view["mask"]
+    if transparent:
+        iou, AL, am = _align(asset, view)
+        if dm.sum() >= 16:
+            return {"iou": float(iou), "de": float(np.linalg.norm(AL - L, axis=-1)[am | dm].mean()),
+                    "col": _qemd(AL[am], L[dm]) if am.sum() > 8 else 50.0}
+    else:
+        AL = _fill_view(asset, view)
+    # opaque art, or an element that can't be separated from its backdrop: compare the whole box
+    return {"iou": None, "de": float(np.linalg.norm(AL - L, axis=-1).mean()), "col": _qemd(AL.reshape(-1, 3), L.reshape(-1, 3))}
+
+
+def _fid(diff, p):
+    return 0.3 * diff + 0.5 * p["de"] + p["col"] + (40 * (1 - p["iou"]) if p["iou"] is not None else 0)
+
+
+def color_match(mock, bbox, asset, strength=0.75):
+    """Reinhard-style transfer of the design element's Lab mean/std onto a transparent asset; alpha is kept."""
+    view = _design_view(mock, bbox)
+    _, AL, am = _align(asset, view)
+    src, dst = AL[_morph(am, "min")], view["L"][_morph(view["mask"], "min")]
+    if len(src) < 16 or len(dst) < 16:
+        return asset
+    k = np.clip(dst.std(0) / np.maximum(src.std(0), 1e-3), 0.75, 1.33)
+    a = np.asarray(asset.convert("RGBA"))
+    L = _lab(a)
+    L = L + strength * (dst.mean(0) + (L - src.mean(0)) * k - L)
+    out = np.dstack([_lab_to_rgb(L), a[..., 3]])
+    out[a[..., 3] == 0, :3] = 0
+    return Image.fromarray(out, "RGBA")
+
+
 def score(mock, bbox, asset, ref=None, transparent=True):
-    """Fidelity vs the mockup element plus copy/crop red flags. Lower 'diff' = closer to the design."""
+    """Fidelity vs the mockup element plus copy/crop red flags. Lower 'fid' (and 'diff') = closer to the design."""
     x, y, w, h = bbox["x"], bbox["y"], bbox["w"], bbox["h"]
     crop = mock.crop((x, y, x + w, y + h)).convert("RGB")
     corners = [crop.getpixel(p) for p in ((0, 0), (w - 1, 0), (0, h - 1), (w - 1, h - 1))]
@@ -285,12 +418,17 @@ def score(mock, bbox, asset, ref=None, transparent=True):
         flags.append("COPY:returned-reference")
     sharp = _edge_var(g) / max(_edge_var(crop.resize(g.size, Image.BICUBIC)), 1e-6)
     warn = ["soft"] if sharp < 2 else []
-    return {"diff": round(diff, 1), "flags": flags, "warn": warn, "sharp_ratio": round(sharp, 1),
-            "transparent_frac": round(transp, 3), "aspect_err": round(abs((g.width / g.height) / (w / h) - 1), 3)}
+    p = perceptual(mock, bbox, asset, transparent)
+    if p["iou"] is not None and p["iou"] < 0.5:
+        warn.append("silhouette")
+    return {"fid": round(_fid(diff, p), 1), "diff": round(diff, 1), "iou": None if p["iou"] is None else round(p["iou"], 3),
+            "de": round(p["de"], 1), "col": round(p["col"], 1), "flags": flags, "warn": warn,
+            "sharp_ratio": round(sharp, 1), "transparent_frac": round(transp, 3),
+            "aspect_err": round(abs((g.width / g.height) / (w / h) - 1), 3)}
 
 
 def _rank(sc, meta):
-    return (len(sc["flags"]), sc["diff"] + (6 if (meta or {}).get("quality") == "low" else 0))
+    return (len(sc["flags"]), sc.get("fid", sc["diff"]) + (6 if (meta or {}).get("quality") == "low" else 0))
 
 
 # ---------------------------------------------------------------- prompts
@@ -306,11 +444,28 @@ ASSET_PROMPT = ("The attached image is a zoomed, low-resolution screenshot regio
                 "Do NOT upscale, trace or copy the screenshot pixels. Do NOT include the backdrop, container shape, "
                 "text, or any neighbouring element. {bg} Centered with about 10% empty padding on every side.")
 
-BACKGROUND_PROMPT = ("The attached image is an APPROVED app UI design ({W}x{H}px). Recreate ONLY the {kind} \"{name}\" "
-                     "({description}) that occupies the region x={x}, y={y}, w={w}, h={h} as a standalone full-bleed "
-                     "image, from scratch at full resolution. REMOVE every UI element drawn on top of it: all text, "
+BACKGROUND_PROMPT = ("The attached image is a cropped region of an APPROVED app UI design. Recreate ONLY the {kind} "
+                     "\"{name}\" ({description}) as a standalone full-bleed {aspect}, from scratch at full resolution, "
+                     "with exactly the framing of the attached crop. REMOVE every UI element drawn on top of it: all text, "
                      "buttons, chips, icons, badges, rounded corners and borders. Where UI covered it, continue the "
-                     "artwork naturally. Keep the exact composition, framing, colours and lighting of the design.")
+                     "artwork naturally. Keep the exact composition, colours and lighting of the design.")
+
+# per-candidate emphasis (c1, c2, c3, then repeating) so best-of-N samples different failure modes
+CANDIDATE_FOCUS = ["",
+                   " PRIORITY: the exact colour values, saturation, lightness, gradient directions and glow strength as "
+                   "in the reference; do not brighten, saturate, warm, cool or shift any hue.",
+                   " PRIORITY: the exact silhouette, proportions and relative sizes of every part as in the reference "
+                   "(how big each part is relative to the others, stroke/ring thickness, spacing); do not enlarge, "
+                   "simplify or add parts."]
+
+
+def _aspect_words(w, h):
+    r = w / h
+    if r > 1.2:
+        return f"wide landscape image (about {r:.1f}:1)"
+    if r < 1 / 1.2:
+        return f"tall portrait image (about 1:{1 / r:.1f})"
+    return "square image"
 
 MANIFEST_PROMPT = """This is an APPROVED mobile/web UI design ({W}x{H} px). Inventory every visual ASSET a developer
 needs as a separate file to build it in code: icons, illustrations, images/photos, logos, decorative graphics, and
@@ -498,22 +653,45 @@ def cmd_spec(a):
     print(f"-> {d / 'design_spec.json'}  (multiply px values by px_to_dp={res['px_to_dp']} for dp/pt)")
 
 
-def _forge_job(mock, asset, cand, model):
+def _forge_job(mock, asset, cand, model, vary=True):
     b = asset["bbox"]
     colors = f" ({', '.join(asset['colors'])})" if asset.get("colors") else ""
     if asset["kind"] in ("background", "photo") and not asset["transparent"]:
-        prompt = BACKGROUND_PROMPT.format(W=mock.width, H=mock.height, kind=asset["kind"], name=asset["name"],
-                                          description=asset["description"], **b)
-        ref = mock.convert("RGB")
+        # the region's own crop kept the design's composition closer than the full mockup did
+        prompt = BACKGROUND_PROMPT.format(kind=asset["kind"], name=asset["name"], description=asset["description"],
+                                          aspect=_aspect_words(b["w"], b["h"]))
+        ref = ref_crop(mock, b, margin=0.02, long_side=1536)
         img, meta = edit(_png_bytes(ref), prompt, _size_for(b["w"], b["h"]), "opaque", model)
     else:
         ref = ref_crop(mock, b)
         bg = "Transparent background (real alpha)." if asset["transparent"] else "Opaque background matching the design."
         prompt = ASSET_PROMPT.format(kind=asset["kind"], name=asset["name"].replace("_", " "),
                                      description=asset["description"], colors=colors, bg=bg)
+        prompt += CANDIDATE_FOCUS[cand % len(CANDIDATE_FOCUS)] if vary else ""
         img, meta = edit(_png_bytes(ref), prompt, _size_for(b["w"], b["h"]),
                          "transparent" if asset["transparent"] else "opaque", model)
     return asset["name"], cand, img, meta, ref
+
+
+def _color_final(mock, asset, path, sc, strength, out_dir):
+    """Colour-match a chosen candidate into out_dir/<stem>_cm.png, kept only if it scores better (the original stays)."""
+    # opaque backgrounds are skipped: UI drawn over them skews the stats and desaturated the accents in tests
+    if strength <= 0 or sc["flags"] or not asset["transparent"]:
+        return None
+    img = color_match(mock, asset["bbox"], _rgba(path), strength)
+    new = score(mock, asset["bbox"], img, None, True)
+    info = {"strength": strength, "fid_before": sc["fid"], "fid_after": new["fid"], "applied": new["fid"] < sc["fid"]}
+    if info["applied"]:
+        p = Path(out_dir) / f"{Path(path).stem}_cm.png"
+        img.save(p)
+        info.update(path=str(p), score=new)
+    return info
+
+
+def _current(entry):
+    """Path of the image behind an asset's final file: the colour-matched copy when one was kept."""
+    cm = entry.get("color_match") or {}
+    return Path(cm["path"]) if cm.get("applied") else Path(entry["chosen"]["path"])
 
 
 def _finalize(asset, img):
@@ -546,7 +724,7 @@ def cmd_forge(a):
     jobs = [(x, c) for x in todo for c in range(a.candidates)]
     print(f"forging {len(todo)} assets x {a.candidates} candidates = {len(jobs)} image calls, {a.jobs} parallel")
     with cf.ThreadPoolExecutor(a.jobs) as ex:
-        futs = [ex.submit(_forge_job, mock, x, c, a.model) for x, c in jobs]
+        futs = [ex.submit(_forge_job, mock, x, c, a.model, not a.same_prompt) for x, c in jobs]
         for f in cf.as_completed(futs):
             try:
                 name, cand, raw, meta, ref = f.result()
@@ -559,8 +737,8 @@ def cmd_forge(a):
             img = _rgba(p)
             sc = score(mock, asset["bbox"], img, ref, asset["transparent"])
             results[name].append({"path": str(p), "meta": {"quality": meta["quality"], "size": meta["size"]}, "score": sc})
-            print(f"  {name} c{cand + 1}: diff={sc['diff']} flags={sc['flags'] or '-'} warn={sc['warn'] or '-'} "
-                  f"quality={meta['quality']}")
+            print(f"  {name} c{cand + 1}: fid={sc['fid']} (diff={sc['diff']} iou={sc['iou']} de={sc['de']} col={sc['col']}) "
+                  f"flags={sc['flags'] or '-'} warn={sc['warn'] or '-'} quality={meta['quality']}")
     rows = []
     for name, cands in results.items():
         asset = by_name[name]
@@ -568,17 +746,23 @@ def cmd_forge(a):
             continue
         cands.sort(key=lambda c: _rank(c["score"], c["meta"]))
         best = cands[0]
-        final = _finalize(asset, _rgba(best["path"]))
+        cm = _color_final(mock, asset, best["path"], best["score"], a.color_match, d / "raw")
+        report[name] = {"chosen": best, "candidates": cands, "color_match": cm}
+        if cm:
+            print(f"  {name}: colour match {cm['strength']} fid {cm['fid_before']} -> {cm['fid_after']} "
+                  f"({'kept' if cm['applied'] else 'discarded'})")
+        final = _finalize(asset, _rgba(_current(report[name])))
         out = d / "assets" / f"{name}.png"
         final.save(out)
-        report[name] = {"chosen": best, "candidates": cands, "final": str(out), "final_size": final.size,
-                        "dp": asset.get("dp"), "needs_attention": bool(best["score"]["flags"])}
+        report[name].update(final=str(out), final_size=final.size, dp=asset.get("dp"),
+                            needs_attention=bool(best["score"]["flags"]))
         b = asset["bbox"]
         pad = int(max(b["w"], b["h"]) * 0.25)
         target = mock.crop((max(0, b["x"] - pad), max(0, b["y"] - pad), b["x"] + b["w"] + pad, b["y"] + b["h"] + pad))
         rows.append([(f"{name} (design)", target)] +
-                    [(f"{'BEST ' if c is best else ''}d={c['score']['diff']} {' '.join(c['score']['flags'])}", _rgba(c["path"]))
-                     for c in cands])
+                    [(f"{'BEST ' if c is best else ''}fid={c['score']['fid']} {' '.join(c['score']['flags'])}", _rgba(c["path"]))
+                     for c in cands] +
+                    ([(f"BEST+colour fid={cm['fid_after']}", _rgba(cm["path"]))] if cm and cm["applied"] else []))
     report_path.write_text(json.dumps(report, indent=2))
     (d / "review").mkdir(exist_ok=True)
     stamp = time.strftime("%H%M%S")
@@ -593,8 +777,7 @@ def cmd_fix(a):
     d, m, mock = _load(a.dir)
     asset = next(x for x in m["assets"] if x["name"] == a.name)
     report = json.loads((d / "forge_report.json").read_text())
-    cur_path = Path(report[a.name]["chosen"]["path"])
-    cur = _rgba(cur_path)
+    cur = _rgba(_current(report[a.name]))
     cur_score = score(mock, asset["bbox"], cur, None, asset["transparent"])
     b = asset["bbox"]
     for rnd in range(a.rounds):
@@ -627,13 +810,17 @@ def cmd_fix(a):
         p.write_bytes(raw)
         new = _rgba(p)
         sc = score(mock, b, new, None, asset["transparent"])
-        better = _rank(sc, meta) < _rank(cur_score, None)
-        print(f"round {rnd + 1}: diff {cur_score['diff']} -> {sc['diff']} flags={sc['flags'] or '-'} -> "
+        cm = _color_final(mock, asset, p, sc, a.color_match, d / "raw")
+        final_img, final_sc = (_rgba(cm["path"]), cm["score"]) if cm and cm["applied"] else (new, sc)
+        better = _rank(final_sc, meta) < _rank(cur_score, None)
+        print(f"round {rnd + 1}: fid {cur_score['fid']} -> {final_sc['fid']} (diff {cur_score['diff']} -> {final_sc['diff']}"
+              f"{', colour-matched' if final_img is not new else ''}) flags={sc['flags'] or '-'} -> "
               f"{'KEPT' if better or a.accept else 'discarded (worse)'}  ({p})")
         if better or a.accept:
-            cur, cur_score = new, sc
+            cur, cur_score = final_img, final_sc
             report[a.name]["chosen"] = {"path": str(p), "meta": {"quality": meta["quality"], "size": meta["size"]}, "score": sc}
-            _finalize(asset, new).save(d / "assets" / f"{a.name}.png")
+            report[a.name]["color_match"] = cm
+            _finalize(asset, final_img).save(d / "assets" / f"{a.name}.png")
     (d / "forge_report.json").write_text(json.dumps(report, indent=2))
 
 
@@ -1342,9 +1529,13 @@ def cmd_pick(a):
     report = json.loads((d / "forge_report.json").read_text())
     src = Path(a.candidate) if Path(a.candidate).exists() else d / "raw" / f"{a.name}_c{a.candidate}.png"
     img = _rgba(src)
-    report[a.name]["chosen"] = {"path": str(src), "meta": {}, "score": score(mock, asset["bbox"], img, None, asset["transparent"])}
+    sc = score(mock, asset["bbox"], img, None, asset["transparent"])
+    report[a.name]["chosen"] = {"path": str(src), "meta": {}, "score": sc}
     report[a.name]["picked_manually"] = True
-    _finalize(asset, img).save(d / "assets" / f"{a.name}.png")
+    report[a.name]["color_match"] = cm = _color_final(mock, asset, src, sc, a.color_match, d / "raw")
+    if cm:
+        print(f"colour match {cm['strength']}: fid {cm['fid_before']} -> {cm['fid_after']} ({'kept' if cm['applied'] else 'discarded'})")
+    _finalize(asset, _rgba(_current(report[a.name]))).save(d / "assets" / f"{a.name}.png")
     (d / "forge_report.json").write_text(json.dumps(report, indent=2))
     print(f"{a.name} <- {src}")
 
@@ -1382,6 +1573,12 @@ def cmd_score(a):
         print(f, score(mock, asset["bbox"], _rgba(f), None, asset["transparent"]))
 
 
+def _color_args(p):
+    p.add_argument("--color-match", type=float, default=0.75, metavar="STRENGTH",
+                   help="pull the final file's colours toward the design's (0-1, default 0.75); kept only if it scores better")
+    p.add_argument("--no-color-match", dest="color_match", action="store_const", const=0.0)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -1402,12 +1599,13 @@ def main():
     p.add_argument("dir"); p.add_argument("--only"); p.add_argument("--candidates", type=int, default=2)
     p.add_argument("--jobs", type=int, default=6); p.add_argument("--force", action="store_true")
     p.add_argument("--include-svg", action="store_true", help="also raster-forge svg-format assets")
-    p.add_argument("--model", default=None); p.set_defaults(fn=cmd_forge)
+    p.add_argument("--same-prompt", action="store_true", help="no per-candidate colour/shape emphasis")
+    _color_args(p); p.add_argument("--model", default=None); p.set_defaults(fn=cmd_forge)
     p = sub.add_parser("fix", help="vision-diff the chosen asset against the design and apply one correction")
     p.add_argument("dir"); p.add_argument("name"); p.add_argument("--rounds", type=int, default=1)
     p.add_argument("--note", help="extra user feedback to include"); p.add_argument("--accept", action="store_true",
                                                                                    help="keep the result even if the score is worse")
-    p.add_argument("--model", default=None); p.set_defaults(fn=cmd_fix)
+    _color_args(p); p.add_argument("--model", default=None); p.set_defaults(fn=cmd_fix)
     p = sub.add_parser("svg", help="write svg-format assets as SVG with previews")
     p.add_argument("dir"); p.add_argument("--only"); p.set_defaults(fn=cmd_svg)
     p = sub.add_parser("vd", help="convert SVG files to Android VectorDrawable XML")
@@ -1431,7 +1629,7 @@ def main():
     p.add_argument("--platform", choices=["android", "ios", "web"], default="android")
     p.add_argument("--format", choices=["webp", "png"], default="webp"); p.set_defaults(fn=cmd_export)
     p = sub.add_parser("pick", help="override the chosen candidate (number from the review sheet, or a file path)")
-    p.add_argument("dir"); p.add_argument("name"); p.add_argument("candidate"); p.set_defaults(fn=cmd_pick)
+    p.add_argument("dir"); p.add_argument("name"); p.add_argument("candidate"); _color_args(p); p.set_defaults(fn=cmd_pick)
     p = sub.add_parser("score", help="score arbitrary files against a manifest asset")
     p.add_argument("dir"); p.add_argument("name"); p.add_argument("files", nargs="+"); p.set_defaults(fn=cmd_score)
     a = ap.parse_args()
