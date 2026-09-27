@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """gptkit: design-to-assets pipeline on any OpenAI-compatible API — UI mockups, asset inventory, 1:1 from-scratch
-redraws, SVG icons, Android VectorDrawables, animation frames and Lottie. Run `gptkit.py -h` for commands.
+redraws, SVG icons, Android VectorDrawables, animation frames, Lottie and app launcher icon sets. Run `gptkit.py -h`.
 
 Config (environment variables win over the config file):
   GPTKIT_BASE_URL / OPENAI_BASE_URL   default https://api.openai.com/v1
@@ -1336,6 +1336,656 @@ def cmd_export(a):
             print(f"  {p}")
 
 
+# ---- app launcher icons
+
+ICON_RULES = ("Square 1:1 canvas. FULL-BLEED: the background fills the entire square edge to edge; no rounded corners, "
+              "no border or frame, no drop shadow, no device, no mockup, no UI elements. One bold, simple central subject "
+              "with a strong silhouette that still reads at 48 px, centred and about 60% of the canvas wide so circular "
+              "masks never cut it, on a solid or smooth-gradient background with little or no texture. {text}")
+ICON_REF_PROMPT = ("The attached image is an APPROVED app design, given only as a style reference. Design a NEW launcher "
+                   "icon for this app in the SAME visual language: its palette ({colors}), rendering style, lighting and "
+                   "mood. Do NOT reproduce the screenshot or any illustration or scene in it (no landscape, horizon, "
+                   "water or card); invent a simple icon composition. Brief: {brief}. Direction: {direction}. ")
+ICON_TXT_PROMPT = "App launcher icon. Brief: {brief}. Direction: {direction}. "
+ICON_DIRECTIONS = ["one bold emblem of the core motif", "a minimal geometric mark with generous negative space",
+                   "the core motif with one small supporting element", "the core motif inside a simple badge shape"]
+ICON_FG_PROMPT = ("The attached image is an APPROVED app icon. Keep ONLY its foreground subject ({subject}) exactly as "
+                  "drawn: same shapes, colours, highlights and glow, same size and position on the same square canvas. "
+                  "Remove the background completely: transparent background (real alpha), no backdrop, no tile, no "
+                  "shadow plate, no text.")
+ICON_BG_PROMPT = ("The attached image is an APPROVED app icon. Keep ONLY its background, exactly as drawn: same colours, "
+                  "gradient, texture and lighting on the same square canvas. Remove {subject} completely and continue the "
+                  "background naturally where it was. Nothing else in the image.")
+ICON_GLYPH_PROMPT = """The image is the foreground of an APPROVED app icon. Write it as a single-colour glyph for Android
+13 themed icons (the system tints it; only the shape matters): one simplified, bold silhouette of the subject that keeps
+its recognisable outline and one or two defining inner cut-outs, readable at 24 px. Rules:
+- viewBox "0 0 108 108"; every shape inside the circle centred at (54,54) with radius 30.
+- Only path, circle, ellipse, rect, polygon elements; all filled with #000000 (fill-rule evenodd allowed for
+  cut-outs); no stroke, no gradient, no opacity, no transform, no text, no background shape.
+Return JSON {"svg": "<svg ...>...</svg>"}."""
+
+
+def _hex(c):
+    return "#%02X%02X%02X" % tuple(int(round(v)) for v in c[:3])
+
+
+def _palette(img, k=6, min_de=20):
+    """Main colours by area, skipping near-duplicates so accents are not crowded out by shades of the backdrop."""
+    q = img.convert("RGB").resize((256, 256)).quantize(32, method=Image.Quantize.FASTOCTREE)
+    pal = q.getpalette()
+    picked = []
+    for _, i in sorted(q.getcolors(), reverse=True):
+        c = pal[i * 3:i * 3 + 3]
+        if all(np.linalg.norm(_lab(c) - _lab(p)) >= min_de for p in picked):
+            picked.append(c)
+    return [_hex(c) for c in picked[:k]]
+
+
+def _lab(rgb):
+    c = np.asarray(rgb, float) / 255
+    c = np.where(c > 0.04045, ((c + 0.055) / 1.055) ** 2.4, c / 12.92)
+    xyz = c @ np.array([[0.4124, 0.2126, 0.0193], [0.3576, 0.7152, 0.1192], [0.1805, 0.0722, 0.9505]])
+    xyz /= [0.9505, 1.0, 1.089]
+    f = np.where(xyz > 0.008856, np.cbrt(xyz), 7.787 * xyz + 16 / 116)
+    return np.stack([116 * f[..., 1] - 16, 500 * (f[..., 0] - f[..., 1]), 200 * (f[..., 1] - f[..., 2])], -1)
+
+
+def _palette_de(img, ref, k=12):
+    """Mean CIELAB distance from each icon pixel to the nearest of the reference's k main colours."""
+    q = ref.convert("RGB").resize((160, 240)).quantize(k)
+    pal = _lab(np.array(q.getpalette()[:k * 3], float).reshape(-1, 3))
+    px = _lab(np.asarray(img.convert("RGB").resize((96, 96)), float).reshape(-1, 3))
+    return float(np.sqrt(((px[:, None] - pal[None]) ** 2).sum(-1)).min(1).mean())
+
+
+def _bg_feats(size, span=1.0):
+    yy, xx = np.clip(np.mgrid[0:size, 0:size] / (size - 1) * 2 * span - span, -1, 1)
+    return np.stack([np.ones_like(xx), xx, yy, xx * xx, yy * yy, xx * yy, np.sqrt(xx ** 2 + yy ** 2)], -1)
+
+
+def _bg_fit(img, S=192, ring=0.07, thr=26):
+    """Smooth (quadratic + radial) background model of an opaque icon: returns (subject mask, bg residual rms, coef)."""
+    a = np.asarray(img.convert("RGB").resize((S, S), Image.LANCZOS), float).reshape(-1, 3)
+    F = _bg_feats(S)
+    use = (np.maximum(abs(F[..., 1]), abs(F[..., 2])) > 1 - 2 * ring).reshape(-1)
+    F = F.reshape(-1, 7)
+    for _ in range(4):
+        coef = np.linalg.lstsq(F[use], a[use], rcond=None)[0]
+        dist = np.linalg.norm(a - F @ coef, axis=1)
+        use = dist < thr
+    resid = float(np.sqrt((dist[use] ** 2).mean())) if use.any() else 99.0
+    return (~use).reshape(S, S), resid, coef
+
+
+def _bg_render(coef, size, span=1.0):
+    """The fitted background at `size` px; span > 1 extends it past the concept by clamping (edge continuation)."""
+    rgb = np.clip(_bg_feats(size, span) @ coef, 0, 255).round().astype(np.uint8)
+    return Image.fromarray(rgb, "RGB").convert("RGBA")
+
+
+def _radius(mask, q=99.5):
+    """Extent of a centred subject: q-th percentile distance of its pixels from the centre, as a fraction of half-side."""
+    ys, xs = np.nonzero(mask)
+    if not len(xs):
+        return 0.0
+    h, w = mask.shape
+    d = np.sqrt(((xs + 0.5) / w * 2 - 1) ** 2 + ((ys + 0.5) / h * 2 - 1) ** 2)
+    return float(np.percentile(d, q))
+
+
+def _mask(shape, T, ss=4):
+    S = T * ss
+    m = Image.new("L", (S, S), 0)
+    d = ImageDraw.Draw(m)
+    if shape == "circle":
+        d.ellipse([0, 0, S - 1, S - 1], fill=255)
+    elif shape == "squircle":
+        t = np.linspace(-1, 1, S)
+        m = Image.fromarray(((abs(t[None]) ** 5 + abs(t[:, None]) ** 5) <= 1).astype(np.uint8) * 255)
+    elif shape == "rounded":
+        d.rounded_rectangle([0, 0, S - 1, S - 1], radius=int(S * 0.22), fill=255)
+    elif shape == "teardrop":
+        d.ellipse([0, 0, S - 1, S - 1], fill=255)
+        d.rounded_rectangle([S // 2, S // 2, S - 1, S - 1], radius=int(S * 0.1), fill=255)
+    else:
+        d.rectangle([0, 0, S - 1, S - 1], fill=255)
+    return m.resize((T, T), Image.LANCZOS)
+
+
+MASKS = ("circle", "squircle", "rounded", "teardrop")
+BUSY_RESID = 9.5
+
+
+def _masked(img, shape, T):
+    im = img.convert("RGBA").resize((T, T), Image.LANCZOS)
+    im.putalpha(ImageChops.multiply(im.getchannel("A"), _mask(shape, T)))
+    return im
+
+
+def _icon_rows(label, img, T=160, small=48, wall=("#1c2340", "#e9e6f2")):
+    """Review row: full-bleed art, each mask large, then each mask at `small` px (+2x zoom) on dark/light wallpaper."""
+    n = len(MASKS) + 1
+    pw = len(MASKS) * (small + 8) + 8
+    row = Image.new("RGB", (T * n + 2 * (pw + 10) + 10, T + 18), "white")
+    ImageDraw.Draw(row).text((4, 2), label[:140], fill="black")
+    row.paste(img.convert("RGB").resize((T, T), Image.LANCZOS), (0, 18))
+    for i, s in enumerate(MASKS):
+        tile = checker(T, T, 10)
+        m = _masked(img, s, T - 8)
+        tile.paste(m, (4, 4), m)
+        row.paste(tile, ((i + 1) * T, 18))
+    for j, col in enumerate(wall):
+        panel = Image.new("RGB", (pw, T), col)
+        for i, s in enumerate(MASKS):
+            ic = _masked(img, s, small)
+            panel.paste(ic, (8 + i * (small + 8), 6), ic)
+        zoom = _masked(img, "circle", small).resize((small * 2, small * 2), Image.NEAREST)
+        panel.paste(zoom, (8, small + 12), zoom)
+        row.paste(panel, (T * n + 10 + j * (pw + 10), 18))
+    return row
+
+
+def _stack(rows, out):
+    W = max(r.width for r in rows)
+    im = Image.new("RGB", (W, sum(r.height + 6 for r in rows)), "white")
+    y = 0
+    for r in rows:
+        im.paste(r, (0, y))
+        y += r.height + 6
+    im.save(out)
+    return out
+
+
+def _square_ref(img, long_side=1024):
+    im = img.convert("RGB")
+    side = max(im.size)
+    bg = tuple(int(v) for v in np.median(np.asarray(im).reshape(-1, 3), 0))
+    c = Image.new("RGB", (side, side), bg)
+    c.paste(im, ((side - im.width) // 2, (side - im.height) // 2))
+    return c.resize((long_side, long_side), Image.LANCZOS)
+
+
+def _icon_metrics(img, ref=None):
+    fg, resid, _ = _bg_fit(img)
+    edge = np.concatenate([fg[:2].ravel(), fg[-2:].ravel(), fg[:, :2].ravel(), fg[:, -2:].ravel()]).mean()
+    m = {"subject_r": round(_radius(fg), 3), "bg_resid": round(resid, 1), "edge_touch": round(float(edge), 3),
+         "flags": []}
+    if ref is not None:
+        m["palette_de"] = round(_palette_de(img, ref), 1)
+        if _mean_diff(img.convert("RGB").resize((64, 64)), _square_ref(ref, 64)) < 10:
+            m["flags"].append("COPY:returned-reference")
+    if resid > BUSY_RESID:
+        m["flags"].append("BUSY-BACKGROUND")
+    elif m["subject_r"] > 66 / 72:
+        m["flags"].append("SUBJECT-TOO-BIG")
+    if edge > 0.25:
+        m["flags"].append("BLEEDS-OFF-EDGE")
+    return m
+
+
+def cmd_appicon_concepts(a):
+    out = Path(a.out)
+    (out / "review").mkdir(parents=True, exist_ok=True)
+    ref = _rgba(a.mockup) if a.mockup else None
+    if ref is not None and a.crop:
+        x, y, w, h = map(int, a.crop.split(","))
+        ref = ref.crop((x, y, x + w, y + h))
+    text = f'The only text is "{a.text}", large and legible.' if a.text else "No text, letters or numbers anywhere."
+    dirs = [s.strip() for s in a.directions.split("|")] if a.directions else ICON_DIRECTIONS
+    colors = a.colors or (", ".join(_palette(ref)) if ref is not None else "")
+
+    def one(i):
+        direction = dirs[i % len(dirs)]
+        head = ICON_REF_PROMPT.format(colors=colors, brief=a.brief, direction=direction) if ref is not None else \
+            ICON_TXT_PROMPT.format(brief=a.brief, direction=direction)
+        prompt = head + ICON_RULES.format(text=text)
+        for _ in range(2):
+            if ref is not None:
+                img, meta = edit(_png_bytes(_square_ref(ref)), prompt, "1024x1024", "opaque", a.model, a.fidelity)
+            else:
+                img, meta = generate(prompt, "1024x1024", "opaque", a.model)
+            if _aspect_ok(img, "1024x1024"):
+                break
+        p = out / f"{a.name}_v{i + 1}.png"
+        im = Image.open(io.BytesIO(img)).convert("RGB")
+        side = min(im.size)
+        im.crop(((im.width - side) // 2, (im.height - side) // 2, (im.width + side) // 2, (im.height + side) // 2)).save(p)
+        return p, direction, prompt, meta
+    report_path = out / "concepts.json"
+    report = json.loads(report_path.read_text()) if report_path.exists() else {}
+    rows = []
+    with cf.ThreadPoolExecutor(min(a.jobs, a.variants)) as ex:
+        for p, direction, prompt, meta in ex.map(one, range(a.variants)):
+            img = _rgba(p)
+            m = _icon_metrics(img, ref)
+            report[p.name] = {"path": str(p), "direction": direction, "prompt": prompt, "metrics": m,
+                              "reference": a.mockup, "quality": meta["quality"]}
+            print(f"{p}  {direction}\n    {m}")
+            rows.append(_icon_rows(f"{p.stem}: {direction}  r={m['subject_r']} bg_resid={m['bg_resid']} "
+                                   f"palette_de={m.get('palette_de', '-')} {' '.join(m['flags'])}", img))
+    report_path.write_text(json.dumps(report, indent=2))
+    print("review sheet ->", _stack(rows, out / "review" / f"concepts_{time.strftime('%H%M%S')}.png"))
+
+
+def _min_alpha(C, B, floor=0.04):
+    al = np.where(C > B, (C - B) / np.maximum(255 - B, 1), (B - C) / np.maximum(B, 1)).max(-1)
+    return np.clip((al - floor) / (1 - floor), 0, 1)[..., None]
+
+
+def _unmix(C, B, floor=0.04, zone=0.03, Bz=None):
+    """Min-alpha matte of C over known background B (exact recomposite), limited to a zone around the subject vs Bz."""
+    al = _min_alpha(C, B, floor)
+    F = np.clip((C - (1 - al) * B) / np.maximum(al, 1e-3), 0, 255)
+    fg = Image.fromarray(np.dstack([F, al * 255]).round().astype(np.uint8), "RGBA")
+    if zone:
+        A = fg.getchannel("A")
+        n = 256
+        az = al if Bz is None else _min_alpha(C, Bz, floor)
+        core = np.asarray(Image.fromarray((az[..., 0] * 255).astype(np.uint8)).resize((n, n), Image.BOX)
+                          .point(lambda v: 255 if v > 77 else 0)).copy()
+        e = max(1, n // 50)
+        core[:e], core[-e:], core[:, :e], core[:, -e:] = 0, 0, 0, 0
+        z = Image.fromarray(core).filter(ImageFilter.MaxFilter(int(n * zone) * 2 + 1))
+        z = z.resize(A.size, Image.BILINEAR).filter(ImageFilter.GaussianBlur(A.width * zone / 2))
+        fg.putalpha(ImageChops.multiply(A, z))
+    return fg
+
+
+def _sep_metrics(fg, C, B):
+    """Separation cleanliness: recomposite error on the subject zone, kept-backdrop and semi-transparent fractions."""
+    al = np.asarray(fg.getchannel("A"), float) / 255
+    F = np.asarray(fg.convert("RGB"), float)
+    comp = F * al[..., None] + B * (1 - al[..., None])
+    zone = np.asarray(Image.fromarray((al > 0.1).astype(np.uint8) * 255).filter(ImageFilter.MaxFilter(9))) > 0
+    solid = al > 0.9
+    kept = (np.abs(F - B).sum(-1) < 30) & solid
+    return {"recomposite_diff": round(float(np.abs(comp - C).mean(-1)[zone].mean()), 2) if zone.any() else None,
+            "kept_backdrop": round(float(kept.sum() / max(solid.sum(), 1)), 3),
+            "semi_transparent": round(float(((al > 0.1) & (al < 0.9)).sum() / max((al > 0.1).sum(), 1)), 3)}
+
+
+def _fit_vd_gradient(Bv):
+    """Best 3-stop linear/radial VectorDrawable gradient (108 canvas) for a background sampled on the 72dp viewport."""
+    n = Bv.shape[0]
+    g = (np.arange(n) + 0.5) / n * 72 + 18
+    X, Y = np.meshgrid(g, g)
+    cols = Bv.reshape(-1, 3)
+    stops = np.array([0, 0.5, 1])
+
+    def fit(t):
+        H = np.maximum(0, 1 - np.abs(np.clip(t, 0, 1).reshape(-1, 1) - stops) / 0.5)
+        coef = np.clip(np.linalg.lstsq(H, cols, rcond=None)[0], 0, 255)
+        return float(np.sqrt(((H @ coef - cols) ** 2).mean())), coef
+    best = (1e9, None)
+    corners = np.array([[0, 0], [108, 0], [0, 108], [108, 108]], float)
+    for ang in range(0, 360, 10):
+        u = np.array([math.cos(math.radians(ang)), math.sin(math.radians(ang))])
+        lo, hi = (corners @ u).min(), (corners @ u).max()
+        err, coef = fit(((X * u[0] + Y * u[1]) - lo) / (hi - lo))
+        if err < best[0]:
+            c = 54 * u.sum()
+            best = (err, {"type": "linear", "start": (54 + (lo - c) * u[0], 54 + (lo - c) * u[1]),
+                          "end": (54 + (hi - c) * u[0], 54 + (hi - c) * u[1]), "colors": coef})
+    for cx in range(18, 91, 8):
+        for cy in range(18, 91, 8):
+            for r in (40, 56, 72, 90, 110):
+                err, coef = fit(np.hypot(X - cx, Y - cy) / r)
+                if err < best[0]:
+                    best = (err, {"type": "radial", "center": (cx, cy), "radius": r, "colors": coef})
+    return best
+
+
+def _vd_gradient_xml(spec):
+    if spec["type"] == "linear":
+        head = (f'android:type="linear" android:startX="{spec["start"][0]:.2f}" android:startY="{spec["start"][1]:.2f}" '
+                f'android:endX="{spec["end"][0]:.2f}" android:endY="{spec["end"][1]:.2f}"')
+    else:
+        head = (f'android:type="radial" android:centerX="{spec["center"][0]}" android:centerY="{spec["center"][1]}" '
+                f'android:gradientRadius="{spec["radius"]}"')
+    items = "".join(f'\n                <item android:offset="{o:g}" android:color="{_hex(c)}" />'
+                    for o, c in zip((0, 0.5, 1), spec["colors"]))
+    return ('<?xml version="1.0" encoding="utf-8"?>\n<vector xmlns:android="http://schemas.android.com/apk/res/android"\n'
+            '    xmlns:aapt="http://schemas.android.com/aapt"\n    android:width="108dp"\n    android:height="108dp"\n'
+            '    android:viewportWidth="108"\n    android:viewportHeight="108">\n'
+            '    <path android:pathData="M0,0h108v108h-108z">\n        <aapt:attr name="android:fillColor">\n'
+            f'            <gradient {head}>{items}\n            </gradient>\n        </aapt:attr>\n    </path>\n</vector>\n')
+
+
+def _vd_gradient_render(spec, size):
+    g = (np.arange(size) + 0.5) / size * 108
+    X, Y = np.meshgrid(g, g)
+    if spec["type"] == "linear":
+        (x0, y0), (x1, y1) = spec["start"], spec["end"]
+        t = ((X - x0) * (x1 - x0) + (Y - y0) * (y1 - y0)) / max((x1 - x0) ** 2 + (y1 - y0) ** 2, 1e-6)
+    else:
+        t = np.hypot(X - spec["center"][0], Y - spec["center"][1]) / spec["radius"]
+    t = np.clip(t, 0, 1)[..., None]
+    c = spec["colors"]
+    img = np.where(t < 0.5, c[0] + (c[1] - c[0]) * t * 2, c[1] + (c[2] - c[1]) * (t - 0.5) * 2)
+    return Image.fromarray(img.round().astype(np.uint8), "RGB").convert("RGBA")
+
+
+def _svg_raster(svg_text, work, size=432):
+    """Alpha mask of a single-colour SVG (forced black, rendered on white by whatever renderer exists) or None."""
+    black = re.sub(r'(fill|stroke)="(?!none)[^"]*"', r'\1="#000000"', svg_text)
+    p = Path(work) / "_glyph_probe.svg"
+    p.write_text(black)
+    png = _render_svg(p, work, size)
+    p.unlink(missing_ok=True)
+    if not png:
+        return None
+    L = np.asarray(Image.open(png).convert("RGBA").convert("L").resize((size, size)), float)
+    png.unlink(missing_ok=True)
+    return Image.fromarray((255 - L).astype(np.uint8), "L")
+
+
+def _vd_group(xml, s, tx, ty):
+    decl, tag, body = xml.split(">", 2)
+    return (f'{decl}>{tag}>\n    <group android:scaleX="{s:.4f}" android:scaleY="{s:.4f}" android:translateX="{tx:.3f}" '
+            f'android:translateY="{ty:.3f}">' + body.replace("</vector>", "").rstrip() + "\n    </group>\n</vector>\n")
+
+
+def _android_sdk():
+    sdk = Path(os.environ.get("ANDROID_HOME") or os.environ.get("ANDROID_SDK_ROOT") or "~/Library/Android/sdk").expanduser()
+    ver = lambda p: [int(x) for x in re.findall(r"\d+", p.parent.name)]
+    aapt = sorted((sdk / "build-tools").glob("*/aapt2"), key=ver)
+    jars = sorted((sdk / "platforms").glob("android-*/android.jar"), key=ver)
+    return (aapt[-1] if aapt else shutil.which("aapt2")), (jars[-1] if jars else None)
+
+
+def _aapt2_check(res, name, work):
+    aapt, jar = _android_sdk()
+    if not aapt:
+        return "skipped (aapt2 not found; set ANDROID_HOME)"
+    work.mkdir(parents=True, exist_ok=True)
+    r = subprocess.run([str(aapt), "compile", "--dir", str(res), "-o", str(work / "res.zip")], capture_output=True, text=True)
+    if r.returncode:
+        return "compile FAILED: " + (r.stderr or r.stdout).strip()[:800]
+    if not jar:
+        return "compile ok (link skipped: no platforms/android.jar)"
+    (work / "AndroidManifest.xml").write_text(
+        '<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="com.gptkit.iconcheck">\n'
+        '  <uses-sdk android:minSdkVersion="21" android:targetSdkVersion="34" />\n'
+        f'  <application android:icon="@mipmap/{name}" android:roundIcon="@mipmap/{name}_round" />\n</manifest>\n')
+    r = subprocess.run([str(aapt), "link", "-I", str(jar), "--manifest", str(work / "AndroidManifest.xml"),
+                        "-o", str(work / "check.apk"), str(work / "res.zip")], capture_output=True, text=True)
+    return f"compile+link ok ({jar.parent.name})" if not r.returncode else "link FAILED: " + (r.stderr or r.stdout).strip()[:800]
+
+
+def _actool_check(iconset, work):
+    if not shutil.which("xcrun") or subprocess.run(["xcrun", "--find", "actool"], capture_output=True).returncode:
+        return "skipped (no Xcode actool)"
+    cat = work / "Assets.xcassets"
+    shutil.rmtree(cat, ignore_errors=True)
+    shutil.copytree(iconset, cat / iconset.name)
+    (cat / "Contents.json").write_text(json.dumps({"info": {"author": "xcode", "version": 1}}))
+    (work / "out").mkdir(parents=True, exist_ok=True)
+    r = subprocess.run(["xcrun", "actool", str(cat), "--compile", str(work / "out"), "--platform", "iphoneos",
+                        "--minimum-deployment-target", "17.0", "--app-icon", iconset.stem, "--output-partial-info-plist",
+                        str(work / "out" / "partial.plist"), "--warnings", "--errors", "--output-format",
+                        "human-readable-text"], capture_output=True, text=True)
+    msgs = list(dict.fromkeys(ln.split(": ", 1)[-1] for ln in (r.stdout + r.stderr).splitlines()
+                              if ": warning:" in ln or ": error:" in ln))
+    if r.returncode == 0 and not msgs:
+        return "ok (Assets.car compiled)"
+    return "; ".join(msgs)[:800] or f"failed (exit {r.returncode})"
+
+
+def _save_densities(img, res, folder, name, dp):
+    for dens, s in DENSITIES.items():
+        out = res / f"{folder}-{dens}"
+        out.mkdir(parents=True, exist_ok=True)
+        img.resize((round(dp * s), round(dp * s)), Image.LANCZOS).save(out / f"{name}.webp", "WEBP", lossless=True)
+
+
+def _tiles(items, T=160):
+    row = Image.new("RGB", (sum(max(T, im.width) + 8 for _, im in items), T + 18), "white")
+    d = ImageDraw.Draw(row)
+    x = 0
+    for label, im in items:
+        w = max(T, im.width)
+        tile = checker(w, T, 10)
+        im = im.convert("RGBA")
+        tile.paste(im, ((w - im.width) // 2, (T - im.height) // 2), im)
+        row.paste(tile, (x, 18))
+        d.text((x + 2, 2), label[:max(8, w // 6)], fill="black")
+        x += w + 8
+    return row
+
+
+def _themed(mono, T, bg, tint):
+    lay = mono.resize((T * 3 // 2, T * 3 // 2), Image.LANCZOS)
+    c = Image.new("RGBA", lay.size, bg)
+    c.paste(Image.new("RGBA", lay.size, tint), (0, 0), lay.getchannel("A"))
+    v = c.crop((T // 4, T // 4, T // 4 + T, T // 4 + T))
+    return _masked(v, "circle", T)
+
+
+def _icon_background(a, concept, coef, resid, res, work, N, M):
+    """Background layer on the 108dp canvas (M px) plus its resource reference and fit report."""
+    vp = (M // 6, M // 6, M // 6 + N, M // 6 + N)
+    model = _bg_render(coef, M, 1.5)
+    grad_err, grad = _fit_vd_gradient(np.asarray(model.crop(vp).resize((64, 64)).convert("RGB"), float))
+    spread = float(np.ptp(np.asarray(model.crop(vp).convert("RGB"), float).reshape(-1, 3), 0).max())
+    kind = a.bg
+    if kind == "auto":
+        kind = "image" if resid > BUSY_RESID else "color" if spread < 6 else "gradient" if grad_err <= 3.5 else "model"
+    info = {"kind": kind, "fit_resid": round(resid, 1), "vd_gradient_rms": round(grad_err, 2), "spread": round(spread, 1)}
+    name = f"{a.name}_background"
+    if kind == "color":
+        color = a.bg_color or _hex(np.median(np.asarray(model.crop(vp).convert("RGB")).reshape(-1, 3), 0))
+        (res / "values").mkdir(exist_ok=True)
+        (res / "values" / f"{name}.xml").write_text(
+            f'<?xml version="1.0" encoding="utf-8"?>\n<resources>\n    <color name="{name}">{color}</color>\n</resources>\n')
+        return Image.new("RGBA", (M, M), color), f"@color/{name}", info
+    if kind == "gradient":
+        (res / "drawable").mkdir(exist_ok=True)
+        (res / "drawable" / f"{name}.xml").write_text(_vd_gradient_xml(grad))
+        return _vd_gradient_render(grad, M), f"@drawable/{name}", info
+    bgm = model
+    if kind == "image":
+        raw, _ = edit(_png_bytes(concept), ICON_BG_PROMPT.format(subject=a.subject), "1024x1024", "opaque", a.model)
+        (work / "bg_api_raw.png").write_bytes(raw)
+        plate = np.asarray(_rgba(work / "bg_api_raw.png").convert("RGB").resize((N, N), Image.LANCZOS))
+        p = (M - N) // 2
+        bgm = Image.fromarray(np.pad(plate, ((p, M - N - p), (p, M - N - p), (0, 0)), mode="reflect")).convert("RGBA")
+    _save_densities(bgm, res, "mipmap", name, 108)
+    return bgm, f"@mipmap/{name}", info
+
+
+def _icon_glyph(a, concept, sil_mask, limit, res, work, M):
+    """gpt-6 single-colour glyph, measured and fitted onto the silhouette's box inside the safe zone -> VectorDrawable."""
+    svg = ask([ICON_GLYPH_PROMPT + f"\nThe subject is: {a.subject}.", concept, "Its foreground silhouette:",
+               Image.merge("RGB", [sil_mask.point(lambda v: 255 - v)] * 3).resize((512, 512))], "json")["svg"]
+    (work / "glyph_raw.svg").write_text(svg)
+    ET.fromstring(svg)
+    g_mask = _svg_raster(svg, work, 432)
+    s, tx, ty, info, glyph = 1.0, 0.0, 0.0, {"note": "no SVG renderer: placement not verified"}, None
+    if g_mask is not None and g_mask.getbbox():
+        place = lambda s, tx, ty: g_mask.transform((432, 432), Image.AFFINE, (1 / s, 0, -tx * 4 / s, 0, 1 / s, -ty * 4 / s),
+                                                   Image.BILINEAR)
+        gb = [v / 4 for v in g_mask.point(lambda v: 255 if v > 128 else 0).getbbox()]
+        fb = [v * 108 / M for v in sil_mask.getbbox()]
+        s = min((fb[2] - fb[0]) / (gb[2] - gb[0]), (fb[3] - fb[1]) / (gb[3] - gb[1]))
+        tx, ty = (fb[0] + fb[2] - s * (gb[0] + gb[2])) / 2, (fb[1] + fb[3] - s * (gb[1] + gb[3])) / 2
+        r = _radius(np.asarray(place(s, tx, ty)) > 128, 99.9) * 54
+        if r > limit:
+            k = limit / r
+            s, tx, ty = s * k, 54 + (tx - 54) * k, 54 + (ty - 54) * k
+        placed = place(s, tx, ty)
+        glyph = Image.new("RGBA", (432, 432), (255, 255, 255, 0))
+        glyph.putalpha(placed)
+        sm, pm = np.asarray(sil_mask.resize((432, 432))) > 128, np.asarray(placed) > 128
+        info = {"iou_vs_silhouette": round(float((sm & pm).sum() / max((sm | pm).sum(), 1)), 3),
+                "radius_dp": round(_radius(pm, 99.9) * 54, 2), "scale": round(s, 3)}
+    (res / "drawable").mkdir(exist_ok=True)
+    (res / "drawable" / f"{a.name}_monochrome.xml").write_text(_vd_group(svg_to_vd(svg, 108), s, tx, ty))
+    (work / "glyph.svg").write_text(re.sub(r"(<svg\b[^>]*>)", rf'\1<g transform="translate({tx:.3f} {ty:.3f}) '
+                                           rf'scale({s:.4f})">', svg, count=1).replace("</svg>", "</g></svg>"))
+    return glyph, info
+
+
+def cmd_appicon_build(a):
+    out = Path(a.out)
+    res, work = out / "android" / "res", out / "work"
+    for p in (res, work, out / "review"):
+        p.mkdir(parents=True, exist_ok=True)
+    N, M = 1024, 1536
+    vp = (M // 6, M // 6, M // 6 + N, M // 6 + N)
+    concept = _rgba(a.concept).convert("RGB")
+    side = min(concept.size)
+    concept = concept.crop(((concept.width - side) // 2, (concept.height - side) // 2,
+                            (concept.width + side) // 2, (concept.height + side) // 2)).resize((N, N), Image.LANCZOS)
+    C = np.asarray(concept, float)
+    _, resid, coef = _bg_fit(concept)
+    report = {"concept": str(a.concept)}
+
+    # background first: the foreground is matted against exactly the background layer that ships
+    bgm, bg_ref, report["background"] = _icon_background(a, concept, coef, resid, res, work, N, M)
+    report["background"]["resource"] = bg_ref
+    B = np.asarray(bgm.crop(vp).convert("RGB"), float)
+    fg = _unmix(C, B, Bz=np.asarray(_bg_render(coef, N).convert("RGB"), float))
+    if resid > BUSY_RESID and report["background"]["kind"] != "image":
+        report["warnings"] = [f"busy background (fit residual {resid:.1f} > {BUSY_RESID}): scenery ends up in the "
+                              "foreground; use --bg image"]
+    report["separation"] = {"local": _sep_metrics(fg, C, B), "used": a.separate}
+    if a.separate == "api":
+        raw, _ = edit(_png_bytes(concept), ICON_FG_PROMPT.format(subject=a.subject), "1024x1024", "transparent", a.model)
+        (work / "fg_api_raw.png").write_bytes(raw)
+        target = Image.new("RGBA", (N, N), (0, 0, 0, 0))
+        target.putalpha(fg.getchannel("A").point(lambda v: 255 if v > 128 else 0))
+        fg = _register(_rgba(work / "fg_api_raw.png").resize((N, N), Image.LANCZOS), target)
+        report["separation"]["api"] = _sep_metrics(fg, C, B)
+    fg.save(work / "foreground_concept_aligned.png")
+
+    # safe zone: the concept maps onto the 72dp viewport; shrink the subject only if it leaves the 66dp circle
+    limit, shrink = 33 * a.fg_scale, 1.0
+    for _ in range(3):
+        fgm = Image.new("RGBA", (M, M), (0, 0, 0, 0))
+        fs = fg.resize((round(N * shrink), round(N * shrink)), Image.LANCZOS)
+        fgm.alpha_composite(fs, ((M - fs.width) // 2, (M - fs.height) // 2))
+        Am = np.asarray(fgm.getchannel("A"))
+        r = _radius(Am > 128, 99.9) * 54
+        if r <= limit:
+            break
+        shrink *= limit / r * 0.995
+    sz = {"shrink": round(shrink, 3), "subject_radius_dp": round(r, 2),
+          "faint_radius_dp": round(_radius(Am > 20, 99.9) * 54, 2), "limit_dp": 33}
+    report["safe_zone"] = {**sz, "ok": sz["subject_radius_dp"] <= 33.0}
+    _save_densities(fgm, res, "mipmap", f"{a.name}_foreground", 108)
+
+    # monochrome layer (Android 13 themed icons)
+    sil_mask = fgm.getchannel("A").point(lambda v: 255 if v > 77 else 0).filter(ImageFilter.GaussianBlur(M / 400))
+    sil_mask = sil_mask.point(lambda v: 255 if v > 127 else 0)
+    sil = Image.new("RGBA", (M, M), (255, 255, 255, 0))
+    sil.putalpha(sil_mask)
+    monos, mono_ref = {"silhouette": sil}, None
+    if a.mono in ("glyph", "both") and not _config()["key"]:
+        print("  ! no API key: monochrome glyph skipped, using the silhouette")
+    elif a.mono in ("glyph", "both"):
+        try:
+            glyph, report["glyph"] = _icon_glyph(a, concept, sil_mask, limit, res, work, M)
+            if glyph is not None:
+                monos["glyph"] = glyph
+            mono_ref = f"@drawable/{a.name}_monochrome"
+        except (ValueError, KeyError, ET.ParseError, RuntimeError) as e:
+            print(f"  ! glyph failed ({str(e)[:200]}); using the silhouette")
+    if a.mono in ("silhouette", "both") or (a.mono == "glyph" and not mono_ref):
+        _save_densities(sil, res, "mipmap", f"{a.name}_monochrome", 108)
+        mono_ref = mono_ref or f"@mipmap/{a.name}_monochrome"
+    report["monochrome"] = mono_ref
+    (res / "mipmap-anydpi-v26").mkdir(exist_ok=True)
+    mono_line = f'\n    <monochrome android:drawable="{mono_ref}" />' if mono_ref else ""
+    xml = ('<?xml version="1.0" encoding="utf-8"?>\n<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">\n'
+           f'    <background android:drawable="{bg_ref}" />\n    <foreground android:drawable="@mipmap/{a.name}_foreground" />'
+           f'{mono_line}\n</adaptive-icon>\n')
+    for n in (a.name, f"{a.name}_round"):
+        (res / "mipmap-anydpi-v26" / f"{n}.xml").write_text(xml)
+
+    # legacy 48dp launcher icons (2dp inset) and the Play Store 512
+    comp = bgm.copy()
+    comp.alpha_composite(fgm)
+    view = comp.crop(vp)
+    report["composite_diff_vs_concept"] = round(_mean_diff(view, concept), 2)
+    for suffix, shape in (("", "rounded"), ("_round", "circle")):
+        legacy = _fit(_masked(view, shape, 176), 192, 192)
+        for dens, s in DENSITIES.items():
+            legacy.resize((round(48 * s),) * 2, Image.LANCZOS).save(res / f"mipmap-{dens}" / f"{a.name}{suffix}.webp",
+                                                                    "WEBP", lossless=True)
+    view.convert("RGB").resize((512, 512), Image.LANCZOS).save(out / "android" / "play_store_512.png")
+
+    # iOS: one opaque 1024 (the concept itself unless --ios-from composite) + dark / tinted appearances
+    ios = out / "ios" / "AppIcon.appiconset"
+    ios.mkdir(parents=True, exist_ok=True)
+    ios_img = concept if a.ios_from == "concept" else view.convert("RGB")
+    ios_img.save(ios / "AppIcon-1024.png")
+    fg.save(ios / "AppIcon-1024-dark.png")
+    tinted = Image.new("RGBA", (N, N), (0, 0, 0, 255))
+    tinted.alpha_composite(fg)
+    tinted.convert("L").convert("RGB").save(ios / "AppIcon-1024-tinted.png")
+    entry = lambda fn, **ap: {**({"appearances": [ap]} if ap else {}), "filename": fn, "idiom": "universal",
+                              "platform": "ios", "size": "1024x1024"}
+    (ios / "Contents.json").write_text(json.dumps({"images": [
+        entry("AppIcon-1024.png"), entry("AppIcon-1024-dark.png", appearance="luminosity", value="dark"),
+        entry("AppIcon-1024-tinted.png", appearance="luminosity", value="tinted")],
+        "info": {"author": "xcode", "version": 1}}, indent=2))
+    chk = Image.open(ios / "AppIcon-1024.png")
+    report["ios"] = {"size": chk.size, "opaque": chk.mode == "RGB" and "transparency" not in chk.info,
+                     "actool": _actool_check(ios, work / "actool") if a.validate else "skipped"}
+
+    # web: favicon.ico, apple-touch-icon, PWA any + maskable (subject inside the central 80% circle)
+    web = out / "web"
+    web.mkdir(exist_ok=True)
+    rounded = _masked(view, "rounded", 512)
+    ico = [rounded.resize((s, s), Image.LANCZOS) for s in (16, 32, 48)]
+    ico[2].save(web / "favicon.ico", sizes=[(16, 16), (32, 32), (48, 48)], append_images=ico[:2])
+    ios_img.resize((180, 180), Image.LANCZOS).save(web / "apple-touch-icon.png")
+    for s in (192, 512):
+        rounded.resize((s, s), Image.LANCZOS).save(web / f"icon-{s}.png")
+    k = round(M * 66 / 0.8 / 108 / 2)
+    mbox = (M // 2 - k, M // 2 - k, M // 2 + k, M // 2 + k)
+    maskable = comp.crop(mbox).convert("RGB").resize((512, 512), Image.LANCZOS)
+    maskable.save(web / "icon-maskable-512.png")
+    (web / "manifest-icons.json").write_text(json.dumps({"icons": [
+        {"src": "/icon-192.png", "sizes": "192x192", "type": "image/png"},
+        {"src": "/icon-512.png", "sizes": "512x512", "type": "image/png"},
+        {"src": "/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable"}]}, indent=2))
+    mr = _radius(np.asarray(fgm.crop(mbox).getchannel("A")) > 128, 99.9)
+    report["web_maskable"] = {"subject_r": round(mr, 3), "ok": mr <= 0.8}
+    report["aapt2"] = _aapt2_check(res, a.name, work / "aapt2") if a.validate else "skipped"
+
+    guide = fgm.resize((200, 200), Image.LANCZOS)
+    for dp, col in ((33, "#34c759"), (36, "#ff9500")):
+        ImageDraw.Draw(guide).ellipse([100 - dp * 100 / 54, 100 - dp * 100 / 54, 100 + dp * 100 / 54, 100 + dp * 100 / 54],
+                                      outline=col, width=2)
+    on = lambda im, col, T: Image.alpha_composite(Image.new("RGBA", im.size, col), im.convert("RGBA")).resize((T, T), Image.LANCZOS)
+    mono_tiles = [(f"{k_} {t}", _themed(v, T, bgc, tint)) for t, T, bgc, tint in
+                  (("light", 140, "#d9e2ff", "#1b2c5b"), ("dark", 140, "#2d3142", "#c4d0ff"), ("48px", 48, "#d9e2ff", "#1b2c5b"))
+                  for k_, v in monos.items()]
+    maskable_prev = maskable.resize((180, 180), Image.LANCZOS)
+    ImageDraw.Draw(maskable_prev).ellipse([18, 18, 162, 162], outline="#34c759", width=2)
+    favs = Image.new("RGBA", (200, 130), "white")
+    for im, xy in ((ico[0], (4, 4)), (ico[1], (28, 4)), (ico[2], (68, 4)),
+                   (ico[0].resize((64, 64), Image.NEAREST), (4, 60)), (ico[1].resize((64, 64), Image.NEAREST), (76, 60))):
+        favs.alpha_composite(im, xy)
+    rows = [_icon_rows(f"adaptive icon (72dp viewport)  bg={report['background']['kind']} sep={a.separate} "
+                       f"shrink={shrink:.2f} subject r={sz['subject_radius_dp']}dp (<=33)  "
+                       f"composite diff={report['composite_diff_vs_concept']}", view),
+            _tiles([("fg, 66dp safe + 72dp", guide), ("fg on black", on(fgm, "black", 200)),
+                    ("background", bgm.resize((200, 200), Image.LANCZOS))] + mono_tiles, T=200),
+            _tiles([(f"legacy {s}", Image.open(res / f"mipmap-{d}" / f"{a.name}.webp")) for d, s in
+                    (("mdpi", 48), ("xhdpi", 96), ("xxxhdpi", 192))] +
+                   [("round 192", Image.open(res / "mipmap-xxxhdpi" / f"{a.name}_round.webp")),
+                    ("iOS (squircle)", _masked(ios_img, "squircle", 180)),
+                    ("iOS dark", _masked(on(fg, "#1c1c1e", 1024), "squircle", 180)),
+                    ("iOS tinted", _masked(Image.open(ios / "AppIcon-1024-tinted.png"), "squircle", 180)),
+                    ("maskable, 80% circle", maskable_prev), ("favicon 16/32/48", favs)], T=200)]
+    sheet_path = _stack(rows, out / "review" / f"appicon_{time.strftime('%H%M%S')}.png")
+    (out / "appicon.json").write_text(json.dumps(report, indent=2))
+    print(json.dumps(report, indent=2))
+    print(f"-> {res}\n-> {ios}\n-> {web}\nreview sheet -> {sheet_path}")
+
+
 def cmd_pick(a):
     d, m, mock = _load(a.dir)
     asset = next(x for x in m["assets"] if x["name"] == a.name)
@@ -1430,6 +2080,33 @@ def main():
     p.add_argument("--hdp", type=float); p.add_argument("--name"); p.add_argument("--res", required=True)
     p.add_argument("--platform", choices=["android", "ios", "web"], default="android")
     p.add_argument("--format", choices=["webp", "png"], default="webp"); p.set_defaults(fn=cmd_export)
+    p = sub.add_parser("appicon", help="app launcher icons: concepts, then Android adaptive / iOS / web icon sets")
+    isub = p.add_subparsers(dest="icmd", required=True)
+    q = isub.add_parser("concepts", help="square full-bleed icon concepts + mask review sheet")
+    q.add_argument("brief", help='brand brief, e.g. "Hush, a calm sleep app, moon motif"'); q.add_argument("--out", required=True)
+    q.add_argument("--mockup", help="approved design to take the visual language from (sent as the single reference)")
+    q.add_argument("--crop", help="x,y,w,h region of --mockup to use as the reference instead of the whole screen")
+    q.add_argument("--variants", type=int, default=3); q.add_argument("--directions", help="'|'-separated concept directions")
+    q.add_argument("--text", help="wordmark/letter to include (default: no text)"); q.add_argument("--colors")
+    q.add_argument("--name", default="concept"); q.add_argument("--jobs", type=int, default=2)
+    q.add_argument("--fidelity", choices=["high", "low"], default="low"); q.add_argument("--model", default=None)
+    q.set_defaults(fn=cmd_appicon_concepts)
+    q = isub.add_parser("build", help="Android adaptive (fg/bg/monochrome) + legacy + Play, iOS AppIcon, web icons")
+    q.add_argument("concept", help="chosen square concept PNG"); q.add_argument("--out", required=True)
+    q.add_argument("--subject", default="the main subject", help='what the foreground is, e.g. "the crescent moon and stars"')
+    q.add_argument("--separate", choices=["local", "api"], default="local",
+                   help="foreground: local matte against the shipped background (exact), or an image-edit redraw (1 call)")
+    q.add_argument("--bg", choices=["auto", "color", "gradient", "model", "image"], default="auto",
+                   help="background layer: colour resource, VectorDrawable gradient, fitted bitmap, or an image-edit "
+                        "plate (1 call; auto picks it only for busy backgrounds)")
+    q.add_argument("--bg-color", help="hex for --bg color (default: sampled)")
+    q.add_argument("--mono", choices=["glyph", "silhouette", "both", "none"], default="glyph",
+                   help="themed-icon layer: gpt-6 glyph -> VectorDrawable (1 text call, falls back to the silhouette), "
+                        "the foreground silhouette bitmap, or both (glyph referenced)")
+    q.add_argument("--fg-scale", type=float, default=1.0, help="fraction of the 66dp safe circle the subject may fill")
+    q.add_argument("--ios-from", choices=["concept", "composite"], default="concept")
+    q.add_argument("--name", default="ic_launcher"); q.add_argument("--no-validate", dest="validate", action="store_false")
+    q.add_argument("--model", default=None); q.set_defaults(fn=cmd_appicon_build)
     p = sub.add_parser("pick", help="override the chosen candidate (number from the review sheet, or a file path)")
     p.add_argument("dir"); p.add_argument("name"); p.add_argument("candidate"); p.set_defaults(fn=cmd_pick)
     p = sub.add_parser("score", help="score arbitrary files against a manifest asset")
