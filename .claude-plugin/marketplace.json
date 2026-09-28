@@ -12,7 +12,7 @@
       "name": "gpt-ui-assets",
       "source": "./",
       "description": "Design platform-native app UIs with GPT and turn them into production assets: every icon, illustration and background redrawn 1:1 (never cropped), SVG/VectorDrawable icons, app icons, frame/Lottie/AVD animation, fonts, theme code and a screenshot diff for a 1:1 build.",
-      "version": "2.0.0",
+      "version": "2.1.0",
       "license": "MIT"
     }
   ]
