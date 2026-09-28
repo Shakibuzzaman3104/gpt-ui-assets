@@ -1,0 +1,154 @@
+{
+  "product": {
+    "name_suggestion": "Fairly",
+    "one_liner": "The couples budgeting app that keeps score so you don't have to.",
+    "positioning": "Couple-specific expense splitting with a fairness dashboard.",
+    "north_star_metric": "weekly active couples who log an expense together",
+    "differentiators": [
+      "fairness-over-time graph",
+      "shared savings goals"
+    ]
+  },
+  "personas": [
+    {
+      "name": "Newly cohabiting Nadia",
+      "description": "Just moved in with partner, splitting rent/groceries.",
+      "jobs_to_be_done": [
+        "split rent fairly",
+        "avoid awkward money talks"
+      ],
+      "pains": [
+        "forgetting who paid"
+      ]
+    }
+  ],
+  "features": [
+    {
+      "id": "F1",
+      "name": "Fairness dashboard",
+      "description": "Visualize running balance and contribution fairness over time.",
+      "personas": [
+        "Newly cohabiting Nadia"
+      ],
+      "solves": "arguments over who paid last",
+      "evidence": "user_pain_points[0]",
+      "priority": "must",
+      "rice": {
+        "reach": 8,
+        "impact": 2,
+        "confidence": 0.8,
+        "effort": 3,
+        "score": 0
+      },
+      "release": "mvp",
+      "user_stories": [
+        {
+          "story": "As a user I see a running fairness balance",
+          "acceptance_criteria": [
+            "balance updates within 1s of adding an expense"
+          ]
+        }
+      ],
+      "platform_notes": "Android: Material3 LineChart via Compose Canvas",
+      "dependencies": [],
+      "risks": []
+    },
+    {
+      "id": "F2",
+      "name": "Bank auto-import",
+      "description": "Link a bank account to auto-import shared expenses.",
+      "personas": [
+        "Newly cohabiting Nadia"
+      ],
+      "solves": "manual entry fatigue",
+      "evidence": "user_pain_points[1]",
+      "priority": "should",
+      "rice": {
+        "reach": 6,
+        "impact": 1.5,
+        "confidence": 0.5,
+        "effort": 8,
+        "score": 0
+      },
+      "release": "v1",
+      "user_stories": [
+        {
+          "story": "As a user I link my bank once",
+          "acceptance_criteria": [
+            "OAuth flow completes in <30s"
+          ]
+        }
+      ],
+      "platform_notes": "",
+      "dependencies": [
+        "F1"
+      ],
+      "risks": [
+        "bank API cost"
+      ]
+    }
+  ],
+  "screens": [
+    {
+      "id": "S1",
+      "name": "Home / Fairness dashboard",
+      "purpose": "show running balance and recent shared expenses",
+      "features": [
+        "F1"
+      ],
+      "native_components": [
+        "Material3 TopAppBar",
+        "BottomNavigationBar"
+      ],
+      "content": [
+        "running balance card",
+        "recent expenses list"
+      ],
+      "mockup_brief": "Android home screen: top app bar 'Fairly', a large fairness balance card showing '+$42 you're owed', a line chart of balance over 30 days, a list of 5 recent shared expenses each with payer avatar/amount/split, a floating action button to add an expense, 4-tab bottom nav (Home, Expenses, Goals, Settings); mint green (#2BAE85) and warm white (#FAF7F2), Material 3.",
+      "states": [
+        "empty (no expenses yet)",
+        "loaded",
+        "offline (cached balance, banner)"
+      ]
+    }
+  ],
+  "flows": [
+    {
+      "name": "Add a shared expense",
+      "steps": [
+        "tap FAB",
+        "enter amount + payer",
+        "choose split",
+        "confirm"
+      ]
+    }
+  ],
+  "monetization": {
+    "model": "freemium",
+    "tiers": [
+      "Free: manual tracking",
+      "Pro $4.99/mo: bank auto-import + export"
+    ],
+    "paywall_placement": "after 10 manual expenses or on bank-link attempt"
+  },
+  "analytics_events": [
+    "expense_added",
+    "bank_linked",
+    "paywall_shown"
+  ],
+  "roadmap": {
+    "mvp": [
+      "F1"
+    ],
+    "v1": [
+      "F2"
+    ],
+    "v2": []
+  },
+  "non_goals": [
+    "multi-currency support at launch"
+  ],
+  "open_risks": [
+    "Splitwise ships a couple-mode clone"
+  ]
+}

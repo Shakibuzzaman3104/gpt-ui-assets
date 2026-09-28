@@ -15,6 +15,11 @@ The official OpenAI API may honour parameters this backend ignores (see below). 
 | `POST /v1/responses` vision + `json_schema` strict | yes | asset inventory with tight bboxes in 77 s; the full design spec takes ~3 min |
 | `GET /v1/models` | yes | gpt-6, gpt-6-sol/luna/astra, gpt-5.6(-sol/-terra/-luna), gpt-5.5, gpt-5.4(-mini), gpt-image-1, -1.5, -2, -2.5-flare, -2.5-sunburst |
 
+Everything in this table was measured against the `sub2api` gateway, not the official API. The official Images API
+defines `n` 1-10, the full `size`/`quality` enums, `moderation`, `output_compression` and up to 16 reference images per
+edit; the official model list has no bare `gpt-6` (it lists `gpt-6-sol/luna/astra`), so `gpt-6` here is a gateway alias
+(unverified against the official endpoint).
+
 Large base64 payloads must go in a request body file, never a shell argument (ARG_MAX gives an empty body).
 
 ## Parameters that backend ignored
@@ -25,6 +30,35 @@ Large base64 payloads must go in a request body file, never a shell argument (AR
   1024x1536, so `mockup` states the aspect in the prompt and retries once on a mismatch.
 - `n: 2` returns 1 image.
 - `background: transparent` **is** honoured on every image model, with real alpha.
+- All of the above are `sub2api` behaviour. The official Images API defines `n` 1-10, the full `size` and `quality`
+  enums and multi-image edits; the kit sends the parameters either way and only works around what it sees.
+
+## Errors and retries
+
+Verified against the openai-python SDK schema and offline mocks (no live key in this session; `tests/test_api_core.py`):
+
+- Error body: `{"error": {"message": str, "type": str, "code": str | null, "param": str | null}}`. The kit keeps all four
+  on `ApiError` (`e.status`, `e.code`, `e.etype`, `e.param`, `e.body`) and prints one line:
+  `HTTP 400 /images/edits [moderation_blocked]: <message> | prompt: '<first 200 chars>'`. Any `Bearer <token>` and the
+  configured key are redacted from server text. Codes seen in the wild: `moderation_blocked` (400, `type: user_error`),
+  `unknown_parameter` / `unsupported_parameter` (400 with `param`), `rate_limit_exceeded` (429), `insufficient_quota`
+  (429, quota, not transient), `model_not_found` (404, `param: model`; the kit adds the `GPTKIT_TEXT_MODEL` hint).
+- Retried: 408, 429, 500, 502, 503, 504 and transport errors (`requests.RequestException`), `GPTKIT_RETRIES` times
+  (default 2). Not retried: a 429 whose code is `insufficient_quota` or starts with `billing`, and every other 4xx.
+  Delay: `Retry-After` in seconds or `retry-after-ms` when present (capped at 300 s; an HTTP-date value falls back),
+  else `min(60, 4 * 2^attempt) + jitter` (4-5 s, 8-9 s, 16-17 s ...). Exhausted retries raise `code: exhausted` with the
+  last status (0 for transport failures) and the server's code in the message.
+- Optional parameters (`input_fidelity`, `quality`, `output_format`, `background`, `moderation` on images; `reasoning`,
+  `tools`, `store` on `/responses`) are dropped one at a time when a 400 names them in `error.param` (nested names such as
+  `reasoning.effort` drop their root); the message text is searched only when the body carries no `param` and the code
+  is a parameter-style code. A 400 on `text.format*` retries once with `strict: false`, and the caller checks the
+  schema's required keys locally.
+- `/responses` shapes the kit refuses to treat as answers: a `refusal` content item (`code: refusal`), `status:
+  "incomplete"` with `incomplete_details.reason` (`incomplete`; `max_output_tokens` is the usual reason at `xhigh`
+  effort with a large schema), an output without message text (`empty`), and prose where JSON was requested
+  (`not_json`). Image responses: `data: []` (`no_image`), unreadable base64 or bytes that are not an image
+  (`bad_image`); JPEG/WebP instead of PNG is decoded and re-encoded, `meta["source_format"]` records the original and
+  one note says transparency was ignored.
 
 ## Fidelity experiments (campfire icon, 96×120 px in the design)
 
@@ -41,23 +75,48 @@ These are recreations, not extractions. The generated content is 5–7× the des
 
 ## Copy / crop detection (score())
 
+- `EMPTY`: `content_box(asset, 40)` is None or covers < 0.2% of the canvas (a blank render). No `CUT-OFF` is added then.
 - `COPY:returned-mockup`: output ≈ full mockup at 64×64 (mean diff < 10).
-- `COPY:returned-reference`: output ≈ reference crop at 64×64 (mean diff < 8).
+- `COPY:returned-reference`: output ≈ reference crop at 64×64 (mean diff < 8). Known weakness (unverified on live output):
+  a faithful redraw of a smooth, low-detail background can land under 8 too; measured redraws of detailed art sit at 19.9–24.2.
 - `OPAQUE`: less than 15% fully transparent pixels on an asset that should be transparent.
-- `BACKDROP`: more than 30% of solid pixels are close to the design's backdrop colour (the circle or card behind the icon was kept).
+- `BACKDROP`: the backdrop colour is the median of a 4 px ring **outside** the bbox (clamped to the mockup; the box's own
+  edge only when the bbox is the whole mockup), and the flag fires when more than 50% of the candidate's silhouette
+  boundary (alpha > 200 minus a 5 px erosion at 128 px) is within 36 RGB of it. The former rule (30% of all solid pixels
+  near the mean of the bbox's corner pixels) flagged every correct light icon on a light page and every element that
+  fills a tight bbox. Synthetic table (PIL fixtures, `tests/test_forge.py::test_backdrop_flag_table`):
+
+  | Case | boundary fraction | flag |
+  |---|---|---|
+  | white cloud with grey outline on a white weather screen, correct | 0.0 | – (old rule: BACKDROP) |
+  | the same cloud on a kept white card | 1.0 | BACKDROP |
+  | flame in a tight bbox on a lilac circle, correct | 0.0 | – |
+  | flame that kept the lilac circle | 1.0 | BACKDROP |
+  | 10×10 px square filling its bbox, correct | 0.0 | – (old rule: BACKDROP) |
+
 - `CUT-OFF`: content touches the canvas edge.
 - Sharpness ratio alone is not a copy signal: smooth gradient art scores ~6 while still being a clean redraw.
+- Flags are ranked by weight, not by count: `EMPTY` 1000, `COPY:*` 100, `OPAQUE` 10, `BACKDROP` 10, `CUT-OFF` 3, then by
+  fid (+6 for `quality: low`). An `EMPTY` or `COPY` winner is not written to `assets/`. Thresholds and weights were tuned
+  on synthetic fixtures and the 2026-09 meditation mockup only; treat them as indicative.
 
 ## SVG
 
 gpt-6 vision writes clean, correct SVG for tab-bar/toolbar/gear/chevron/play/equalizer glyphs, in one call per
 6 assets with the crops attached. It picks colours from the context, for example dark glyphs on a lavender button.
-It uses Q/H/V commands and userSpaceOnUse gradients, which VectorDrawable supports.
+It uses Q/H/V commands and userSpaceOnUse gradients, which VectorDrawable supports. Strict mode honours a `name` enum
+in the response schema, so each batch now asks for exactly its asset names (no renamed or invented files); an asset the
+model leaves out is asked for once more and otherwise reported as missing (measured on a mocked run: 1 omission of 10).
 
 ## Animation
 
 - Whole-object sprite sheet: static parts drift between frames and it drew grid lines despite "no grid lines".
 - **Moving-layer-only sheet** ("only the flame, no logs, empty transparent space between cells"): clean, no dividers, consistent style.
+- Animated raster output: Pillow's animated-WebP writer defaults to `method=0` (fastest, largest); the kit passes
+  `method=6, exact=True`. Durations are per-frame lists so the loop length is exact (24 fps: 42/41/42 ms, 1000 ms per
+  second instead of 24x42 = 1008); GIF gets the same treatment in centiseconds. The animation-list names resources
+  through `_res_name` and its frames live in `drawable-nodpi` (measured 2026-09-28: an `aapt2 link` against a stub
+  framework fails on the old `@drawable/<name>_frame_NN` references and passes once the files carry those names).
 - The static layer comes from an edit of the approved asset ("keep only the logs, same canvas"). Pad the asset to
   a square first, then register it back to the asset by a scale/offset search. The moving frames get placed by a
   silhouette search against the asset.
@@ -135,6 +194,15 @@ between arms of the same screen.
 - The model's contrast estimates can be wrong. It claimed ~3.5:1 for #0A6EDC links on white; pixel sampling gives
   4.8–4.9:1. The local estimator matches spec-hex ratios within ~10% (17.6 vs 17.1, 7.9 vs 7.5, 6.4 vs 5.7).
 - gpt-6 rated every issue "medium" in 5 of 5 runs, so the weight is effectively an issue count.
+- Model bboxes are not trusted (2026-09-28, offline, mocked responses): the schemas declare `x/y/w/h` as bare integers,
+  so a gateway that does not enforce `strict` can return negative sizes or boxes far outside the image. A negative
+  `w`/`h` crashed the critique overlay after the paid call, and `manifest` wrote `bbox=5000,5000,9999,9999` (~4023 dp)
+  into `assets.json`. Every issue/asset/component bbox is now clipped to the image right after the call: inverted boxes
+  are normalised, boxes with no area inside are dropped and printed, and a `manifest` asset whose clipped area is under
+  25% of the claimed one is dropped as "mostly outside the image". An unknown severity counts as medium (weight 2).
+- iOS calibration anchors (tab bar 49 pt, inline navigation bar 44 pt) come from the HIG (research report r2), not from a
+  measured iOS 26 mockup; the floating Liquid Glass tab bar may be drawn taller than 49 pt. If `spec` reports an odd
+  factor on an iOS design, compare with `spec --scale design`.
 
 ## MOCKUP_WRAP A/B (negative)
 
@@ -144,7 +212,9 @@ to the same weather prompt left layout and density nearly identical. Label ink h
 
 ## Ranking and colour fidelity (forge)
 
-Measured on the 1024×1536 meditation mockup. "fid" = 0.3·diff + 0.5·de + col + 40·(1−iou). The design element is segmented from its backdrop (Lab ΔE > min(22, 0.45·p95)) at a 128 px working scale. The candidate is composited on that backdrop and aligned by maximising IoU (scale 0.88–1.13, offset ±10%). de = mean ΔE over the union of both masks; col = mean 1-D quantile EMD of L, a, b.
+Measured on the 1024×1536 meditation mockup. "fid" = 0.3·diff + 0.5·de + col + 40·(1−iou). The design element is segmented from its backdrop (Lab ΔE > min(22, max(8, 0.45·p95)); the backdrop is the outside-ring median described under "Copy / crop detection") at a 128 px working scale. The candidate is composited on that backdrop and aligned by maximising IoU (scale 0.88–1.13, offset ±10%; the offset search is one FFT correlation per scale, identical to the former loop). de = mean ΔE over the union of both masks; col = mean 1-D quantile EMD of L, a, b. Colour match is skipped for any flagged candidate and kept only when fid improves without introducing a flag.
+
+fid bands are per asset type and indicative: the PNG bands below (16–24 close, 30+ visibly off) come from two illustrations; correct SVG icons in the identity test scored 8.9–39.7, so an icon at 35 can be right.
 
 | Candidates | old diff (rank) | fid (rank) |
 |---|---|---|
@@ -156,7 +226,7 @@ Measured on the 1024×1536 meditation mockup. "fid" = 0.3·diff + 0.5·de + col 
 - rain_drop c2 loses on de (19.1 vs 15.1) and iou (0.796 vs 0.825): its rings are brighter and thicker than the design's muted rings.
 - Icon identity test: 9 SVG icons, rasterised with Chrome, each scored against every icon bbox. fid puts the right icon first 9/9; own fid 8.9–39.7 vs the best wrong icon ≥ 58.2.
 - With unconstrained scale (0.82–1.18), the proportion-wrong vision-fix reached the best IoU at the scale limit. That's why the fixed-placement diff term stays in fid.
-- Cost: about 0.25 s per candidate.
+- Cost: about 0.2 s per candidate at 1024² after the vectorised alignment (0.33 s before); colour match runs on the unique colours of the asset in float32 (a 4096² asset no longer needs 3 GB).
 
 ## Colour drift and Lab colour matching
 
@@ -176,6 +246,19 @@ Measured on the 1024×1536 meditation mockup. "fid" = 0.3·diff + 0.5·de + col 
 - The old RGB diff also drops by 0.4–1.6.
 - Mean-only and L-only transfers are weaker (e.g. rain c1 22.8 / 23.2 vs 21.3).
 - On opaque backgrounds fid also improves (21.3 → 13.7), but the peach moon turns white. The UI drawn over the design region skews the stats.
+
+## Reference crop and prompt wording (forge)
+
+- The reference is the bbox plus a 60% margin on every side, so the target spans the middle ~45% of the image. Near a
+  mockup edge the crop is padded with the outside-ring backdrop colour instead of being clamped, so the target stays
+  centred, and the prompt says so ("the target is the element in the CENTRE ... everything around it is context only").
+- The prompt forbids watermarks, signatures and drop shadows unless the design has one. Opaque non-background assets are
+  asked to "fill the canvas edge to edge with the element's own artwork (no letterbox)" (the former "opaque background
+  matching the design" contradicted "do NOT include the backdrop"). None of this wording has been A/B-measured on live
+  output; it removes contradictions rather than proving a gain.
+- `fix` asks for `{differences: [str], edit_instruction: str}` with a strict json_schema, makes no edit call when the
+  list is empty, and for backgrounds tells the vision pass to ignore the UI drawn over the design region and the edit to
+  stay full-bleed with no UI and no text.
 
 ## Prompt emphasis per candidate
 
@@ -205,14 +288,19 @@ All draws were quality=medium, 44–49 s.
 - Pillow 12 premultiplies in resize and thumbnail.
 - Filling transparent RGB with nearby colour changes composites by < 0.05 ΔE through export, lossy WebP q92 and a straight-alpha bilinear scaler. No defringe is needed.
 
-## SVG icons (measured 2026-09-27)
+## SVG icons (measured 2026-09-27, renderer and converter re-measured 2026-09-28)
 
-Tested on the e2e meditation mockup (9 svg assets) and the unseen sleep-stats screen (6 icons).
+Tested on the e2e meditation mockup (9 svg assets) and the unseen sleep-stats screen (6 icons); the 2026-09-28 numbers
+come from a synthetic 10-icon project with pixel-exact sources and 44 hand-written converter fixtures (`tests/svg/fx`).
 
 ### Rendering
 - Headless Chrome rasterises a grid page of `<img src="data:image/svg+xml;base64,...">` with real alpha when run with `--default-background-color=00000000`: 9 icons in 1.5 s. Passing `--user-data-dir=<temp dir>` made it hang for more than 120 s here.
+- Chromium 141 `--headless=new` lays the page out at `--window-size` height minus 87 px (measured: window 128x128 gives an inner height of 41, 128x215 gives 128, 512x712 gives 625). Every capture therefore pads the window by 200 px and crops the PNG to the grid; before the fix the bottom 87 px of every render were missing, pixel-exact icons scored `rel` 1.14–1.17 in `svg --check` and the last row of a 24-grid measurement was truncated.
+- As root (Linux containers, CI) Chrome refuses to start without `--no-sandbox`; the kit adds it when `geteuid()==0` or `GPTKIT_CHROME_NO_SANDBOX=1`. `_renderer_name()` now comes from a real 64x64 probe render, so `doctor` and "not scored" are honest, and a failed capture prints Chrome's error line once (`! headless Chrome produced no screenshot: ...`).
+- Pages are chunked to at most 256 icons (about 2048x8192 px); 70 icons at 512 px render in 4.3 s.
 - Quick Look (`qlmanage -t`) pads and clips SVG thumbnails: content comes out at about 0.85x, anchored top-left. The fallback renders at 0.75 of the target size on white and on black, detects the frame and mattes the two. Its alpha is within 1.8–3.4/255 of Chrome and its rel within ±0.012.
 - cairosvg imports but has no libcairo on this machine.
+- SVGs without `xmlns` and single-quoted roots rendered blank (Chrome's `<img>` needs the namespace; the old width/height regex duplicated single-quoted attributes). Both are fixed on ingest (`xmlns` added, ElementTree re-serialisation).
 
 ### Fidelity metric
 - The design element is segmented from its backdrop, taken as the median colour of a ring around the bbox.
@@ -220,7 +308,7 @@ Tested on the e2e meditation mockup (9 svg assets) and the unseen sleep-stats sc
 - A registration search (±1 design px, ±5% scale) raised the equalizer to IoU 0.74 and rel 0.355.
 - `rel` is the composited error divided by the error of drawing nothing. It ranked 8/8 controlled perturbation pairs correctly: stroke 2.5/3.5/4.5, wrong colour (dE 70), outlined vs filled home, bigger head, equal bar heights, dot vs ring.
 - The 1 px-tolerant F-score (`fit`) saturates at about 0.98 whatever the stroke weight.
-- Baseline e2e SVGs (rel): home 0.09, play 0.11, chevron 0.22, heart 0.28, profile 0.31, compass 0.35 (ink 1.18), equalizer 0.36, wind 0.44, settings 0.54. Settings is also the worst visually (angular gear teeth).
+- Baseline e2e SVGs (rel): home 0.09, play 0.11, chevron 0.22, heart 0.28, profile 0.31, compass 0.35 (ink 1.18), equalizer 0.36, wind 0.44, settings 0.54. Settings is also the worst visually (angular gear teeth). With the padded renderer, pixel-exact sources of the synthetic set score rel 0.05–0.21 (filled 0.05–0.07, 1.75-unit strokes 0.15–0.21), consistent with these baselines.
 
 ### Icon-set spec
 - gpt-6 vision, one call:
@@ -238,16 +326,23 @@ Tested on the e2e meditation mockup (9 svg assets) and the unseen sleep-stats sc
 ### New icons and 24-grid
 - New icons from 6 concepts in one call came out at the set's measured stroke (1.61), round caps and joins, and the set colour. They look like members of the same set.
 - 24-grid normalisation rescales coordinates from a measured content box, with 2 units of padding and no transforms. It changes rel by at most 0.04, and the tab-icon strokes land at 1.59–1.64.
+- Per-icon fitting (each glyph stretched to 2..22 on its own) spread one 1.75-unit stroke to 1.75–2.22 across a 10-icon set (27 %), flagged the chevron and plus as outliers and made `icons` ask for stroke 1.97. Normalising per size group (design sizes within 1.25x; the group's largest glyph fills the live area, the others keep their relative size) brings the same set to 1.77–1.78 and gives the group one display dp (`design dp * 24/20`), now saved per icon in `svg_report.json` and read by `vd`.
+- Affine transforms (`translate`, `scale`, `rotate`, `matrix`, skews) are baked into absolute path coordinates before normalising (arcs become cubics; stroke widths and dash arrays scale with uniform transforms). Non-uniform scale on a stroked shape cannot be baked exactly, so such icons are kept as drawn with a note.
 
 ### VectorDrawable validation
 - aapt2 `compile` accepts invalid colours, unknown attributes and bad pathData.
-- `aapt2 link -I android.jar` rejects bad attribute names, formats and enums. pathData is never validated by aapt2.
+- `aapt2 link -I android.jar` rejects bad attribute names, formats and enums. pathData is never validated by aapt2. Link runs only when `$ANDROID_HOME/platforms/android-*/android.jar` exists; the kit now says `aapt2 compile ok; link skipped (...)` in that case instead of "valid", and `doctor`/`vd` print which level ran (`aapt2_level()`: link / compile / none).
+- The offline lint (`_vd_lint`) checks what link would (element and attribute whitelist, enums, dimensions with units, colour formats, numbers, positive viewport) plus what aapt2 never sees: `nan`/`inf` and syntax in pathData, `gradientRadius <= 0` (inflation crash) and gradients with fewer than two colours (`needs >= 2 number of colors` at runtime). It agrees with `aapt2 link` on the 44 fixtures and on every converted icon of the 11 libraries below: 37,151 VectorDrawables, 0 lint failures, 0 `compile+link` errors with a Robolectric `android.jar` as the platform (61 s in chunks of 1500).
 - Bugs in the previous converter, found by rendering the SVG and the converted VD and comparing (mean diff, 0–255):
   - Root `<svg fill="none" stroke=…>` attributes were ignored, so Lucide/Feather-style icons became black filled shapes (56).
   - Group opacity was overridden instead of multiplied (8.3).
   - `currentColor`, `rgb()` and named colours crashed.
   - All transforms were rejected, although VD `<group>` supports translate, scale and rotate.
-- The new converter scores 0.00–0.04 on all fixtures and 24 generated icons. Exceptions: dashes (1.52, with a warning) and overlapping children under group opacity (0.98), which VD cannot express exactly.
+- The converter scores 0.00–0.07 mean diff on all fixtures and 24 generated icons, re-confirmed with the padded renderer (the earlier 0.00–0.04 figures were measured with the bottom 87 px missing, which hid a 3.08 difference on a dashed bottom edge). Exceptions: dashes (`rects_dash` 1.52 mean, with a warning) and overlapping children under group opacity (0.98), which VD cannot express exactly.
+- The mean diff alone passed conversions that dropped content (a nested `<svg>` dot 0.33, a small child made visible inside a hidden group 0.77, a focal-point radial 1.77). `vd_roundtrip` therefore also counts pixels whose largest premultiplied channel difference exceeds 64: 0 for every correct conversion at 128 px, 90–2215 for every wrong one; `vd` flags `strong > 16`.
+- Fixed since: radial gradients without `r` wrote `gradientRadius="0"` (SVG default is 50 %, resolved against the viewBox diagonal), percentages in gradient coordinates were read as user units, one-stop gradients wrote a single `<item>` (now a solid colour), `fill-opacity="50%"` was read as 50, a child with `visibility="visible"` under a hidden group was dropped, and the default `android:width` came from the viewBox (Material Symbols: 960dp) instead of the root `width` (48dp).
+- Real-world coverage (npm packages, every icon converted and linted, 27 s in total): lucide 2118/2118, heroicons 648/648, Material Symbols 7854/7854, tabler 6220/6220 (the empty `M0 0h24v24H0z` helper path is skipped), feather 287/287, bootstrap 2078/2078, phosphor 9072/9072 (256dp: `> 200dp` warning), ionicons 1357/1357, carbon 2766/2766, openmoji 4489/4495, flag-icons 262/271 (was 137/271: `clip-path`, `<use>`, `<style>`, objectBoundingBox and `gradientTransform` gradients, `hsl()` and the 148 CSS colour names now convert). The 15 remaining rejections are skewed or non-uniformly scaled stroked shapes, which VectorDrawable cannot draw exactly; they are refused with the reason. Android Studio's Svg2Vector (`vd-tool` 4.0.2) writes the same `<clip-path>` structure for the Figma export case; the kit drops the clip entirely when it is a rect covering the whole viewBox.
+- Silently dropped before, warned now: nested `<svg>`, `<foreignObject>`, `marker-*`, `vector-effect`, `paint-order`, radial focal points, `<switch>` (only the first child is drawn), non-uniform scale on strokes (Android scales the width by `sqrt(|det|)`).
 
 ## App launcher icons (appicon, 2026-09-27)
 
@@ -286,6 +381,20 @@ Tools:
 - `aapt2 compile` + `link` (build-tools 36, android-37.0 android.jar) accepts `<adaptive-icon>` with `<monochrome>`, a VD `<group>` with scale/translate, and a VD `aapt:attr` gradient background.
 - `xcrun actool` (Xcode 27) compiles a single-size 1024 appiconset with dark/tinted luminosity appearances without warnings. It warns on a wrong size (500×500) but NOT on an alpha channel.
 - qlmanage renders a 108-viewBox SVG at 432 px pixel-aligned (a test rect came out exactly at 27–81 × 54–81 units).
+- Linux container, root, Chromium 141, build-tools 34, no `platforms/android.jar` (2026-09-28): Chrome renders the glyph
+  only with `--no-sandbox` (shared `_chrome_flags`). `aapt2 compile` passes; `link` needs an android.jar (a Robolectric
+  android-34 jar linked the icon set, including the placed glyph VD). The report now says `aapt2 compile ok; link skipped`
+  instead of implying validation.
+
+Kit changes after the 2026-09-28 audit (offline, mocked API):
+- iOS tinted changed from grayscale flattened onto opaque black (RGB) to grayscale + the foreground's alpha (LA). Dark was
+  already the foreground on transparency. Apple's format says the system supplies the backing and tint. Not verified with
+  actool here, and actool would not flag the old one either (it ignores alpha).
+- The glyph is referenced by `<monochrome>` only when measured. Before, an empty SVG, shapes outside the viewBox or a
+  missing renderer shipped an unverified or blank `@drawable/..._monochrome`, and a glyph with no pixel above 50% ink
+  crashed the build (`TypeError`). These now fall back to the silhouette (`glyph.ok: false` with a note).
+- Play icon, legacy densities and the single `mipmap-anydpi-v26` file with inline `<monochrome>` were re-checked. They
+  were already correct: RGB 512 at ~32 KB, mdpi–xxxhdpi, no `-v33` folder.
 
 Cost: 8 image calls (6 concepts, 1 plate, 1 foreground) and 2 gpt-6 glyph calls (~60–90 s each).
 
@@ -298,7 +407,8 @@ Cost: 8 image calls (6 concepts, 1 plate, 1 foreground) and 2 gpt-6 glyph calls 
 - **Single-frame re-roll** (edit with a neighbouring frame as the only reference): keeps style and colours but returns at ~3x the sheet-frame scale. Rescaled to the neighbour's alpha mass, its QA badness was 0.87 (a genuine frame: 0.59; the injected bad frame: 2.08).
 - **Moving/static split beyond flicker:** ripple rings (moving) + teardrop (static) gave a clean loop: small ring, expanding, fading, new ring. The model drew the rings as a filled glowing disc rather than the asset's hollow rings. Silhouette registration then placed them at ~55% size (IoU 0.39); an extent fit reached 0.48 and matches the design visually.
 - **Whole object, no static layer** (bobbing drop): consistent colours (ΔE 4.3, nothing flagged), but proportions drift. The drop is smaller relative to its rings than in the asset and varies between frames, and neither colour/size QA nor a normalised-silhouette IoU detects it.
-- **Formats:** Pillow writes animated WebP/APNG with exact frame counts and per-frame durations (loop=0). A Lottie image sequence (one ty:2 layer per frame, base64 PNG assets) renders frame-exact in lottie-web 5.12.2 (mean diff 0.8 vs 2.6–5.7 for a wrong frame) and costs ~280 KB per 480 px frame. A single-image transform-keyframe Lottie costs 124–220 KB and renders within 0.3–0.8 mean diff.
+- **Formats:** Pillow writes animated WebP/APNG with exact frame counts (loop=0), but the durations need care: one rounded value per frame made a 24 fps loop 0.8% long, so the kit writes per-frame lists (`round((i+1)·1000/fps) − round(i·1000/fps)`) for WebP, APNG, GIF and the animation-list. Pillow's animated-WebP writer defaults to `method=0`; the kit passes `method=6` and `exact=True` (RGB under transparent pixels is kept, so no defringe step is needed). APNG: Pillow's `OP_NONE`/`OP_SOURCE` sub-rectangle frames decode back exactly (max diff 0 over a full loop, verified 2026-09-28), and the APNG spec clears the buffer at the start of each play, so no disposal change is needed; APNG is web + Android (API 28+), a static frame on iOS. A Lottie image sequence (one ty:2 layer per frame, base64 PNG assets) renders frame-exact in lottie-web 5.12.2 (mean diff 0.8 vs 2.6–5.7 for a wrong frame) and costs ~280 KB per 480 px frame. A single-image transform-keyframe Lottie costs 124–220 KB and renders within 0.3–0.8 mean diff.
+- **Sheet failures seen offline (2026-09-28):** with `background=transparent` dropped by a gateway the sheet comes back fully opaque and slices into white rectangles that pass the colour/size QA, so opacity is checked first (> 95% of pixels at alpha 255, or all four corners opaque); a sheet with 5 of 8 frames used to write a 5-frame loop with a different period (now flagged `frame-count`); the EbSynth-free `frames` route's frames come out at 250–350 px from a 1536x1024 sheet.
 
 ## Layout-driven sequences (measured 2026-09-28, gpt-image-2.5-sunburst edits)
 
@@ -339,8 +449,11 @@ Built on a toy steam train's smoke in a sleep app (512-unit art, 3 s loop, 24 fp
   the first try.
 - **Colour transfer through Pillow's `LAB` mode** (ImageCms sRGB→LAB, mean/std shift, back) turned white smoke blue: the
   a/b channels are stored offset and the round trip is not what it looks like. Use the kit's own `_lab` / `_match_colors`.
-- **EbSynth propagation (2026-09-28, same loop).** [EbSynth](https://github.com/jamriska/ebsynth) is public domain, and the
-  CPU build takes about 7 minutes for 72 frames of 344×184.
+- **EbSynth propagation (2026-09-28, same loop).** [EbSynth](https://github.com/jamriska/ebsynth) is public-domain code
+  (the PatchMatch algorithm is patented; a caveat for commercial redistribution), and the CPU build takes about 7
+  minutes for 72 frames of 344×184. The cost scales with the box area: a 1024 canvas plume (567×416 box, 72 frames,
+  keys every 6) took about 14 minutes of EbSynth with 4 jobs plus about 5 minutes of QA/finish, 1.19 GB peak RSS; the
+  same 72 frames built directly from renders took 333 s. The QA now runs on ≤ 384 px copies.
   - Each frame was synthesised from the two nearest GPT keys. The style was the key's RGBA, so alpha is synthesised
     from the same patches. The guides were the layout's puffs (appearance, weight 2) and a positional map sending each
     frame pixel to where its puff was at the key (weight 1.5). The two syntheses were cross-faded with smoothstep weights.
@@ -364,6 +477,28 @@ Built on a toy steam train's smoke in a sleep app (512-unit art, 3 s loop, 24 fp
     separate puff" in the brief. The keys then differed as the layout did, and motion following reached 16%, with a
     median speed of 2.1.
   - This carried-along-the-layout residual is now the `follows` QA field.
+- **Choosing the engine (`plan`, 2026-09-28).** EbSynth only carries paint that a key has, so the plan checks each
+  in-between against its two keys before any image call.
+  - Plumes: every live puff in an in-between must exist in one of its keys (by emission number, across the loop wrap).
+  - Guide folders: 3×3-cell patches (8 px cells on a 256 px copy, lightly blurred, premultiplied), matched against
+    the keys at sub-cell offsets and ×0.85–1.18 scale. Measured RMS distance: a 3–13 px shift or a 14→22 px growth
+    matches under 0.08 (100% carried), a ring against a dot or a red dot against a blue one stays above it (≤ 6%).
+    0.08 is the threshold, and 90% of each frame must be carried.
+  - Drops sliced flat by the canvas edge read as new shapes (a 72-frame rain loop scored 77% and fell back to GPT), so
+    a two-cell border is left out; the same rain then plans keys every 6 frames.
+  - Tests: a falling drop plans keys every 6 at 24 fps; a splash ring on every 6th frame (from frame 3) plans keys every
+    3, so the ring is itself a key; a new colour every frame plans GPT on every frame. A 24-guide plan at 256 px takes
+    4–6 s (114 MB); 72 guides at 1024 px with an opaque backdrop took 39–48 s and 1.1 GB, so the plan is cached in
+    `sequence.json` (keyed by the guide hashes, the engine and the EbSynth install) and the distance matrix is
+    computed in 256-row blocks.
+  - QA against the layout (2026-09-28): the neighbour-only outlier score flagged perfect renders wherever the layout
+    itself changes abruptly (a 1024 plume with puffs born 18 frames apart: `outliers [37, 55, 1, 19, 40]`, exactly
+    the birth frames; a spray fan: 10 steps "backwards"; falling leaves: 2 outliers). Scoring each frame's excess
+    minus the layout part's own excess, counting backwards steps only beyond the layout's, and skipping direction QA
+    when the layout heading is under 0.3 px/frame gives 0 outliers and 0 backwards on those fixtures while a frame
+    drawn 9 px off its layout is still caught.
+  - Dense-plume warning: more than 3 elements stacked per covered pixel on average. This is a starting threshold (the
+    car exhaust had about 9 puffs overlapping), not a measured cut-off.
 - **Compared: [3dicon](https://github.com/samyost1/3dicon)** animates an approved GPT still with a video model (Seedance 2.0
   via OpenRouter), with the still as both the first and last frame so the loop closes. It mattes against a known flat
   mid-grey backing (exact un-premultiply `C = (F − (1−a)·BG)/a`), frames with one union crop for the whole loop, and
@@ -386,7 +521,17 @@ Built on a toy steam train's smoke in a sleep app (512-unit art, 3 s loop, 24 fp
 - lottie-web renders the kit's Lottie within 0.04-0.14 mean pixel diff (0-255) of Chrome's native SVG of the same
   state. This covers layer anchor/position/scale/rotation/opacity keys with bezier easing including overshoot,
   gradient fills with alpha stops, and a group non-uniform scale.
+- Re-measured 2026-09-28 with the padded capture (Chromium 141 `--headless=new` lays out `--window-size` height minus
+  87 px; every kit capture now pads by 200 px and crops): the test animation stays at 0.18-0.27 across 8 loop times, and
+  20 imported SVG cases (transforms incl. rotate about a pivot, evenodd, nested opacity, stroke-opacity, percentage /
+  objectBoundingBox / href / transformed gradients, 8-digit hex, named and rgb() colours, hidden elements) render within
+  0.00-0.28 of Chrome's SVG. Before the import fixes the same files measured 17-127.
 - Headless Chrome writes the `--screenshot` of a lottie-web page but does not exit (it lingers until killed). Poll for the file.
+- A motion gate on the mean of the per-layer numbers is fooled by one tiny hyperactive layer (a 2 px spark travelling
+  5x its size lifted a 40 px flame moving 1 % to 25 %). The gate is now the area-weighted mean of
+  `min(1, max(move, fade / 4))`, so a pure fade counts as 25 % and the big layer decides.
+- The Lottie's `fr` is `op / seconds` (fractional when `seconds * fps` is not an integer, e.g. 30.4 for 1.25 s at 30 fps):
+  `round(37.5) = 38` frames at 30 fps would otherwise loop 1.267 s while the AVD loops 1250 ms.
 - A thin stroke outline changes 65-86% of its drawn pixels for a 5-11% move, so pixel change is not a motion-strength measure.
 
 ## AnimatedVectorDrawable (API 36 emulator, framework AVD)
@@ -397,11 +542,21 @@ Built on a toy steam train's smoke in a sleep app (512-unit art, 3 s loop, 24 fp
   for the whole loop with a windowed `pathInterpolator android:pathData` (flat, eased, flat), and fillAlpha is 1 only
   inside its window. Emulator frames matched lottie-web phases (diff 0.84-1.23 vs 0.79-0.88 between adjacent phases).
 - Keyframed fillAlpha overshooting above 1 (overshoot easing) makes the fill vanish for that span. Clamp or avoid overshoot on alpha.
+  `build_avd` swaps overshoot for ease_out on opacity tracks and clamps every alpha keyframe value to 0..1.
 - Group rotation/scale/translate with pivots, PVH keyframes with inline aapt:attr pathInterpolator per keyframe,
   repeatCount=infinite, gradients via aapt:attr, and strokeAlpha/fillAlpha all behaved like the Lottie. There is no group alpha,
   so fades are per path.
 - The RenderThread AVD subsamples keyframed animators past 300 frames and logs "Duration for the animation is too
   long". This happened with the animator duration scale at 5x (6 s); it matters for loops longer than about 5 s.
+  `vectorize --seconds` above 5 prints this warning; a user with a 2x-5x animator duration scale in Developer Options
+  trips it earlier.
+- Every `android:name` in the AVD is unique (groups `<layer>`, paths `<layer>_p<i>`, deduped): targets resolve by name,
+  so two layers that sanitise to the same name (`heart` / `heart 0`, `a-b` / `a_b`) would otherwise drive one node.
+- N-key morph windows hand over by cross-fading inside `[b - 0.0005, b]` instead of both copies being fully visible for
+  0.001 of the loop: the offline evaluator (`tests/avd_eval.py`) showed a 2.5 mean-diff flash at the boundary on a
+  translucent gradient flame before, none after.
+- `stroke-linejoin="miter-clip"`/`"arcs"` and any cap outside butt/round/square fail `aapt2 link` (enum check); the
+  importer maps them to miter/round. All test AVDs pass `aapt2 link` against an android-34 `android.jar`.
 
 ## Tracing raster assets locally (2026-09-28)
 
@@ -418,9 +573,12 @@ Test assets: the forged campfire (785×1047) and rain drop, the two lake backgro
 | Icons | 0.22 / 0.992 | ~3.7 KB each |
 
 - **Gradient-heavy art:** more colours make it worse (k 24/32 is worse than k 16). What helps is merging regions across boundaries that are invisible in the source (per-pixel contrast < 2 ΔE) as long as the smaller side isn't a distinct feature, then fitting one multi-stop gradient. That removed the posterized yellow core of the flame.
-- **Glow:** 8 stacked bands with opacities solved to rebuild the alpha falloff (spacing γ=1.6) cut the alpha error from 10.5 to 3.4. 4 bands terrace visibly. The bands must not spill past crisp edges; when they did, the drop showed a dark rim.
-- **Photographic backgrounds:** display diff 6–11 even with 140 paths → keep them raster.
-- **VectorDrawable checks:** aapt2 compiles every output. Rendering the VD back through a VD→SVG converter matches the SVG within 0.2 (gradient dithering only). Android guidance, verified at the source: vectors ≤200×200 dp; lint VectorPath now warns at 3000 chars, and only when vectors are rasterized for minSdk < 21.
+- **Glow:** 8 stacked bands with opacities solved to rebuild the alpha falloff (spacing γ=1.6) cut the alpha error from 10.5 to 3.4. 4 bands terrace visibly. The bands must not spill past crisp edges; when they did, the drop showed a dark rim. Bands under 3% opacity and "soft rings" narrower than 2 px (Lanczos ringing on aliased sources) are now dropped: an aliased 256 px ring used to get 4 invisible glow paths.
+- **Photographic backgrounds:** display diff 6–11 even with 140 paths → keep them raster. Tracing them was also the slow path (256 px noise: 4 min, 1.5 GB, 1135 paths): per-region work now runs on the region's bbox and more than 400 colour regions aborts the candidate as photographic (noise 256: 0.9 s; photo 1024: 1.9 s, no SVG written, advice `png/webp`).
+- **Headless Chrome measurement (Linux, Chromium 141, re-measured 2026-09-28):** `--headless=new` lays out 87 px less than `--window-size`, and as root Chrome needs `--no-sandbox`. Before the shared capture (padded window + crop) every fidelity number on Linux was computed on a clipped render, or silently not at all: ring_aa 0.866 IoU / 3.96 "lossy" → really 0.994 / 0.30 (`vd`); fullbleed2 0.125 / 59.5 → 1.0 / 1.16; the 512 px campfire 1.53 / 0.991 with the fixed capture. The earlier tables above were measured on macOS Chrome (no clip). Now, when no screenshot is produced, `trace.json` says `advice.prefer = "unknown"` with the reason, traces one preset instead of four, and `rig`/`animate` print `NOT measured`.
+- **No upscaling.** `--work 512` on a 256 px aliased ring traced the source staircase: 11,855 chars / 330 curves for one path. Clamping work to the source size gives 722 chars for the same ring; the crisp 200×100 two-rect image goes from 11 paths (8 resampling slivers) to 2 (sliver folding: area / boundary < 1.5 px).
+- **Gradients only when real.** The illustration preset used to fit a radial on a flat yellow disc (5 layers instead of 3, "needs API 24+"). A gradient is now accepted only when its stops span > 6 ΔE and the RMSE improves by > 2 absolute; the flat disc is flat under every preset, the synthetic radial disc is still radial.
+- **VectorDrawable checks:** the VD is written under its final resource name (`[a-z0-9_]`, leading letter: `My Ring-2.png` → `img_my_ring_2.xml`; AGP rejects the rest) and checked with `aapt2_check`. Without `platforms/android-*/android.jar` only `compile` runs, which accepts `viewportWidth="NaN"`, `fillType="bogus"` and unknown attributes, so the verdict is worded `compile ok; link skipped` and never "valid"; `nan`/`inf` in pathData is rejected before writing. Rendering the VD back through the kit's VD→SVG converter matches the SVG within 0.2 (gradient dithering only); that is a round-trip smoke test of the converter, not an Android render. Android guidance: vectors ≤200×200 dp. **Correction:** the earlier "lint VectorPath warns at 3000 chars, verified at the source" was wrong; the lint check documentation gives `MAX_PATH_DATA_LENGTH = 800` ("Very long vector path (n characters)…"). Whether the check is gated on minSdk < 21 was not verifiable offline; the advice line says 800 and calls it a draw-time hint.
 
 ## GPT part isolation
 
@@ -436,27 +594,36 @@ Test assets: the forged campfire (785×1047) and rain drop, the two lake backgro
 - Deforming one traced path with smooth, loop-periodic fields keeps the command sequence identical by construction, and keyframe 0 is exactly the design.
 - Keyframe 0 vs the approved asset: 2.33 for the rigged trace vs 10.2 for GPT `vectorize` (no glow, flat logs). The cost is size: 196 KB vs 17 KB.
 - Hidden-shape completion is required: without it, the moving inner flame tears up to 110 px per keyframe.
+- **The old `tear_px` was blind.** It counted only transparent pixels fully enclosed by opaque art, so a gap that opens to the outside (two touching rects, the top one `bob:5`: an 8-unit visible slit) scored `[0,0,0,0,0,0]`. The metric now erodes the rest pose by (max travel + 1) px and counts interior pixels a key leaves uncovered, on renders without the glow bands: split rects `[0, 1140, 3420, 4560, 3420, 1140]` at 300 px, the campfire rig `[0]*8`. A smooth field with displacement ≤ T always covers the erosion by T, so a correct rig scores 0 up to rasterisation noise.
+- **Gradients slid across moving parts.** With the fill fixed in user space, the colour 140 px below a bobbing top went from (234,128,53) to (242,164,79) as the part rose 25 px. The gradient's control points now ride the same field: per-key SVG defs for the previews and animated `gf.s`/`gf.e` in the Lottie (lottie-web renders them; sampled colour at a point moving with the shape stays within ±1 in both).
+- `animate` on vectorize `layers.json` used to mangle relative commands (`h`, `v`, arcs → "truncated path data"), drop strokes (a stroked icon became invisible) and drop the layer's rigid `motion`; all three are normalised/kept now, and a flat box (a horizontal stroke) gets a 10 % height floor so sway/wave still move it.
+
+## Design to code (measured 2026-09-28)
 
 The main result: every GPT estimate I measured was usable as a starting point but not as a final value, and local measurement fixes it.
 
-- **Colours.** Snapping cut palette error against independent flat patches from 1.35 to 0.36 ΔE00. Text inks were off by up to 5 ΔE and borders by up to 10. One hallucinated gradient was caught, and on screen 2 a text colour was wrong by 10.5 ΔE.
+- **Colours.** Snapping cut palette error against independent flat patches from 1.35 to 0.36 ΔE00. Text inks were off by up to 5 ΔE and borders by up to 10. One hallucinated gradient was caught, and on screen 2 a text colour was wrong by 10.5 ΔE. The snap now ends on the most frequent exact RGB within 2 Lab units of the cluster: a dark background 5.6 Lab units from its card surface used to land 0.9 ΔE off (mean of the r=6 window); it is exact on the synthetic board.
 - **Text-colour measurement needed care.** A plain "most-distant 15% of pixels" estimate reads thin text too dark. Eroded stroke interiors fix thick text (the wordmark has an internal gradient) and the top 5% fixes thin text. I judged this with swatch sheets.
 - **Fonts, on known ground truth.** An 18-font Chrome benchmark let me find three physical mismatches:
   - no kerning in Pillow's basic layout;
   - coverage measured in sRGB instead of linear light;
   - Skia's stem darkening.
 
-  I also found a crop-threshold inconsistency that squeezed small text by about 10% when resized. After fixing all four, weights went from 5/14 to 15/16 exact, size error to 0.8% median and tracking error to 0.003 em median.
+  I also found a crop-threshold inconsistency that squeezed small text by about 10% when resized. After fixing all four, weights went from 5/14 to 15/16 exact, size error to 0.8% median and tracking error to 0.003 em median. That benchmark was rendered by Chrome/Skia on the calibration machine (macOS), with stem darkening; the kit's `FONT_EMBOLDEN` was fitted to it.
+- **Fonts, renderer caveat (2026-09-28).** On Linux Chromium (`--no-sandbox`) and on Pillow-rendered text the same fit reads weights one step light: Inter 400 at 28 px fits 300 (0.839 vs 0.777 on Chromium; 0.788 vs 0.717 on Pillow), Inter 700 at 32 px fits 600; Lora 700 at 56 px is right. `fonts` now scores every candidate with and without stem darkening and keeps the better, and treats two weights one step apart within 0.07 similarity as a tie that the spec's weight wins (`weight_tie` in fonts.json). On the Pillow-rendered Inter 400 fixture the result is 400.
 - **Fonts, on GPT text.** GPT's letters don't follow one real family. Similar sans families tie within about 0.01 and per-style bests disagree, so the tool reports ties, flags styles that fit poorly and supports `--family`. It no longer pretends there is one true answer. The serif titles consistently match Lora, Libre Baskerville or Fraunces closely.
+- **Fonts, network.** fonts.google.com/metadata/fonts is undocumented and blocked by some proxies (403 here) while fonts.googleapis.com, fonts.gstatic.com and raw.githubusercontent.com pass; the Developer API (`webfonts/v1`, needs a key) is the fallback. Download failures used to be reported as "custom lettering" with an empty fonts.json; they are now counted and, when every candidate fails, the run exits without touching fonts.json.
 - **compare** needed three layers:
   - a global row-profile offset, which found the status bar exactly (63 px = 24 dp);
   - a prior-constrained region search;
   - measurement on ink and object boxes rather than template scale.
 
-  Its font verdict is relative (which candidate explains the implemented glyphs best), which is what separated real swaps (margins 0.11–0.20) from noise (≤ 0.057).
+  Its font verdict is relative (which candidate explains the implemented glyphs best), which is what separated real swaps (margins 0.11–0.20) from noise (≤ 0.057). Roboto is always a candidate on Android: a body set in Roboto instead of Inter used to read only as "6% narrower"; it now reads `looks like Roboto 400 (0.85) rather than the specified Inter 400 (0.75)`.
+- **compare, synthetic ground truth (2026-09-28).** Planted deviations on a 720×1440 design (48 px status bar, 60 px nav bar, title 60 vs 56 px, body ink #8A90A8 vs #A7ADC4, button fill #9A8BE6 vs #A69BF7, chip +16 px, avatar removed): status bar 24 dp, `7% larger: renders like ~30.1sp (design 28sp)`, ink ΔE 8.9, fill ΔE 4.8, chip +8 dp, avatar `missing` with no follow-up shift/size hints. An 800 px crop of the 1440 px design reports `compared 56%` and the button below the fold as `outside screenshot`; text drawn at 0.8× triggers one `all text is ~21% smaller` line instead of per-text hints. An identical screenshot scores 100 with no hints; the ΔE00 shifts are evaluated only where the blurred images differ, which halved the runtime.
 - **Vision is useful but only qualitative.** When I gave it tiles with different geometry it invented a size difference. After I used identical crop geometry its descriptions matched the measurements.
-- **redline** recovers CSS geometry to under 1 dp.
+- **redline** recovers CSS geometry to under 1 dp on flat surfaces, and now also on full-bleed sheets (top corners only, sides on the image border), cards with a drop shadow (offset 8, blur 8: box within 0.1 px, r 16.0 for 16) and objects that fill their bbox (background from the crop's 2-4 px border ring: an 80 px disc in an 84 px bbox measures 80 × 80, not the padded 92 × 92). Edges are placed at the largest Lab step of the profile rather than the first crossing of a threshold, which is what makes shadows and 2 px borders both land on the outer edge. The second line of a two-line style is now searched over the component's full width (275 px vs 260 px truncated before; the truncation caused a `6% wider` false positive on identical screenshots).
 - **Generalisation.** The unchanged pipeline ran on an unseen second screen: 26/26 texts located with one vision call, all verifications passing. It also exposed text-location bugs that the first screen hid (component ambiguity, rows of repeated labels, badge icons, mixed-style lines), which are now fixed.
+- **Generated code.** The Compose output failed to compile twice on natural specs (palette "Button label" + role "Button label" → recursive reference; weight 450 → `FontWeight.W450`), the Swift file redeclared `primary`, and `#fff` became `Color(0xFFFFF)` (transparent). Colours are now namespaced (`AcmeColors.X`), non-hundred weights use `FontWeight(n)`, hex is normalised with alpha, identifiers are unique across the whole token namespace, and `--verify` lints for exactly these classes of error; the emitted files (Color/Type/Shape/Dimens/Theme) type-check with kotlinc 2.1 against signature stubs of the Compose APIs.
 
 ## Verification round (2026-09-28): clean-room "Penny" Android build + adversarial review
 
@@ -493,3 +660,7 @@ The main result: every GPT estimate I measured was usable as a starting point bu
   - The findings label unverified claims ("NV") and keep install bands separate from active-user claims.
 - `blueprint` (xhigh) took 209 s and returned 10 features (6 MVP), 10 screens with M3-native mockup briefs, RICE, stories and a
   roadmap. RICE scores are recomputed locally, because model arithmetic can drift.
+- `reasoning.effort` also accepts `max` (SDK schema; `--effort max` / `--synth-effort max` are exposed, not timed here). After
+  every structured call the kit checks the schema's top-level required keys and stops with the missing key named, because a
+  gateway that accepts but ignores `strict: true` returns shorter objects; `report.md`/`blueprint.md` table cells escape `|`.
+  `url_citation` annotations keep `start_index`/`end_index` in `sources.json` when the endpoint sends them.

@@ -1,0 +1,88 @@
+{
+  "executive_summary": "Large, growing market with entrenched competitors (Splitwise) but a UX gap for couples specifically.",
+  "market": {
+    "size_and_growth": "TAM ~$2B, 8% CAGR (2024-2029) [NV: no single authoritative source found]",
+    "trends": [
+      "shift to subscription",
+      "bank-linked auto-import"
+    ],
+    "target_segments": [
+      "cohabiting couples 25-34",
+      "newly engaged couples"
+    ]
+  },
+  "competitors": [
+    {
+      "name": "Splitwise",
+      "platforms": "iOS, Android, Web",
+      "positioning": "general group expense splitting",
+      "pricing": "free; Pro $3/mo",
+      "rating_and_scale": "4.7 stars, 10M+ downloads (Play Store, 2026-09)",
+      "key_features": [
+        "IOU tracking",
+        "multi-currency"
+      ],
+      "strengths": [
+        "brand recognition"
+      ],
+      "weaknesses": [
+        "not couple-specific",
+        "dated UI"
+      ]
+    },
+    {
+      "name": "Honeydue",
+      "platforms": "iOS, Android",
+      "positioning": "couples finance + bill reminders",
+      "pricing": "free",
+      "rating_and_scale": "4.5 stars, 1M+ downloads",
+      "key_features": [
+        "bill reminders",
+        "shared + individual accounts"
+      ],
+      "strengths": [
+        "couple-specific"
+      ],
+      "weaknesses": [
+        "ad-supported",
+        "US-bank-only linking historically"
+      ]
+    }
+  ],
+  "user_pain_points": [
+    {
+      "pain": "arguments over who paid last",
+      "evidence": "recurring theme in r/personalfinance threads",
+      "severity": "high"
+    },
+    {
+      "pain": "manual entry fatigue",
+      "evidence": "app store 2-3 star reviews cite tedium",
+      "severity": "medium"
+    }
+  ],
+  "unmet_needs_and_gaps": [
+    "no couple-specific savings goals tied to splitting",
+    "no fairness-over-time visualization"
+  ],
+  "monetization": {
+    "benchmarks": "competitors charge $3-6/mo for pro tiers",
+    "recommended_model": "freemium with $4.99/mo pro",
+    "price_points": "$4.99/mo or $39.99/yr"
+  },
+  "regulatory_and_platform": [
+    "PSD2/open banking constraints in UK/EU for bank linking"
+  ],
+  "risks": [
+    "Splitwise could ship couple-mode",
+    "bank API costs at scale"
+  ],
+  "differentiation_opportunities": [
+    "fairness-over-time dashboard",
+    "shared savings goals"
+  ],
+  "open_questions": [
+    "exact CAC benchmarks for finance apps in this niche could not be verified"
+  ],
+  "confidence_notes": "Competitor pricing and ratings verified from live store listings 2026-09-28; TAM figure is a rough estimate (NV)."
+}

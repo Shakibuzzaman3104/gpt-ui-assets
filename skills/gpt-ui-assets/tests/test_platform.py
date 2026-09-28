@@ -1,6 +1,7 @@
 """Offline checks for platform profiles, native-scale calibration and moving-part registration: python3 tests/test_platform.py"""
 import importlib.util
 import json
+import re
 import tempfile
 from pathlib import Path
 
@@ -35,6 +36,29 @@ def test_calibration_from_native_anchors():
         spec_design = {"components": spec_["components"]}
         g._calibrate(d, spec_design, dict(m), 1024, "design")
         assert spec_design["px_to_dp"] == round(412 / 1024, 5) and not spec_design["native_scale"]["applied"]
+
+
+def test_calibration_from_ios_anchors():
+    with tempfile.TemporaryDirectory() as td:
+        d = Path(td)
+        m = {"mockup": "mockup.png", "width": 1024, "height": 1536, "platform": "ios", "screen_dp": 393, "assets": []}
+        spec_ = {"components": [
+            {"name": "Tabs", "native": "TabBar (4 tabs)", "bbox": {"x": 60, "y": 1420, "w": 900, "h": 85}},
+            {"name": "Header", "native": "NavigationStack bar with large title", "bbox": {"x": 0, "y": 100, "w": 1024, "h": 200}},
+            {"name": "List", "native": "List (inset grouped)", "bbox": {"x": 30, "y": 320, "w": 960, "h": 600}}]}
+        g._calibrate(d, spec_, m, 1024)
+        ns = spec_["native_scale"]
+        assert ns["applied"] and [a["component"] for a in ns["anchors"]] == ["Tabs"], ns
+        assert abs(ns["px_to_dp_native"] - round(49 / 85, 5)) < 1e-9 and spec_["px_to_dp"] == round(49 / 85, 5)
+        assert spec_["effective_width_dp"] == round(1024 * 49 / 85)
+        pats = g.NATIVE_ANCHORS["ios"]
+
+        def anchor(native):
+            return next((dp for pat, dp, _ in pats if re.search(pat, native, re.I)), None)
+        assert anchor("Navigation bar (inline title)") == 44 and anchor("NavigationStack bar, inline") == 44
+        assert anchor("Nav bar") == 44 and anchor("NavigationStack bar with large title") is None
+        assert anchor("floating Liquid Glass TabBar (up to 5 tabs)") == 49 and anchor("Tab bar") == 49
+        assert anchor("Toggle") == 31 and anchor("Picker (segmented)") == 32 and anchor("List (inset grouped)") is None
 
 
 def test_registration_ignores_static_slivers():
