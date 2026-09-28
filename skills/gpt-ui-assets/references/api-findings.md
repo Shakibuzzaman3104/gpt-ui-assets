@@ -352,6 +352,18 @@ Built on a toy steam train's smoke in a sleep app (512-unit art, 3 s loop, 24 fp
   - Keys every 0.25 s: shimmer 6.04, 0 backwards, seam 1.11 vs 1.04. The texture renews every quarter second, which reads
     livelier, and that is the default.
   - Against the 72 independent GPT frames (shimmer 9.36, 3 backwards), it needs 12 image calls instead of 72.
+- **Dense plumes do not travel (car exhaust, 2026-09-28).** A car's exhaust was laid out with 12 puffs per 3 s loop
+  and a 2.2 s life, about 9 overlapping. GPT painted nearly the same plume in all 12 keys, ignoring the individual
+  puffs, and EbSynth had no motion to carry.
+  - Carrying each frame along the layout's exact motion removed 0.8% of the frame-to-frame change (18.4 vs 18.5).
+    The train scored 17%.
+  - Flow QA only showed jitter: 6 steps backwards and a median speed of 1.5 against the layout's steady 2.7.
+  - Neither a stronger positional guide (4 vs 1.5: shimmer 11.0 → 9.6) nor layering positions front-most instead of
+    averaging overlapping puffs changed that. Layering is still the correct rule and is kept.
+  - What fixed it was a layout of distinct puffs: 6 per loop, a 1.9 s life, bigger at birth, and "keep every puff a
+    separate puff" in the brief. The keys then differed as the layout did, and motion following reached 16%, with a
+    median speed of 2.1.
+  - This carried-along-the-layout residual is now the `follows` QA field.
 - **Compared: [3dicon](https://github.com/samyost1/3dicon)** animates an approved GPT still with a video model (Seedance 2.0
   via OpenRouter), with the still as both the first and last frame so the loop closes. It mattes against a known flat
   mid-grey backing (exact un-premultiply `C = (F − (1−a)·BG)/a`), frames with one union crop for the whole loop, and

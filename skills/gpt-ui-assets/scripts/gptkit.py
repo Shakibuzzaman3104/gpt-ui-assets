@@ -3372,7 +3372,8 @@ def cmd_sequence_render(a):
         return None
     with cf.ThreadPoolExecutor(a.jobs) as ex:
         done = [i for i in ex.map(job, todo) if i is not None]
-    missing = meta["frames"] - len(list((d / "raw").glob("*.png")))
+    # count only the frames asked for (keys with --every), by name, so reroll candidates never count as frames
+    missing = sum(1 for i in range(0, meta["frames"], a.every) if not (d / "raw" / f"{i:03d}.png").exists())
     print(f"  {len(done)} rendered" + (f", {missing} still missing: run render again" if missing else ""))
 
 
@@ -3494,6 +3495,11 @@ def _seq_finish(d, meta, a, frames):
     crops[0].save(webp, save_all=True, append_images=crops[1:], duration=round(1000 / meta["fps"]), loop=0,
                   format="WEBP", lossless=False, quality=a.quality, method=6)
     qa = _seq_qa(crops)
+    if meta.get("plume"):
+        try:
+            qa["follows"] = _seq_follows(frames, meta, box)
+        except ImportError:
+            pass
     rect = [int(box[0]), int(box[1]), int(box[2] - box[0]), int(box[3] - box[1])]
     _seq_meta(d, rect=rect, qa=qa)
     (d / "report.json").write_text(json.dumps({"rect": rect, **qa}, indent=1))
@@ -3513,7 +3519,35 @@ def _seq_finish(d, meta, a, frames):
           f"{meta['canvas']} canvas\n"
           f"  QA: {qa['backwards']} steps backwards, seam {qa['seam_step']} vs median {qa['median_step']}, "
           f"shimmer {qa['shimmer_mean']} (max {qa['shimmer_max']})"
-          + (f"\n  ! outliers {qa['outliers']}: run `sequence ... reroll` on them" if qa["outliers"] else ""))
+          + (f", follows the layout {qa['follows']}%" if "follows" in qa else "")
+          + (f"\n  ! outliers {qa['outliers']}: run `sequence ... reroll` on them" if qa["outliers"] else "")
+          + ("\n  ! the texture barely moves with the layout: GPT likely painted the same plume in every key. Make the "
+             "elements distinct (fewer, rounder, spaced by --chuff) and render the keys again"
+             if qa.get("follows", 100) < 5 else ""))
+
+
+def _seq_follows(frames, meta, box):
+    """Share of the frame-to-frame change that disappears when each frame is carried along the layout's exact motion.
+    A texture that travels with its plume scores about 15%+; one that boils in place scores about 0, which the other
+    checks miss (a dense exhaust whose keys were all the same generic plume scored 0.8%)."""
+    import cv2
+    p = meta["plume"]
+    sprites = [_rgba(s) for s in p["sprites"]]
+    x0, y0, x1, y1 = box
+    fps, n = meta["fps"], len(frames)
+    res, still = [], []
+    for i in range(n):
+        mx, my = _plume_source_coords(i / fps, (i + 1) / fps, p, sprites, meta["canvas"])
+        mx, my = mx[y0:y1, x0:x1] - x0, my[y0:y1, x0:x1] - y0
+        a = np.asarray(frames[i].crop(box), dtype=np.float32)
+        b = np.asarray(frames[(i + 1) % n].crop(box), dtype=np.float32)
+        pa, pb = a[..., :3] * a[..., 3:4] / 255, b[..., :3] * b[..., 3:4] / 255
+        carried = cv2.remap(pa, mx.astype(np.float32), my.astype(np.float32), cv2.INTER_LINEAR)
+        m = b[..., 3] > 60
+        if m.any():
+            res.append(np.abs(carried - pb)[m].mean())
+            still.append(np.abs(pa - pb)[m].mean())
+    return round(float(100 * (1 - np.mean(res) / max(1e-6, np.mean(still)))), 1) if still else 0.0
 
 
 # -- propagate: GPT paints keys, EbSynth carries their texture along the layout to every frame
@@ -3542,11 +3576,14 @@ def _seq_layout_part(d, meta, i, static):
 
 def _plume_source_coords(t_key, t, p, sprites, canvas):
     """For each pixel at time t, where that point of its element was at t_key (identity outside the plume).
-    Elements keep their emission number across the loop wrap, so this is exact in absolute time."""
+
+    Positions are layered like the elements are drawn, oldest first, so the front-most element owns each pixel. Averaging
+    over overlapping elements instead points into none of them: in a dense exhaust plume (about 9 puffs overlapping) it
+    made the synthesised texture creep at half the layout's speed with backward jitter."""
     src, dst = plume_layout(t_key, p), plume_layout(t, p)
     gy, gx = np.mgrid[0:canvas, 0:canvas].astype(np.float32)
-    mx, my, ws = np.zeros_like(gx), np.zeros_like(gx), np.zeros_like(gx)
-    for k, (x1, y1, s1, al, v) in dst.items():
+    mx, my = gx.copy(), gy.copy()
+    for k, (x1, y1, s1, al, v) in sorted(dst.items()):
         if k not in src:
             continue
         x0, y0, s0 = src[k][0], src[k][1], src[k][2]
@@ -3555,12 +3592,10 @@ def _plume_source_coords(t_key, t, p, sprites, canvas):
         h_ = w_ * sp.height / sp.width
         foot = Image.new("L", (canvas, canvas))
         foot.paste(sp.getchannel("A").resize((max(1, round(w_)), max(1, round(h_)))), (round(x1 - w_ / 2), round(y1 - h_ / 2)))
-        w = np.asarray(foot, dtype=np.float32) / 255 * al + 1e-6
-        mx += w * (x0 + (gx - x1) * s0 / s1)
-        my += w * (y0 + (gy - y1) * s0 / s1)
-        ws += w
-    ok = ws > 0.02
-    return np.where(ok, mx / np.maximum(ws, 1e-6), gx), np.where(ok, my / np.maximum(ws, 1e-6), gy)
+        a = np.clip(np.asarray(foot, dtype=np.float32) / 255 * 2.5, 0, 1)   # opaque inside, soft only at the rim
+        mx = mx * (1 - a) + (x0 + (gx - x1) * s0 / s1) * a
+        my = my * (1 - a) + (y0 + (gy - y1) * s0 / s1) * a
+    return mx, my
 
 
 def _position_image(mx, my, box):

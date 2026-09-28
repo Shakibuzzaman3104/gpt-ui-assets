@@ -3,7 +3,7 @@ name: gpt-ui-assets
 description: Research the market and generate a feature blueprint (gpt-6-sol, high reasoning, web-searched and cited), design platform-native app/web UIs with OpenAI image + vision models (gpt-image-2, gpt-6, or any OpenAI-compatible endpoint) and turn an APPROVED design into production assets redrawn from scratch 1:1 (never cropped from the screenshot) — icons as SVG/Android VectorDrawable, illustrations and backgrounds as clean PNG/WebP, launcher icons for Android/iOS/web, frame animations (including layout-driven sequences where GPT renders every frame of smoke, drops or spray), Lottie and AnimatedVectorDrawable — then build and verify the real UI. Use whenever the user wants market research, competitor analysis or a feature list/blueprint for an app idea, wants GPT/ChatGPT to design app screens, icons, images, illustrations or an app icon, approves a GPT design and says "go ahead"/"build it"/"give me the assets", asks for the assets "used in the UI", wants frames for an animated drawable, a Lottie or an animated vector, wants smoke, steam, rain, spray or embers animated in an icon's own style, or complains that GPT cropped assets out of a mockup.
 license: MIT
 metadata:
-  version: 2.2.0
+  version: 2.2.1
 ---
 
 # GPT UI assets
@@ -333,6 +333,9 @@ python3 $K sequence build/player train_smoke propagate --every 6 --ref drawn_smo
   - Everything that goes out thins and fades; nothing reverses.
   - Err slow for calm contexts: on device a 68 u/s drift with 3.6 s puffs was judged too fast; the next render used
     45 u/s with 5.4 s puffs.
+- **Keep emitted elements distinct.** GPT tracks separate, spaced elements (puffs a chuff apart). A dense stream reads
+  as one generic plume, and GPT paints the same plume in every key, so the texture never travels: a car exhaust with
+  about 9 overlapping puffs followed its layout 0.8%, while the same exhaust as distinct puffs followed it 16%.
 - **The emitted element must be drawn in the art's own style.** Reusing another icon (a cloud icon for smoke) reads as
   wrong at once. Have GPT draw the isolated element, with a crop of the art's own element as the only reference.
 - **Carry paint, don't warp pixels.** Optical-flow in-betweens between GPT keys stall and surge, because each key sits a
@@ -351,6 +354,10 @@ python3 $K sequence build/player train_smoke propagate --every 6 --ref drawn_smo
   - `backwards` should be 0, and `seam` should be close to `median`.
   - `shimmer` is the texture change left after the motion is compensated. It is the open cost of rendering frames
     independently (about 9–10 grey levels on smoke), so compare it against your previous run rather than against zero.
+  - `follows` (plumes) is the share of the frame-to-frame change that disappears when each frame is carried along the
+    layout's exact motion. Measured: about 15–17% for a texture that travels with its plume, about 40% for a perfect
+    render, and about 0 for one that boils in place (which `shimmer` and `backwards` do not catch). Below 5% the
+    build says so.
   - `outliers` are frames that disagree with both neighbours, usually a render that ignored its layout. `reroll` renders
     candidates and keeps whichever fits its neighbours best, the current frame included. After `propagate`, fix an
     outlier through its nearest key instead: delete that key's `raw/NNN.png`, run `render --every 6` again (it renders

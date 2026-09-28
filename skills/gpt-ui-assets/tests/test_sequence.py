@@ -154,12 +154,32 @@ def test_propagate_carries_keys_to_every_frame():
     report = json.loads((d / "report.json").read_text())
     if HAVE_CV2:
         assert report["backwards"] <= 1, report["speed_along"]
+        assert report["follows"] > 5, report["follows"]          # the texture travels with the plume
     try:
         g.cmd_sequence_propagate(_args(tmp, "propagate", every=5))
     except SystemExit as e:
         assert "divide" in str(e)
     else:
         raise AssertionError("--every must divide the frame count")
+    shutil.rmtree(tmp)
+
+
+def test_render_every_counts_only_the_keys():
+    import contextlib, io
+    tmp = Path(tempfile.mkdtemp())
+    g.cmd_sequence_layout(_args(tmp, "layout", **_plume(tmp)))
+    d = tmp / "sequence" / "smoke"
+    real = g._seq_render_one
+    g._seq_render_one = lambda d_, meta, i, out, model: shutil.copyfile(d_ / "guides" / f"{i:03d}.png", out) and out
+    shutil.copyfile(d / "guides" / "000.png", d / "raw" / "003_cand0.png")   # a reroll candidate is not a frame
+    try:
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            g.cmd_sequence_render(_args(tmp, "render", every=6))
+    finally:
+        g._seq_render_one = real
+    assert sorted(p.name for p in (d / "raw").glob("0??.png")) == ["000.png", "006.png", "012.png", "018.png"]
+    assert "still missing" not in buf.getvalue(), buf.getvalue()
     shutil.rmtree(tmp)
 
 
