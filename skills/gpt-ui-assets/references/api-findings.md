@@ -412,3 +412,14 @@ The main result: every GPT estimate I measured was usable as a starting point bu
   The merged SVG renderer returns real alpha, and an `L`-mode mask read the transparent background as ink, so the
   themed glyph was placed at 28% scale. Three separate Chrome finders ignored `GPTKIT_CHROME=none`. Headless Chrome hangs
   under a fresh HOME without `--use-mock-keychain`.
+
+## Market research and blueprint (2026-09-28)
+
+- `gpt-6-sol` accepts `reasoning.effort` `high` and `xhigh` through the gateway. With the `web_search` tool and high effort it ran
+  3 searches and returned 3 `url_citation` annotations in 25 s on a short question.
+- `research --depth quick` on "Android budgeting app for young couples" (US + UK) took 628 s in total:
+  - 1 plan call and 5 parallel web-searched findings (14–27 KB each, 14–39 sources per question, 93 unique sources), then an
+    `xhigh` synthesis.
+  - The findings label unverified claims ("NV") and keep install bands separate from active-user claims.
+- `blueprint` (xhigh) took 209 s and returned 10 features (6 MVP), 10 screens with M3-native mockup briefs, RICE, stories and a
+  roadmap. RICE scores are recomputed locally, because model arithmetic can drift.

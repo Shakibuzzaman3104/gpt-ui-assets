@@ -1,6 +1,6 @@
 ---
 name: gpt-ui-assets
-description: Design platform-native app/web UIs with OpenAI image + vision models (gpt-image-2, gpt-6, or any OpenAI-compatible endpoint) and turn an APPROVED design into production assets redrawn from scratch 1:1 (never cropped from the screenshot) — icons as SVG/Android VectorDrawable, illustrations and backgrounds as clean PNG/WebP, launcher icons for Android/iOS/web, frame animations, Lottie and AnimatedVectorDrawable — then build and verify the real UI. Use whenever the user wants GPT/ChatGPT to design app screens, icons, images, illustrations or an app icon, approves a GPT design and says "go ahead"/"build it"/"give me the assets", asks for the assets "used in the UI", wants frames for an animated drawable, a Lottie or an animated vector, or complains that GPT cropped assets out of a mockup.
+description: Research the market and generate a feature blueprint (gpt-6-sol, high reasoning, web-searched and cited), design platform-native app/web UIs with OpenAI image + vision models (gpt-image-2, gpt-6, or any OpenAI-compatible endpoint) and turn an APPROVED design into production assets redrawn from scratch 1:1 (never cropped from the screenshot) — icons as SVG/Android VectorDrawable, illustrations and backgrounds as clean PNG/WebP, launcher icons for Android/iOS/web, frame animations, Lottie and AnimatedVectorDrawable — then build and verify the real UI. Use whenever the user wants market research, competitor analysis or a feature list/blueprint for an app idea, wants GPT/ChatGPT to design app screens, icons, images, illustrations or an app icon, approves a GPT design and says "go ahead"/"build it"/"give me the assets", asks for the assets "used in the UI", wants frames for an animated drawable, a Lottie or an animated vector, or complains that GPT cropped assets out of a mockup.
 license: MIT
 metadata:
   version: 2.0.0
@@ -13,6 +13,7 @@ accept "GPT can't" as the end of the road:
 
 | Job | Best done by |
 |---|---|
+| Market research (web-searched, cited) and the feature blueprint | GPT reasoning (`gpt-6-sol`, high/xhigh effort) with web search (`research`, `blueprint`) |
 | Screen mockups, painterly art, illustrations, photos, textures, raster frames | GPT image (`mockup`, `forge`, `frames`) |
 | Asset inventory, design QA, icon-set style, vector keyframes | GPT vision (`manifest`, `critique`, `iconspec`, `vectorize`) |
 | Flat/line icons as vectors | GPT vision writes SVG (`svg`, `icons`). If it stays weak after its retry, **you** write or fix the SVG by hand, then `svg --check` |
@@ -48,6 +49,31 @@ python3 $K doctor                                                      # key, en
 - Never print or echo the API key.
 - Image calls take 35–80 s and cost money or quota. Batch deliberately, run slow commands in the background, and run
   independent commands in parallel (e.g. `forge` and `svg`).
+
+## Phase 0: market research and feature blueprint (before design)
+
+```bash
+python3 $K research "Android budgeting app for young couples who share expenses" --platform android \
+  --region "US + UK" --depth standard --out research/couples     # plan -> parallel web research -> cited report
+python3 $K blueprint research/couples                            # features, RICE, stories, screens, roadmap
+```
+- **`research`** runs `gpt-6-sol` at `--effort high` (the synthesis at `--synth-effort xhigh`):
+  1. It plans 5, 10 or 16 questions (`--depth quick|standard|deep`) across market size and trends, competitors (pricing,
+     ratings, features), real user pain points from app-store reviews and forums, unmet needs, monetization benchmarks,
+     platform/regulatory constraints, ASO and differentiation.
+  2. It researches each question in parallel with web search and cites every claim.
+  3. It synthesises `report.md` and `report.json`, plus `findings/*.md` and `sources.json`.
+- **Read `report.md` yourself before the blueprint.** Challenge weak claims: `findings/` shows the raw evidence per question,
+  and "could not verify" notes are deliberate. Re-run a narrower `research` with `--context` to fill a gap.
+- **`blueprint`** turns the report into:
+  - positioning, personas and jobs-to-be-done;
+  - features with MoSCoW priority and RICE (the score is recomputed locally), each citing the pain or gap it solves;
+  - user stories with acceptance criteria, flows, monetization, analytics events, a roadmap and non-goals;
+  - a **screen inventory with a ready `mockup_brief` for each screen** (`screens.json`).
+- Walk the user through `blueprint.md`, especially the MVP cut, then design each approved screen:
+  `python3 $K mockup "<mockup_brief>" --platform <platform> --out design/<screen>`. Use `--style-ref` for screen 2 onward.
+- Timing: the quick depth takes several minutes and deep can take 15+. Run it in the background. Each question is one
+  web-searched reasoning call.
 
 ## Phase 1: design (the user drives)
 

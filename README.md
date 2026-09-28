@@ -45,6 +45,7 @@ This skill does what a designer would do instead:
 
 | Phase | Commands | What you get |
 |---|---|---|
+| Research | `research`, `blueprint` | In-depth, web-searched, cited market report (competitors, pain points, pricing, gaps) and a feature blueprint (RICE, user stories, screens with mockup briefs, roadmap) using `gpt-6-sol` at high/xhigh reasoning |
 | Design | `mockup --platform android\|ios\|web`, `--style-ref`, `critique` | Native-component screens; further screens in the approved design language; design QA with measured contrast |
 | Inventory | `manifest`, `spec`, `iconspec` | Every asset with bbox, kind and format (native components and system UI excluded); tokens with the native widget per component |
 | Raster assets | `forge`, `pick`, `fix` | 1:1 redraws: parallel candidates, perceptual `fid` ranking, Lab colour match, copy/crop rejection |
