@@ -3207,6 +3207,350 @@ def cmd_frames(a):
     _write_anim(out, a.name, seq, fps, a, labels)
 
 
+# ---- layout-driven sequences: code lays the motion out, GPT renders every frame
+
+# An image model has no notion of time. Asked for a sprite sheet it keeps the style but not the trajectory: drops
+# jump between cells, the floor moves from row to row, cells come back empty. So the motion is decided in code
+# (a periodic layout, one guide per frame) and GPT only renders each frame's finish, as a rendering artist working
+# over an animator's layout. Nothing is interpolated: in-betweens synthesised from independently rendered keys
+# stall and surge (see references/api-findings.md, "Layout-driven sequences").
+SEQUENCE_BRIEF = (
+    "You are the lighting and rendering artist on a premium animated app-icon production. The attached image is "
+    "frame {n} of {total} of a seamless {seconds:g}-second looping animation at {fps:g} frames per second, as laid out "
+    "by the animator. {locked} is final artwork and is locked. {moving} is the animator's rough layout: it shows "
+    "exactly where every part of it is on this frame and how big it is.\n"
+    "Render {moving_lc} as the finished, high-end frame: {look}\n"
+    "This is one frame of a moving sequence, so the layout is binding: keep every part at exactly the position and "
+    "size the layout gives it. Do not add, remove, merge away, move or resize anything, and do not tidy it into a "
+    "different shape. Only the finish changes. {locked}, the camera, the framing, the scale and the lighting stay "
+    "exactly as they are. Fully transparent background, no ground, no cast shadow, no text."
+)
+SEQUENCE_LOOK = ("in exactly the same stylised 3D look as the locked artwork: the same materials, palette and soft "
+                 "light from the upper left, with gentle self-shadowing where parts overlap")
+
+
+def _seq_dir(a):
+    d = Path(a.dir) / "sequence" / a.name
+    for sub in ("guides", "raw", "frames"):
+        (d / sub).mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _seq_meta(d, **update):
+    p = d / "sequence.json"
+    meta = json.loads(p.read_text()) if p.exists() else {}
+    if update:
+        meta.update(update)
+        p.write_text(json.dumps(meta, indent=1))
+    return meta
+
+
+def _vec(text, n=2):
+    vals = [float(v) for v in str(text).split(",")]
+    if len(vals) != n:
+        raise SystemExit(f"expected {n} comma-separated numbers, got {text!r}")
+    return vals
+
+
+def plume_state(age, k, p):
+    """Closed-form flight of emission k at `age`: linear drag toward the wind plus buoyancy, so the terminal
+    velocity is wind + (0, buoyancy / drag). The per-emission jitter repeats every loop, which makes the layout
+    periodic by construction: layout(t + loop) == layout(t)."""
+    per_loop = round(p["loop"] / p["chuff"])
+    rnd = np.random.default_rng(k % per_loop)
+    jx, jy, js = rnd.uniform(-1, 1, 3)
+    v0 = (p["velocity"][0] + p["spread"][0] * jx, p["velocity"][1] + p["spread"][1] * jy)
+    w = (p["wind"][0], p["wind"][1] + p["buoyancy"] / p["drag"])
+    e = (1 - math.exp(-p["drag"] * age)) / p["drag"]
+    x = p["vent"][0] + w[0] * age + (v0[0] - w[0]) * e
+    y = p["vent"][1] + w[1] * age + (v0[1] - w[1]) * e
+    u = age / p["life"]
+    scale = (p["grow"][0] + (p["grow"][1] - p["grow"][0]) * u) * (1 + 0.08 * js)
+    alpha = min(1, age / 0.08) * min(1, (1 - u) / 0.4)
+    return x, y, scale, max(0.0, alpha), k % max(1, len(p["sprites"]))
+
+
+def plume_layout(t, p):
+    """Every live emission at absolute time t, keyed by emission number (identity survives the loop wrap)."""
+    out = {}
+    for k in range(math.floor((t - p["life"]) / p["chuff"]), math.floor(t / p["chuff"]) + 1):
+        age = t - k * p["chuff"]
+        if 0 <= age < p["life"]:
+            out[k] = plume_state(age, k, p)
+    return out
+
+
+def plume_guide(t, p, base=None, sprites=None, canvas=512):
+    """One guide frame: the plume's sprites at time t, oldest first, behind (or in front of) the locked base art."""
+    sprites = sprites or [_rgba(s) for s in p["sprites"]]
+    layer = Image.new("RGBA", (canvas, canvas))
+    for _, (x, y, s, al, v) in sorted(plume_layout(t, p).items()):
+        sp = sprites[v]
+        w = p["size"] * s
+        h = w * sp.height / sp.width
+        im = sp.resize((max(1, round(w)), max(1, round(h))), Image.LANCZOS)
+        arr = np.array(im)
+        arr[..., 3] = (arr[..., 3] * al).astype(np.uint8)
+        layer.alpha_composite(Image.fromarray(arr), (round(x - w / 2), round(y - h / 2)))
+    if base is None:
+        return layer
+    out = Image.new("RGBA", (canvas, canvas))
+    for part in ((base, layer) if p.get("front") else (layer, base)):
+        out.alpha_composite(part)
+    return out
+
+
+def cmd_sequence_layout(a):
+    d = _seq_dir(a)
+    for old in (d / "guides").glob("*.png"):
+        old.unlink()
+    if a.guides:
+        paths = sorted(Path(a.guides).glob("*.png"))
+        if not paths:
+            raise SystemExit(f"no PNG guides in {a.guides}")
+        for i, src in enumerate(paths):
+            g = _rgba(src)
+            big = Image.new("RGBA", (1024, 1024))
+            big.alpha_composite(g.resize((1024, 1024), Image.LANCZOS))
+            big.save(d / "guides" / f"{i:03d}.png")
+        meta = _seq_meta(d, frames=len(paths), fps=a.fps, seconds=len(paths) / a.fps, canvas=_rgba(paths[0]).width,
+                         base=a.base, source=str(a.guides))
+    else:
+        if not (a.base and a.sprites and a.vent):
+            raise SystemExit("a plume layout needs --base, --sprites and --vent (or pass --guides DIR)")
+        p = dict(loop=a.loop, chuff=a.chuff, life=a.life, vent=_vec(a.vent), velocity=_vec(a.velocity),
+                 spread=_vec(a.spread), drag=a.drag, wind=_vec(a.wind), buoyancy=a.buoyancy, size=a.size,
+                 grow=_vec(a.grow), sprites=[str(Path(s).resolve()) for s in a.sprites.split(",")], front=a.front)
+        per_loop = p["loop"] / p["chuff"]
+        if abs(per_loop - round(per_loop)) > 1e-6:
+            raise SystemExit(f"--loop {a.loop} must be a whole number of --chuff {a.chuff} intervals, "
+                             "or the loop cannot repeat exactly")
+        base = _rgba(a.base)
+        n = round(a.loop * a.fps)
+        sprites = [_rgba(s) for s in p["sprites"]]
+        for i in range(n):
+            g = plume_guide(i / a.fps, p, base, sprites, canvas=base.width)
+            big = Image.new("RGBA", (1024, 1024))
+            big.alpha_composite(g.resize((1024, 1024), Image.LANCZOS))
+            big.save(d / "guides" / f"{i:03d}.png")
+        meta = _seq_meta(d, frames=n, fps=a.fps, seconds=a.loop, canvas=base.width, base=str(Path(a.base).resolve()),
+                         plume=p)
+    picks = list(range(0, meta["frames"], max(1, meta["frames"] // 12)))[:12]
+    sheet([[(f"f{i}", _rgba(d / "guides" / f"{i:03d}.png")) for i in picks[r:r + 6]] for r in (0, 6)],
+          d / "layout_review.png", T=200)
+    print(f"{meta['frames']} guide frames ({meta['seconds']:g} s at {meta['fps']:g} fps) -> {d / 'guides'}\n"
+          f"  review {d / 'layout_review.png'} before rendering: the motion is decided here, not by GPT")
+
+
+def _seq_prompt(meta, i):
+    moving = meta.get("moving") or "The moving element"
+    return SEQUENCE_BRIEF.format(n=i + 1, total=meta["frames"], seconds=meta["seconds"], fps=meta["fps"],
+                                 locked=meta.get("locked") or "The rest of the artwork", moving=moving,
+                                 moving_lc=moving[:1].lower() + moving[1:], look=meta.get("look") or SEQUENCE_LOOK)
+
+
+def _seq_render_one(d, meta, i, out, model):
+    raw = edit(_png_bytes(_rgba(d / "guides" / f"{i:03d}.png")), _seq_prompt(meta, i), "1024x1024", "transparent", model)[0]
+    out.write_bytes(raw)
+    return out
+
+
+def cmd_sequence_render(a):
+    d = _seq_dir(a)
+    meta = _seq_meta(d, moving=a.moving, locked=a.locked, look=a.look or SEQUENCE_LOOK)
+    if not meta.get("frames"):
+        raise SystemExit("run `sequence ... layout` first")
+    todo = [i for i in range(meta["frames"]) if a.force or not (d / "raw" / f"{i:03d}.png").exists()]
+    print(f"rendering {len(todo)} of {meta['frames']} frames, {a.jobs} at a time (resumable: finished frames are kept)")
+
+    def job(i):
+        for attempt in range(3):
+            try:
+                return _seq_render_one(d, meta, i, d / "raw" / f"{i:03d}.png", a.model) and i
+            except Exception as e:  # noqa: BLE001 - network or moderation hiccups; retry the one frame
+                print(f"  frame {i} attempt {attempt + 1} failed: {str(e)[:80]}", flush=True)
+        return None
+    with cf.ThreadPoolExecutor(a.jobs) as ex:
+        done = [i for i in ex.map(job, todo) if i is not None]
+    missing = meta["frames"] - len(list((d / "raw").glob("*.png")))
+    print(f"  {len(done)} rendered" + (f", {missing} still missing: run render again" if missing else ""))
+
+
+def _seq_extract(d, meta, raw_path, i, static):
+    """Register a render onto its guide and keep only the moving part (the locked art is cut away)."""
+    canvas = meta["canvas"]
+    guide = _rgba(d / "guides" / f"{i:03d}.png").resize((canvas, canvas), Image.LANCZOS)
+    arr = np.array(_register(_rgba(raw_path).resize((canvas, canvas), Image.LANCZOS), guide))
+    if static is not None:
+        arr[static] = 0
+    return Image.fromarray(arr)
+
+
+def _seq_static_mask(meta, grow=2):
+    if not meta.get("base"):
+        return None
+    base = _rgba(meta["base"]).resize((meta["canvas"], meta["canvas"]), Image.LANCZOS)
+    m = base.getchannel("A").point(lambda v: 255 if v > 8 else 0).filter(ImageFilter.MaxFilter(grow * 2 + 1))
+    return np.asarray(m) > 0
+
+
+def _grey(img):
+    arr = np.asarray(img.convert("RGBA"), dtype=np.float32)
+    return arr[..., :3].mean(-1) * arr[..., 3] / 255
+
+
+def _seq_step(a, b):
+    """(motion vector, motion-compensated residual) from frame a to b; needs OpenCV, else a plain difference."""
+    ga, gb = _grey(a), _grey(b)
+    m = ga > 30
+    if not m.any():
+        return (0.0, 0.0), 0.0
+    try:
+        import cv2
+    except ImportError:
+        return (0.0, 0.0), float(np.abs(gb - ga)[m].mean())
+    fl = cv2.calcOpticalFlowFarneback(ga.astype(np.uint8), gb.astype(np.uint8), None, 0.5, 4, 21, 4, 7, 1.5, 0)
+    h, w = ga.shape
+    gx, gy = np.meshgrid(np.arange(w, dtype=np.float32), np.arange(h, dtype=np.float32))
+    warped = cv2.remap(gb, gx + fl[..., 0], gy + fl[..., 1], cv2.INTER_LINEAR)
+    return (float(fl[..., 0][m].mean()), float(fl[..., 1][m].mean())), float(np.abs(warped - ga)[m].mean())
+
+
+def _seq_qa(frames):
+    """Direction, seam and shimmer of a loop. A frame that disagrees with both neighbours much more than they agree
+    with each other is an outlier (usually a render that ignored the layout): reroll it."""
+    n = len(frames)
+    steps = [_seq_step(frames[i], frames[(i + 1) % n]) for i in range(n)]
+    vecs = np.array([s[0] for s in steps])
+    heading = vecs.mean(0)
+    norm = float(np.hypot(*heading)) or 1.0
+    along = vecs @ (heading / norm)
+    resid = np.array([s[1] for s in steps])
+    excess = []
+    for i in range(n):
+        r_in, r_out = resid[(i - 1) % n], resid[i]
+        _, r_skip = _seq_step(frames[(i - 1) % n], frames[(i + 1) % n])
+        dev = abs(along[(i - 1) % n] - np.median(along)) + abs(along[i] - np.median(along))
+        excess.append(r_in + r_out - r_skip + 4 * dev)
+    order = sorted(range(n), key=lambda i: -excess[i])
+    return {
+        "frames": n,
+        "heading": [round(float(v), 3) for v in heading / norm],
+        "speed_along": [round(float(x), 2) for x in along],
+        "backwards": int((along < 0).sum()) if norm > 0.05 else 0,
+        "seam_step": round(float(along[-1]), 2),
+        "median_step": round(float(np.median(along)), 2),
+        "shimmer_mean": round(float(resid.mean()), 2),
+        "shimmer_max": round(float(resid.max()), 2),
+        # robust: well clear of the typical frame by both ratio and spread, so a clean loop reports none
+        "outliers": [i for i in order[:max(1, n // 12)]
+                     if excess[i] > np.median(excess) * 1.6
+                     and excess[i] > np.median(excess) + 4 * np.median(np.abs(np.array(excess) - np.median(excess)))],
+        "outlier_scores": {i: round(float(excess[i]), 1) for i in order[:8]},
+    }
+
+
+def cmd_sequence_build(a):
+    d = _seq_dir(a)
+    meta = _seq_meta(d)
+    n = meta.get("frames", 0)
+    raws = [d / "raw" / f"{i:03d}.png" for i in range(n)]
+    missing = [i for i, p in enumerate(raws) if not p.exists()]
+    if not n or missing:
+        raise SystemExit(f"frames missing from raw/: {missing[:10]} — run `sequence ... render` again")
+    static = _seq_static_mask(meta)
+    frames = [_seq_extract(d, meta, p, i, static) for i, p in enumerate(raws)]
+    if a.below is not None:
+        for f in frames:
+            arr = np.array(f)
+            arr[int(a.below):] = 0
+            f.paste(Image.fromarray(arr))
+    if a.ref:
+        # per frame, not one transform for the loop: every frame is an independent render with its own exposure, and
+        # pulling each onto the approved part evens that out (measured shimmer 9.4 vs 10.5 for one shared transform)
+        ref = _rgba(a.ref)
+        frames = [_match_colors([f], ref)[0] for f in frames]
+    for i, f in enumerate(frames):
+        f.save(d / "frames" / f"{i:03d}.png")
+    union = np.zeros(frames[0].size[::-1], bool)
+    for f in frames:
+        union |= np.asarray(f)[..., 3] > 3
+    ys, xs = np.nonzero(union)
+    box = (max(0, xs.min() - 4), max(0, ys.min() - 4), min(union.shape[1], xs.max() + 5), min(union.shape[0], ys.max() + 5))
+    crops = [f.crop(box) for f in frames]
+    webp = d / f"{a.name}.webp"
+    crops[0].save(webp, save_all=True, append_images=crops[1:], duration=round(1000 / meta["fps"]), loop=0,
+                  format="WEBP", lossless=False, quality=a.quality, method=6)
+    qa = _seq_qa(crops)
+    rect = [int(box[0]), int(box[1]), int(box[2] - box[0]), int(box[3] - box[1])]
+    _seq_meta(d, rect=rect, qa=qa)
+    (d / "report.json").write_text(json.dumps({"rect": rect, **qa}, indent=1))
+    base = _rgba(meta["base"]).resize((meta["canvas"], meta["canvas"])) if meta.get("base") else None
+    comps = []
+    for f in frames:
+        c = Image.new("RGBA", f.size, a.preview_bg)
+        c.alpha_composite(f)
+        if base is not None:
+            c.alpha_composite(base)
+        comps.append(c.convert("RGB"))
+    comps[0].save(d / "preview.gif", save_all=True, append_images=comps[1:], duration=round(1000 / meta["fps"]), loop=0)
+    picks = list(range(0, n, max(1, n // 12)))[:12]
+    sheet([[(f"f{i}{' !' if i in qa['outliers'] else ''}", comps[i]) for i in picks[r:r + 6]] for r in (0, 6)],
+          d / "contact.png", T=200)
+    print(f"{n} frames @ {meta['fps']:g} fps -> {webp} ({webp.stat().st_size // 1024} KB), rect {rect} on the "
+          f"{meta['canvas']} canvas\n"
+          f"  QA: {qa['backwards']} steps backwards, seam {qa['seam_step']} vs median {qa['median_step']}, "
+          f"shimmer {qa['shimmer_mean']} (max {qa['shimmer_max']})"
+          + (f"\n  ! outliers {qa['outliers']}: run `sequence ... reroll` on them" if qa["outliers"] else ""))
+
+
+def cmd_sequence_reroll(a):
+    """Render candidates for the worst frames and keep whichever fits its neighbours best (the current one included)."""
+    d = _seq_dir(a)
+    meta = _seq_meta(d)
+    targets = [int(x) for x in a.frames.split(",")] if a.frames else (meta.get("qa") or {}).get("outliers", [])
+    if not targets:
+        raise SystemExit("no outliers recorded: run `sequence ... build` first, or pass --frames 0,6,30")
+    static = _seq_static_mask(meta)
+    n = meta["frames"]
+    jobs = [(i, c) for i in targets for c in range(a.candidates)]
+
+    def job(ic):
+        i, c = ic
+        out = d / "raw" / f"{i:03d}_cand{c}.png"
+        for _ in range(3):
+            try:
+                return _seq_render_one(d, meta, i, out, a.model)
+            except Exception as e:  # noqa: BLE001
+                print(f"  frame {i} candidate {c}: {str(e)[:80]}", flush=True)
+        return None
+    with cf.ThreadPoolExecutor(a.jobs) as ex:
+        list(ex.map(job, jobs))
+    for i in targets:
+        prev = _seq_extract(d, meta, d / "raw" / f"{(i - 1) % n:03d}.png", (i - 1) % n, static)
+        nxt = _seq_extract(d, meta, d / "raw" / f"{(i + 1) % n:03d}.png", (i + 1) % n, static)
+        qa = meta.get("qa") or {}
+        speed, heading = qa.get("median_step", 0.0), np.array(qa.get("heading", [1.0, 0.0]))
+        options = [d / "raw" / f"{i:03d}.png"] + sorted((d / "raw").glob(f"{i:03d}_cand*.png"))
+        scored = []
+        for path in options:
+            f = _seq_extract(d, meta, path, i, static)
+            (v1, r1), (v2, r2) = _seq_step(prev, f), _seq_step(f, nxt)
+            drift = abs(float(np.dot(v1, heading)) - speed) + abs(float(np.dot(v2, heading)) - speed)
+            scored.append((r1 + r2 + 4 * drift, path))
+        scored.sort(key=lambda s: s[0])
+        best = scored[0][1]
+        print(f"  frame {i}: " + ", ".join(f"{p.stem.split('_')[-1] if '_' in p.stem else 'current'} {s:.1f}" for s, p in scored))
+        if best != options[0]:
+            shutil.copyfile(best, options[0])
+    print("  now run `sequence ... build` again")
+
+
+def cmd_sequence(a):
+    {"layout": cmd_sequence_layout, "render": cmd_sequence_render, "build": cmd_sequence_build,
+     "reroll": cmd_sequence_reroll}[a.stage](a)
+
+
 # ---- vector keyframes + Lottie + AnimatedVectorDrawable
 
 _TOK = re.compile(r"[MLCZmlczHhVvSsQqTtAa]|[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?")
@@ -9064,6 +9408,37 @@ def main():
     p.add_argument("--formats", default="gif,webp,apng,lottie", help="comma list of gif,webp,apng,lottie")
     p.add_argument("--px", type=int, default=480, help="long side of the animated WebP/APNG/Lottie/GIF")
     p.add_argument("--preview-bg", default="#1b1d33"); p.add_argument("--model", default=None); p.set_defaults(fn=cmd_frames)
+    p = sub.add_parser("sequence", help="layout-driven animation: code lays the motion out, GPT renders every frame "
+                                        "(stages: layout, render, build, reroll)")
+    p.add_argument("dir"); p.add_argument("name"); p.add_argument("stage", choices=["layout", "render", "build", "reroll"])
+    p.add_argument("--guides", help="layout: use these guide frames (one PNG per frame, from any source) instead of a plume")
+    p.add_argument("--base", help="layout: the locked artwork on its own canvas; build cuts it away")
+    p.add_argument("--sprites", help="layout: comma list of the plume's element sprites, drawn in the art's own style")
+    p.add_argument("--vent", help="layout: emission point x,y on the base canvas")
+    p.add_argument("--loop", type=float, default=3.0, help="layout: loop length in seconds")
+    p.add_argument("--fps", type=float, default=24)
+    p.add_argument("--chuff", type=float, default=0.75, help="layout: seconds between emissions (the loop must be a multiple)")
+    p.add_argument("--life", type=float, default=5.4, help="layout: seconds each element lives")
+    p.add_argument("--velocity", default="0,-85", help="layout: launch velocity x,y in canvas units per second")
+    p.add_argument("--spread", default="12,18", help="layout: launch jitter x,y")
+    p.add_argument("--drag", type=float, default=1.5, help="layout: air drag per second toward --wind")
+    p.add_argument("--wind", default="45,-3", help="layout: air velocity x,y (a moving engine's slipstream, a breeze)")
+    p.add_argument("--buoyancy", type=float, default=-10, help="layout: vertical acceleration; negative rises")
+    p.add_argument("--size", type=float, default=96, help="layout: sprite width at scale 1, canvas units")
+    p.add_argument("--grow", default="0.45,1.5", help="layout: scale at birth,death")
+    p.add_argument("--front", action="store_true", help="layout: draw the plume in front of the base")
+    p.add_argument("--moving", default="The moving element", help="render: what the layout shows, e.g. 'The smoke'")
+    p.add_argument("--locked", default="The rest of the artwork", help="render: what must not change, e.g. 'The toy steam train'")
+    p.add_argument("--look", help="render: the finish to aim for (default: the locked art's own 3D look)")
+    p.add_argument("--jobs", type=int, default=12, help="render/reroll: parallel image calls")
+    p.add_argument("--force", action="store_true", help="render: redo frames that are already rendered")
+    p.add_argument("--ref", help="build: approved picture of the moving part; the loop is colour-matched to it once")
+    p.add_argument("--below", type=float, help="build: drop anything below this canvas row (under a chimney mouth)")
+    p.add_argument("--quality", type=int, default=80, help="build: WebP quality")
+    p.add_argument("--frames", help="reroll: comma list of frames (default: the outliers build reported)")
+    p.add_argument("--candidates", type=int, default=2, help="reroll: renders per frame to choose from")
+    p.add_argument("--preview-bg", default="#a0aabe"); p.add_argument("--model", default=None)
+    p.set_defaults(fn=cmd_sequence)
     p = sub.add_parser("vectorize", help="vector layers (morphs, transforms, glows) -> Lottie + AnimatedVectorDrawable")
     p.add_argument("dir"); p.add_argument("name"); p.add_argument("--moving"); p.add_argument("--static")
     p.add_argument("--motion"); p.add_argument("--keyframes", type=int, default=4); p.add_argument("--size", type=int, default=512)

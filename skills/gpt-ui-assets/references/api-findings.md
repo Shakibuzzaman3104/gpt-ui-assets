@@ -300,6 +300,51 @@ Cost: 8 image calls (6 concepts, 1 plate, 1 foreground) and 2 gpt-6 glyph calls 
 - **Whole object, no static layer** (bobbing drop): consistent colours (ΔE 4.3, nothing flagged), but proportions drift. The drop is smaller relative to its rings than in the asset and varies between frames, and neither colour/size QA nor a normalised-silhouette IoU detects it.
 - **Formats:** Pillow writes animated WebP/APNG with exact frame counts and per-frame durations (loop=0). A Lottie image sequence (one ty:2 layer per frame, base64 PNG assets) renders frame-exact in lottie-web 5.12.2 (mean diff 0.8 vs 2.6–5.7 for a wrong frame) and costs ~280 KB per 480 px frame. A single-image transform-keyframe Lottie costs 124–220 KB and renders within 0.3–0.8 mean diff.
 
+## Layout-driven sequences (measured 2026-09-28, gpt-image-2.5-sunburst edits)
+
+Built on a toy steam train's smoke in a sleep app (512-unit art, 3 s loop, 24 fps), then generalised into `sequence`.
+
+- **Sprite sheet for travelling motion (the `frames` route) fails.** Rain from a cloud, 12 cells in one call: drops jumped
+  between cells rather than falling, the "floor" sat at four different heights across the rows, and 6 of 12 cells held
+  only fading ripples. Registering the cells onto a fixed grid kept the style but not the trajectory. Image models have
+  no notion of time, so better wording cannot fix this.
+- **Layout guides are followed.** Each guide was the locked art plus a plume of simple puff sprites at the positions a
+  physics layout gave for that frame. With the production brief ("frame n of N of a seamless loop; the layout is
+  binding; only the finish changes"), GPT kept the puff positions and sizes on 8/8 and 12/12 keys, and on 67/72 frames
+  when every frame was rendered. It redrew the locked train slightly smaller on 1 of 8 keys, which does not matter
+  because only the moving part is kept.
+- **Optical-flow in-betweens between independent keys stall and surge.** 8 keys, 5 Farneback in-betweens each: the plume's
+  horizontal speed alternated between 1.2–1.6 and 0.0–0.5 px/frame at every key interval, 3 of 48 steps went
+  backwards, and on device it read as the smoke moving back and forth. Each key sits a little ahead of or behind its
+  layout, and flow reproduces that faithfully.
+- **Warping keys along the layout's own motion** (each pixel follows its puff's centre and scale, the two neighbouring keys
+  cross-dissolved with smoothstep weights): 72/72 steps forward at 0.35–1.27 px/frame, seam 1.01. Tested first with the
+  layout itself as the keys (1.03–1.54, 0 backwards). On device it still showed warp and cross-dissolve artefacts, so it
+  was dropped.
+- **Every frame rendered by GPT:** 72 edits, 12 in parallel, about 8 minutes, 0 failures. First pass: 70/72 steps forward,
+  and 5 frames disagreed with both neighbours (one drawn ahead of its layout: steps −2.9 in and +5.0 out). Re-rendering
+  those 5 twice each and keeping the best neighbour fit gave 72/72 forward and a seam of 1.11. On device: "better, but
+  still needs work".
+- **Shimmer is the open cost.** Motion-compensated residual between consecutive frames, in grey levels on the smoke: 9.4
+  with per-frame colour matching, 9.7 with none, 10.5 with one shared transform for the loop (max 28–29 in all three).
+  Per-frame matching wins because each independent render has its own exposure.
+- **Registration undoes whole-frame drift.** A render shifted as a whole is put back onto its guide by `_register`. The
+  failure that matters is the moving part drawn in the wrong place relative to correctly placed static art, and that is
+  what the neighbour-disagreement score catches.
+- **Loop closure:** emission jitter keyed to the emission number modulo the emissions per loop makes the layout exactly
+  periodic. Puff identity must be tracked in absolute time across the wrap; wrapping time to the loop renumbers puffs and
+  made the seam step −11.6 against a typical +1.3.
+- **Style of emitted elements:** a plume built from another icon (a blue cloud icon) read as wrong at once. Three isolated
+  puffs drawn by GPT with a crop of the train's own smoke as the only reference matched its material and palette on
+  the first try.
+- **Colour transfer through Pillow's `LAB` mode** (ImageCms sRGB→LAB, mean/std shift, back) turned white smoke blue: the
+  a/b channels are stored offset and the round trip is not what it looks like. Use the kit's own `_lab` / `_match_colors`.
+- **Compared: [3dicon](https://github.com/samyost1/3dicon)** animates an approved GPT still with a video model (Seedance 2.0
+  via OpenRouter), with the still as both the first and last frame so the loop closes. It mattes against a known flat
+  mid-grey backing (exact un-premultiply `C = (F − (1−a)·BG)/a`), frames with one union crop for the whole loop, and
+  encodes an animated WebP at the source 24 fps. Its first icon shipped at 8 fps and looked broken. That route is
+  temporally coherent where per-frame image rendering shimmers; it needs a video-model key.
+
 ## Vector animation (measured 2026-09-27)
 
 - gpt-6 follows the extended vector schema (strict json_schema with nested motion/glow objects) in one call: heart 17-26 s,

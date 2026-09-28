@@ -52,7 +52,7 @@ This skill does what a designer would do instead:
 | Icons | `svg`, `icons`, `vd` | SVG icons scored against the design and retried when weak, on a 24-grid; new icons in the set's style; VectorDrawables validated by render round-trip + aapt2 |
 | Vectors | `trace` | Raster art → gradient-aware SVG/VectorDrawable, with a vector-or-raster recommendation |
 | App icon | `appicon concepts`, `appicon build` | Android adaptive (foreground, background, themed monochrome), legacy + Play 512, iOS 1024 + dark/tinted, favicons + PWA/maskable |
-| Animation | `frames`, `vectorize`, `rig`, `animate` | Procedural motion (no API calls), generated frames with QA, WebP/APNG/Lottie, Lottie **and** AnimatedVectorDrawable, rigged 1:1 vector animation |
+| Animation | `frames`, `sequence`, `vectorize`, `rig`, `animate` | Procedural motion (no API calls), generated frames with QA, layout-driven sequences (code animates, GPT renders every frame of smoke, drops or spray), WebP/APNG/Lottie, Lottie **and** AnimatedVectorDrawable, rigged 1:1 vector animation |
 | Build 1:1 | `fonts`, `redline`, `tokens`, `compare` | Google Fonts matched by rendering; measured radii and gaps; Compose/SwiftUI/CSS/Tailwind theme code; screenshot-vs-design heatmap with ranked fixes |
 | Export | `export`, `doctor` | Android densities, iOS imagesets, web 1x/2x; setup check |
 

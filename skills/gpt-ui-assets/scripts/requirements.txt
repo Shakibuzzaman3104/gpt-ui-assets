@@ -6,3 +6,4 @@ numpy>=1.24
 # scipy>=1.10      faster region labelling in `trace`/`rig`
 # fonttools>=4.40  GPOS kerning in the `fonts` matcher
 # cairosvg>=2.7    SVG previews when Chrome is missing (needs the cairo system library)
+# opencv-python-headless>=4.8  motion direction, seam and shimmer QA in `sequence` (without it: plain frame differences)

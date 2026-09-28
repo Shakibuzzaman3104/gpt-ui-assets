@@ -1,9 +1,9 @@
 ---
 name: gpt-ui-assets
-description: Research the market and generate a feature blueprint (gpt-6-sol, high reasoning, web-searched and cited), design platform-native app/web UIs with OpenAI image + vision models (gpt-image-2, gpt-6, or any OpenAI-compatible endpoint) and turn an APPROVED design into production assets redrawn from scratch 1:1 (never cropped from the screenshot) — icons as SVG/Android VectorDrawable, illustrations and backgrounds as clean PNG/WebP, launcher icons for Android/iOS/web, frame animations, Lottie and AnimatedVectorDrawable — then build and verify the real UI. Use whenever the user wants market research, competitor analysis or a feature list/blueprint for an app idea, wants GPT/ChatGPT to design app screens, icons, images, illustrations or an app icon, approves a GPT design and says "go ahead"/"build it"/"give me the assets", asks for the assets "used in the UI", wants frames for an animated drawable, a Lottie or an animated vector, or complains that GPT cropped assets out of a mockup.
+description: Research the market and generate a feature blueprint (gpt-6-sol, high reasoning, web-searched and cited), design platform-native app/web UIs with OpenAI image + vision models (gpt-image-2, gpt-6, or any OpenAI-compatible endpoint) and turn an APPROVED design into production assets redrawn from scratch 1:1 (never cropped from the screenshot) — icons as SVG/Android VectorDrawable, illustrations and backgrounds as clean PNG/WebP, launcher icons for Android/iOS/web, frame animations (including layout-driven sequences where GPT renders every frame of smoke, drops or spray), Lottie and AnimatedVectorDrawable — then build and verify the real UI. Use whenever the user wants market research, competitor analysis or a feature list/blueprint for an app idea, wants GPT/ChatGPT to design app screens, icons, images, illustrations or an app icon, approves a GPT design and says "go ahead"/"build it"/"give me the assets", asks for the assets "used in the UI", wants frames for an animated drawable, a Lottie or an animated vector, wants smoke, steam, rain, spray or embers animated in an icon's own style, or complains that GPT cropped assets out of a mockup.
 license: MIT
 metadata:
-  version: 2.0.0
+  version: 2.1.0
 ---
 
 # GPT UI assets
@@ -45,6 +45,8 @@ python3 $K doctor                                                      # key, en
   - `xcrun actool` validates the iOS app icon.
   - `pip install vtracer scipy fonttools` add an extra trace candidate, faster region labelling and kerning in the font
     matcher. Everything works without them.
+  - `pip install opencv-python-headless` gives `sequence` its motion-direction, seam and shimmer QA; without it the QA
+    falls back to plain frame differences.
   - `fonts` needs network access to Google Fonts once; after that it runs from `~/.cache/gptkit`.
 - Never print or echo the API key.
 - Image calls take 35–80 s and cost money or quota. Batch deliberately, run slow commands in the background, and run
@@ -254,7 +256,8 @@ Pick the route with the user:
 | Route | Use when | Output |
 |---|---|---|
 | `frames --procedural bounce\|pulse\|float\|wiggle\|spin\|breathe` | the art moves rigidly; **no API calls**, art stays exactly 1:1 | frames, WebP, APNG, tiny transform Lottie, `motion.json` for code |
-| `frames --moving … --static …` | the art changes shape (flame, ripples, blinking mascot) | registered frames, WebP/APNG/image-sequence Lottie, `animation-list` XML |
+| `frames --moving … --static …` | the art changes shape **in place** (flame, ripples, blinking mascot) | registered frames, WebP/APNG/image-sequence Lottie, `animation-list` XML |
+| `sequence` (layout → render → build → reroll) | something **travels**: smoke, steam, falling drops, spray, embers, leaves | a seamless loop where code decides the motion and GPT renders every frame; animated WebP, frames, QA report |
 | `vectorize` | GPT-authored vector motion: morphs, transforms, glows | Lottie **and** looping AnimatedVectorDrawable |
 | `rig` + `animate` | the exact traced art must move (1:1 with the design, glow included); **no GPT needed** | layered Lottie with procedural keyframes |
 
@@ -291,6 +294,55 @@ python3 $K vectorize build/home campfire --rebuild      # after YOU edit layers.
   - The AVD: copy `<name>_avd.xml` to `res/drawable/` and call `(drawable as Animatable).start()`. It loops on its own and needs
     API 23+ framework (use AppCompat `app:srcCompat` below that); gradients need API 24+.
   - To refine motion, edit `layers.json` yourself and `--rebuild`.
+
+**Layout-driven sequences: code animates, GPT renders.** An image model has no notion of time. A `frames` sheet keeps the
+style but not the trajectory: drops jump between cells, the floor moves from row to row, cells come back empty. So for
+anything that travels, decide the motion in code and give GPT one job per frame: render this exact layout in the
+approved style.
+```bash
+# 1. layout: a periodic physics plume (or --guides DIR: one guide PNG per frame, from any source)
+python3 $K sequence build/player train_smoke layout --base train_body.png --sprites puff1.png,puff2.png \
+  --vent 190,158 --loop 3 --fps 24 --chuff 0.75 --life 5.4 --velocity 0,-85 --drag 1.5 --wind 45,-3 --buoyancy -10 \
+  --size 96 --grow 0.45,1.5
+# 2. render: one GPT edit per frame from its guide (resumable, 12 in parallel, retries)
+python3 $K sequence build/player train_smoke render --moving "The smoke" --locked "The toy steam train" \
+  --model gpt-image-2.5-sunburst
+# 3. build: register, cut the locked art away, colour-match each frame, WebP + preview + QA
+python3 $K sequence build/player train_smoke build --ref drawn_smoke.png --below 175
+# 4. reroll the outliers build names (2 candidates each, the best neighbour fit wins), then build again
+python3 $K sequence build/player train_smoke reroll && python3 $K sequence build/player train_smoke build --ref drawn_smoke.png
+```
+- **Look at `layout_review.png` before rendering.** The motion is decided there; GPT only adds the finish. A 3 s loop at
+  24 fps is 72 image calls (about 8 minutes at 12 in parallel), so get the motion right first.
+- **The layout must loop.** `--loop` has to be a whole number of `--chuff` intervals; the plume's jitter repeats every
+  loop, so frame 72 is frame 0. Custom guides from `--guides` need the same property.
+- **Get the physics right, because that is what the viewer reads.**
+  - Smoke leaves a chimney fast, is braked hard by the air (drag), then rises slowly (buoyancy) and is carried by the
+    air (`--wind`). A moving engine's slipstream pushes it back more than buoyancy lifts it.
+  - Drops swell out of the surface above them before they let go, then accelerate and splash.
+  - Everything that goes out thins and fades; nothing reverses.
+  - Err slow for calm contexts: on device a 68 u/s drift with 3.6 s puffs was judged too fast; the next render used
+    45 u/s with 5.4 s puffs.
+- **The emitted element must be drawn in the art's own style.** Reusing another icon (a cloud icon for smoke) reads as
+  wrong at once. Have GPT draw the isolated element, with a crop of the art's own element as the only reference.
+- **Never interpolate between independent renders.** Optical-flow in-betweens between GPT keys stall and surge, because each
+  key sits a little ahead of or behind its layout (it reads as the plume moving back and forth). Warping keys along the
+  layout's own motion fixes the direction but leaves visible warp and cross-dissolve artefacts. Render every frame.
+- **Read the QA line.**
+  - `backwards` should be 0, and `seam` should be close to `median`.
+  - `shimmer` is the texture change left after the motion is compensated. It is the open cost of rendering frames
+    independently (about 9–10 grey levels on smoke), so compare it against your previous run rather than against zero.
+  - `outliers` are frames that disagree with both neighbours, usually a render that ignored its layout. `reroll` renders
+    candidates and keeps whichever fits its neighbours best, the current frame included.
+- **Colour-match every frame, not the loop once** (`--ref`, the approved picture of the moving part). Each render has its
+  own exposure, and pulling each onto the reference evens that out: measured shimmer 9.4 per frame vs 10.5 for one shared
+  transform and 9.7 with none.
+- Ship the WebP as a frame sequence played on your own clock, and cross-fade the still art's drawn element into it, so
+  play and pause never jump. `report.json` has the crop rect on the base canvas.
+- If a video model with a first and last frame is available (Seedance, Veo, Kling through OpenRouter or Replicate), it is
+  temporally coherent where per-frame rendering boils. Animate the approved still with first frame = last frame, matte
+  against a known flat backing, and encode at the source frame rate. Per-frame rendering is the route when only image
+  models are available.
 
 **Rig the exact art into parts (vector, 1:1).** `vectorize` redraws the art in simplified form: keyframe 0 of GPT's
 campfire scored 10.2 against the design, while a traced rig scores 2.3. When fidelity matters, rig the traced asset instead:
@@ -372,6 +424,16 @@ python3 $K compare build/home shot.png [--vision] [--crop-top PX] [--crop-bottom
   faithful. For light-on-light concepts the kit switches to the image-edit foreground itself.
 - For animation, never ask for the whole object in every frame (static parts drift, grid lines appear). Generate only
   the moving layer. Use `--procedural` for rigid motion.
+- **GPT is the rendering artist, not the animator.** It cannot keep a trajectory across a sprite sheet. For anything that
+  travels, lay the motion out in code and have GPT render each frame from its guide with a brief that names the frame
+  ("frame 10 of 72 of a seamless 3-second loop"), locks the static art and makes the layout binding. It kept the
+  layout on every one of 12 keys, and on 67 of 72 frames on the first pass (the other 5 were fixed by `reroll`).
+- Never write "keep its exact shape" about the moving part. 3dicon found it reads as an instruction to stay still (a
+  video model returned the input 122 times). Lock the camera, the framing and the static art instead.
+- To move a part that hides something (fan blades, a bird on a branch), have GPT redraw the base with the part removed
+  and repaired, and keep the original pixels everywhere outside the part. Recomposite at rest and compare with the
+  master before animating: a mean difference of about 0.2 when the part keeps its own pixels, about 3 when GPT had to
+  redraw the part as well (the fan's blades).
 - gpt-6 animates too subtly by default, and the kit's motion check retries. AVD `pathType` keyframes crash the inflater, so the
   kit relays multi-key morphs across path copies.
 - Vision hex guesses drift (ΔE up to 5 on text ink and 10 on borders). `tokens` snaps them to pixels. Measure; never ask vision for numbers.
