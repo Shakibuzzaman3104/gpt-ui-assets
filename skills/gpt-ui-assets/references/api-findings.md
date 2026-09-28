@@ -339,6 +339,19 @@ Built on a toy steam train's smoke in a sleep app (512-unit art, 3 s loop, 24 fp
   the first try.
 - **Colour transfer through Pillow's `LAB` mode** (ImageCms sRGB→LAB, mean/std shift, back) turned white smoke blue: the
   a/b channels are stored offset and the round trip is not what it looks like. Use the kit's own `_lab` / `_match_colors`.
+- **EbSynth propagation (2026-09-28, same loop).** [EbSynth](https://github.com/jamriska/ebsynth) is public domain, and the
+  CPU build takes about 7 minutes for 72 frames of 344×184.
+  - Each frame was synthesised from the two nearest GPT keys. The style was the key's RGBA, so alpha is synthesised
+    from the same patches. The guides were the layout's puffs (appearance, weight 2) and a positional map sending each
+    frame pixel to where its puff was at the key (weight 1.5). The two syntheses were cross-faded with smoothstep weights.
+  - First try, raw keys on key frames and syntheses in between: shimmer 6.7, but every key popped (the outliers were
+    exactly frames 0, 12, 24…) and 8 steps went backwards.
+  - Passing keys through the same synthesis removed the pops. Clipping alpha to the layout (dilated 10 px, feathered
+    6 px) removed a hard edge where the synthesis filled its whole box.
+  - Result with keys every 0.5 s: shimmer 5.55, 2 steps backwards (brief stalls mid-interval), seam 1.17 vs median 1.03.
+  - Keys every 0.25 s: shimmer 6.04, 0 backwards, seam 1.11 vs 1.04. The texture renews every quarter second, which reads
+    livelier, and that is the default.
+  - Against the 72 independent GPT frames (shimmer 9.36, 3 backwards), it needs 12 image calls instead of 72.
 - **Compared: [3dicon](https://github.com/samyost1/3dicon)** animates an approved GPT still with a video model (Seedance 2.0
   via OpenRouter), with the still as both the first and last frame so the loop closes. It mattes against a known flat
   mid-grey backing (exact un-premultiply `C = (F − (1−a)·BG)/a`), frames with one union crop for the whole loop, and

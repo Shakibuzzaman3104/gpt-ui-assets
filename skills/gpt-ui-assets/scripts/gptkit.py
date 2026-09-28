@@ -3360,7 +3360,7 @@ def cmd_sequence_render(a):
     meta = _seq_meta(d, moving=a.moving, locked=a.locked, look=a.look or SEQUENCE_LOOK)
     if not meta.get("frames"):
         raise SystemExit("run `sequence ... layout` first")
-    todo = [i for i in range(meta["frames"]) if a.force or not (d / "raw" / f"{i:03d}.png").exists()]
+    todo = [i for i in range(0, meta["frames"], a.every) if a.force or not (d / "raw" / f"{i:03d}.png").exists()]
     print(f"rendering {len(todo)} of {meta['frames']} frames, {a.jobs} at a time (resumable: finished frames are kept)")
 
     def job(i):
@@ -3450,6 +3450,16 @@ def _seq_qa(frames):
     }
 
 
+def _seq_moving(d, meta, a, i, raw_path, static):
+    """One render reduced to its moving part: registered, the locked art cut away, clipped below --below."""
+    f = _seq_extract(d, meta, raw_path, i, static)
+    if a.below is not None:
+        arr = np.array(f)
+        arr[int(a.below):] = 0
+        f = Image.fromarray(arr)
+    return f
+
+
 def cmd_sequence_build(a):
     d = _seq_dir(a)
     meta = _seq_meta(d)
@@ -3457,19 +3467,21 @@ def cmd_sequence_build(a):
     raws = [d / "raw" / f"{i:03d}.png" for i in range(n)]
     missing = [i for i, p in enumerate(raws) if not p.exists()]
     if not n or missing:
-        raise SystemExit(f"frames missing from raw/: {missing[:10]} — run `sequence ... render` again")
+        raise SystemExit(f"frames missing from raw/: {missing[:10]} — run `sequence ... render` again, "
+                         "or `sequence ... propagate` if you rendered keys only (--every)")
     static = _seq_static_mask(meta)
-    frames = [_seq_extract(d, meta, p, i, static) for i, p in enumerate(raws)]
-    if a.below is not None:
-        for f in frames:
-            arr = np.array(f)
-            arr[int(a.below):] = 0
-            f.paste(Image.fromarray(arr))
+    frames = [_seq_moving(d, meta, a, i, p, static) for i, p in enumerate(raws)]
     if a.ref:
         # per frame, not one transform for the loop: every frame is an independent render with its own exposure, and
         # pulling each onto the approved part evens that out (measured shimmer 9.4 vs 10.5 for one shared transform)
         ref = _rgba(a.ref)
         frames = [_match_colors([f], ref)[0] for f in frames]
+    _seq_finish(d, meta, a, frames)
+
+
+def _seq_finish(d, meta, a, frames):
+    """Crop the loop to its union box, encode the WebP, measure it and write the preview and contact sheet."""
+    n = len(frames)
     for i, f in enumerate(frames):
         f.save(d / "frames" / f"{i:03d}.png")
     union = np.zeros(frames[0].size[::-1], bool)
@@ -3502,6 +3514,155 @@ def cmd_sequence_build(a):
           f"  QA: {qa['backwards']} steps backwards, seam {qa['seam_step']} vs median {qa['median_step']}, "
           f"shimmer {qa['shimmer_mean']} (max {qa['shimmer_max']})"
           + (f"\n  ! outliers {qa['outliers']}: run `sequence ... reroll` on them" if qa["outliers"] else ""))
+
+
+# -- propagate: GPT paints keys, EbSynth carries their texture along the layout to every frame
+
+def _ebsynth_bin(a):
+    for c in (getattr(a, "ebsynth", None), os.environ.get("GPTKIT_EBSYNTH"), shutil.which("ebsynth"),
+              str(Path.home() / ".cache" / "gptkit" / "ebsynth" / "bin" / "ebsynth")):
+        if c and Path(c).exists():
+            return c
+    raise SystemExit("EbSynth not found. Build it once (public domain, CPU is enough):\n"
+                     "  git clone https://github.com/jamriska/ebsynth ~/.cache/gptkit/ebsynth\n"
+                     "  cd ~/.cache/gptkit/ebsynth && sh build-macos-cpu_only.sh   # build-linux-cpu_only.sh on Linux\n"
+                     "or pass --ebsynth PATH / set GPTKIT_EBSYNTH.")
+
+
+def _seq_layout_part(d, meta, i, static):
+    """The moving part of frame i's guide on the base canvas: the plume alone, or the guide with the locked art cut."""
+    canvas = meta["canvas"]
+    if meta.get("plume"):
+        return plume_guide(i / meta["fps"], meta["plume"], None, [_rgba(s) for s in meta["plume"]["sprites"]], canvas)
+    g = np.array(_rgba(d / "guides" / f"{i % meta['frames']:03d}.png").resize((canvas, canvas), Image.LANCZOS))
+    if static is not None:
+        g[static] = 0
+    return Image.fromarray(g)
+
+
+def _plume_source_coords(t_key, t, p, sprites, canvas):
+    """For each pixel at time t, where that point of its element was at t_key (identity outside the plume).
+    Elements keep their emission number across the loop wrap, so this is exact in absolute time."""
+    src, dst = plume_layout(t_key, p), plume_layout(t, p)
+    gy, gx = np.mgrid[0:canvas, 0:canvas].astype(np.float32)
+    mx, my, ws = np.zeros_like(gx), np.zeros_like(gx), np.zeros_like(gx)
+    for k, (x1, y1, s1, al, v) in dst.items():
+        if k not in src:
+            continue
+        x0, y0, s0 = src[k][0], src[k][1], src[k][2]
+        sp = sprites[v]
+        w_ = p["size"] * s1
+        h_ = w_ * sp.height / sp.width
+        foot = Image.new("L", (canvas, canvas))
+        foot.paste(sp.getchannel("A").resize((max(1, round(w_)), max(1, round(h_)))), (round(x1 - w_ / 2), round(y1 - h_ / 2)))
+        w = np.asarray(foot, dtype=np.float32) / 255 * al + 1e-6
+        mx += w * (x0 + (gx - x1) * s0 / s1)
+        my += w * (y0 + (gy - y1) * s0 / s1)
+        ws += w
+    ok = ws > 0.02
+    return np.where(ok, mx / np.maximum(ws, 1e-6), gx), np.where(ok, my / np.maximum(ws, 1e-6), gy)
+
+
+def _position_image(mx, my, box):
+    x = np.clip((mx - box[0]) / max(1, box[2] - box[0] - 1), 0, 1)
+    y = np.clip((my - box[1]) / max(1, box[3] - box[1] - 1), 0, 1)
+    b = (np.floor(x * 15) + 16 * np.floor(y * 15)) / 255
+    return Image.fromarray((np.dstack([x, y, b]) * 255).astype(np.uint8)[box[1]:box[3], box[0]:box[2]])
+
+
+def _premul_rgb(img):
+    arr = np.asarray(img.convert("RGBA"), dtype=np.float32)
+    return Image.fromarray((arr[..., :3] * arr[..., 3:4] / 255).astype(np.uint8))
+
+
+def cmd_sequence_propagate(a):
+    """Every frame is synthesised from the two nearest GPT keys by EbSynth: patches of the real renders, placed where
+    the layout says each part has moved (appearance guide, plus a positional guide for plumes). Keys go through the
+    same synthesis, so they never pop against their in-betweens; frames are cross-faded between the two keys."""
+    d = _seq_dir(a)
+    meta = _seq_meta(d)
+    n, every = meta["frames"], a.every
+    if n % every:
+        raise SystemExit(f"--every {every} must divide the {n} frames so the keys repeat with the loop")
+    eb = _ebsynth_bin(a)
+    keys = list(range(0, n, every))
+    missing = [k for k in keys if not (d / "raw" / f"{k:03d}.png").exists()]
+    if missing:
+        raise SystemExit(f"keys missing from raw/: {missing} — run `sequence ... render --every {every}`")
+    static = _seq_static_mask(meta)
+    work = d / "propagate"
+    work.mkdir(exist_ok=True)
+    for old in work.glob("*.png"):
+        old.unlink()
+    parts = [_seq_layout_part(d, meta, i, static) for i in range(n)]
+    union = np.zeros(parts[0].size[::-1], bool)
+    for pt in parts:
+        union |= np.asarray(pt)[..., 3] > 3
+    ys, xs = np.nonzero(union)
+    pad = 24
+    box = (max(0, xs.min() - pad), max(0, ys.min() - pad), min(union.shape[1], xs.max() + pad), min(union.shape[0], ys.max() + pad))
+    ref = _rgba(a.ref) if a.ref else None
+    for k in keys:
+        key = _seq_moving(d, meta, a, k, d / "raw" / f"{k:03d}.png", static)
+        if ref is not None:
+            key = _match_colors([key], ref)[0]
+        key.crop(box).save(work / f"key_{k:03d}.png")
+    for i in range(n):
+        _premul_rgb(parts[i]).crop(box).save(work / f"app_{i:03d}.png")
+    plume = meta.get("plume")
+    sprites = [_rgba(s) for s in plume["sprites"]] if plume else None
+    canvas = meta["canvas"]
+    if plume:
+        gy, gx = np.mgrid[0:canvas, 0:canvas].astype(np.float32)
+        ident = _position_image(gx, gy, box)
+        for k in keys:
+            ident.save(work / f"pos_{k:03d}.png")
+
+    def synth(job):
+        k, i, t_key = job                     # key frame, target frame, key's absolute time (k == n at the wrap)
+        kk = k % n
+        cmd = [eb, "-style", str(work / f"key_{kk:03d}.png"),
+               "-guide", str(work / f"app_{kk:03d}.png"), str(work / f"app_{i:03d}.png"), "-weight", str(a.guide_weight)]
+        if plume:
+            pos = work / f"pos_{i:03d}_from_{k:03d}.png"
+            _position_image(*_plume_source_coords(t_key, i / meta["fps"], plume, sprites, canvas), box).save(pos)
+            cmd += ["-guide", str(work / f"pos_{kk:03d}.png"), str(pos), "-weight", str(a.position_weight)]
+        out = work / f"syn_{i:03d}_from_{k:03d}.png"
+        subprocess.run(cmd + ["-output", str(out)], check=True, capture_output=True)
+        return out
+    jobs = []
+    for i in range(n):
+        ka = (i // every) * every
+        jobs.append((ka, i, ka / meta["fps"]))
+        if i != ka:
+            jobs.append((ka + every, i, (ka + every) / meta["fps"]))
+    print(f"propagating {len(keys)} keys to {n} frames: {len(jobs)} EbSynth runs, {a.jobs} at a time")
+    with cf.ThreadPoolExecutor(a.jobs) as ex:
+        list(ex.map(synth, jobs))
+    frames = []
+    for i in range(n):
+        ka = (i // every) * every
+        pm = None
+        for k, w in ((ka, 1.0),) if i == ka else ((ka, None), (ka + every, None)):
+            arr = np.asarray(_rgba(work / f"syn_{i:03d}_from_{k:03d}.png"), dtype=np.float32).copy()
+            arr[..., :3] *= arr[..., 3:4] / 255
+            if w is None:
+                f = (i - ka) / every
+                g = f * f * (3 - 2 * f)       # smoothstep: each key's texture eases in and out
+                w = 1 - g if k == ka else g
+            pm = arr * w if pm is None else pm + arr * w
+        a_ = pm[..., 3:4]
+        rgb = np.where(a_ > 0.5, pm[..., :3] * 255 / np.maximum(a_, 1e-3), 0)
+        crop = np.dstack([rgb, a_])
+        # keep content only where the layout has it (soft margin); patch synthesis fills its whole box otherwise
+        m = parts[i].getchannel("A").point(lambda v: 255 if v > 10 else 0).filter(ImageFilter.MaxFilter(21))
+        m = np.asarray(m.filter(ImageFilter.GaussianBlur(6)).crop(box), dtype=np.float32) / 255
+        crop[..., 3] *= m
+        full = Image.new("RGBA", (canvas, canvas))
+        full.paste(Image.fromarray(np.clip(crop, 0, 255).astype(np.uint8)), (box[0], box[1]))
+        frames.append(full)
+    _seq_meta(d, propagated={"every": every, "keys": keys})
+    _seq_finish(d, meta, a, frames)
 
 
 def cmd_sequence_reroll(a):
@@ -3548,7 +3709,7 @@ def cmd_sequence_reroll(a):
 
 def cmd_sequence(a):
     {"layout": cmd_sequence_layout, "render": cmd_sequence_render, "build": cmd_sequence_build,
-     "reroll": cmd_sequence_reroll}[a.stage](a)
+     "propagate": cmd_sequence_propagate, "reroll": cmd_sequence_reroll}[a.stage](a)
 
 
 # ---- vector keyframes + Lottie + AnimatedVectorDrawable
@@ -9408,9 +9569,10 @@ def main():
     p.add_argument("--formats", default="gif,webp,apng,lottie", help="comma list of gif,webp,apng,lottie")
     p.add_argument("--px", type=int, default=480, help="long side of the animated WebP/APNG/Lottie/GIF")
     p.add_argument("--preview-bg", default="#1b1d33"); p.add_argument("--model", default=None); p.set_defaults(fn=cmd_frames)
-    p = sub.add_parser("sequence", help="layout-driven animation: code lays the motion out, GPT renders every frame "
-                                        "(stages: layout, render, build, reroll)")
-    p.add_argument("dir"); p.add_argument("name"); p.add_argument("stage", choices=["layout", "render", "build", "reroll"])
+    p = sub.add_parser("sequence", help="layout-driven animation: code lays the motion out, GPT renders frames "
+                                        "(stages: layout, render, build | propagate, reroll)")
+    p.add_argument("dir"); p.add_argument("name")
+    p.add_argument("stage", choices=["layout", "render", "build", "propagate", "reroll"])
     p.add_argument("--guides", help="layout: use these guide frames (one PNG per frame, from any source) instead of a plume")
     p.add_argument("--base", help="layout: the locked artwork on its own canvas; build cuts it away")
     p.add_argument("--sprites", help="layout: comma list of the plume's element sprites, drawn in the art's own style")
@@ -9432,8 +9594,13 @@ def main():
     p.add_argument("--look", help="render: the finish to aim for (default: the locked art's own 3D look)")
     p.add_argument("--jobs", type=int, default=12, help="render/reroll: parallel image calls")
     p.add_argument("--force", action="store_true", help="render: redo frames that are already rendered")
-    p.add_argument("--ref", help="build: approved picture of the moving part; the loop is colour-matched to it once")
-    p.add_argument("--below", type=float, help="build: drop anything below this canvas row (under a chimney mouth)")
+    p.add_argument("--every", type=int, default=1, help="render/propagate: GPT renders every Nth frame only (the keys); "
+                                                         "propagate synthesises the rest with EbSynth")
+    p.add_argument("--ebsynth", help="propagate: path to the ebsynth binary (else $GPTKIT_EBSYNTH, PATH, ~/.cache/gptkit)")
+    p.add_argument("--guide-weight", type=float, default=2.0, help="propagate: weight of the appearance guide")
+    p.add_argument("--position-weight", type=float, default=1.5, help="propagate: weight of the positional guide (plumes)")
+    p.add_argument("--ref", help="build/propagate: approved picture of the moving part; each frame (or key) is colour-matched to it")
+    p.add_argument("--below", type=float, help="build/propagate: drop anything below this canvas row (under a chimney mouth)")
     p.add_argument("--quality", type=int, default=80, help="build: WebP quality")
     p.add_argument("--frames", help="reroll: comma list of frames (default: the outliers build reported)")
     p.add_argument("--candidates", type=int, default=2, help="reroll: renders per frame to choose from")

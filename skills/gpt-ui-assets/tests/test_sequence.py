@@ -39,7 +39,8 @@ def _args(tmp, stage, **kw):
     ns = dict(dir=str(tmp), name="smoke", stage=stage, guides=None, base=None, sprites=None, vent=None, loop=2.0,
               fps=12, chuff=0.5, life=2.5, velocity="0,-60", spread="6,8", drag=1.5, wind="40,-3", buoyancy=-10,
               size=40, grow="0.5,1.4", front=False, moving="The smoke", locked="The engine", look=None, jobs=2,
-              force=False, ref=None, below=None, quality=80, frames=None, candidates=1, preview_bg="#a0aabe", model=None)
+              force=False, ref=None, below=None, quality=80, frames=None, candidates=1, preview_bg="#a0aabe", model=None,
+              every=1, ebsynth=None, guide_weight=2.0, position_weight=1.5)
     ns.update(kw)
     return argparse.Namespace(**ns)
 
@@ -120,6 +121,45 @@ def test_qa_names_a_render_that_ignored_the_layout():
     g.cmd_sequence_build(_args(tmp, "build"))
     report = json.loads((d / "report.json").read_text())
     assert 9 in report["outliers"], report["outlier_scores"]
+    shutil.rmtree(tmp)
+
+
+def _have_ebsynth():
+    try:
+        g._ebsynth_bin(argparse.Namespace(ebsynth=None))
+        return True
+    except SystemExit:
+        return False
+
+
+def test_propagate_carries_keys_to_every_frame():
+    if not _have_ebsynth():
+        print("  (skipped: no ebsynth binary)")
+        return
+    tmp = Path(tempfile.mkdtemp())
+    g.cmd_sequence_layout(_args(tmp, "layout", **_plume(tmp)))
+    d = tmp / "sequence" / "smoke"
+    for i in range(0, 24, 6):                           # only the keys are "rendered"
+        shutil.copyfile(d / "guides" / f"{i:03d}.png", d / "raw" / f"{i:03d}.png")
+    try:
+        g.cmd_sequence_build(_args(tmp, "build"))
+    except SystemExit as e:
+        assert "propagate" in str(e)                    # build points at propagate when only keys exist
+    else:
+        raise AssertionError("build must refuse a key-only render")
+    g.cmd_sequence_propagate(_args(tmp, "propagate", every=6, jobs=4))
+    assert Image.open(d / "smoke.webp").n_frames == 24
+    frame = np.asarray(Image.open(d / "frames" / "009.png"))
+    assert frame[..., 3].max() > 200 and frame[190, 130, 3] == 0
+    report = json.loads((d / "report.json").read_text())
+    if HAVE_CV2:
+        assert report["backwards"] <= 1, report["speed_along"]
+    try:
+        g.cmd_sequence_propagate(_args(tmp, "propagate", every=5))
+    except SystemExit as e:
+        assert "divide" in str(e)
+    else:
+        raise AssertionError("--every must divide the frame count")
     shutil.rmtree(tmp)
 
 
