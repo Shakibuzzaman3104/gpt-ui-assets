@@ -8715,7 +8715,8 @@ def _icon_glyph(a, concept, sil_mask, limit, res, work, M):
     # the glyph is only placed (and later referenced) when its render is measurable: no renderer, an empty render
     # (e.g. every shape outside the 108 viewBox) or only faint anti-aliasing leave glyph=None -> the silhouette ships
     thr = g_mask.point(lambda v: 255 if v > 128 else 0).getbbox() if g_mask is not None else None
-    info = {"note": "no SVG renderer: placement not verified" if g_mask is None else
+    info = {"note": ("no SVG renderer: placement not verified" if not _renderer_name() else
+                     "glyph did not render (empty or unsupported by the renderer): placement not verified") if g_mask is None else
             "glyph renders empty inside the 108 viewBox" if not g_mask.getbbox() else
             "glyph too faint/thin to place reliably" if not thr else
             "empty foreground silhouette" if not sil_mask.getbbox() else ""}

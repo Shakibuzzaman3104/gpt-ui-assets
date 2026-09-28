@@ -296,7 +296,7 @@ class AppIconBuild(unittest.TestCase):
             self.assertNotIn("@drawable/ic_launcher_monochrome",
                              (out / "android" / "res" / "mipmap-anydpi-v26" / "ic_launcher_round.xml").read_text())
             if renderer():
-                self.assertIn("empty", rep["glyph"]["note"])
+                self.assertRegex(rep["glyph"]["note"], "empty|did not render")
 
     def test_glyph_placement_verified_or_rejected(self):
         """Direct _icon_glyph: a real glyph is placed inside the safe zone; shapes outside the viewBox are rejected."""

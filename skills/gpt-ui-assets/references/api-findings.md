@@ -388,8 +388,8 @@ Tools:
 
 Kit changes after the 2026-09-28 audit (offline, mocked API):
 - iOS tinted changed from grayscale flattened onto opaque black (RGB) to grayscale + the foreground's alpha (LA). Dark was
-  already the foreground on transparency. Apple's format says the system supplies the backing and tint. Not verified with
-  actool here, and actool would not flag the old one either (it ignores alpha).
+  already the foreground on transparency. Apple's format says the system supplies the backing and tint. The new set compiles
+  with Xcode's actool (macOS, 2026-09-29); actool would not have flagged the old one either (it ignores alpha).
 - The glyph is referenced by `<monochrome>` only when measured. Before, an empty SVG, shapes outside the viewBox or a
   missing renderer shipped an unverified or blank `@drawable/..._monochrome`, and a glyph with no pixel above 50% ink
   crashed the build (`TypeError`). These now fall back to the silhouette (`glyph.ok: false` with a note).
@@ -664,3 +664,10 @@ The main result: every GPT estimate I measured was usable as a starting point bu
   every structured call the kit checks the schema's top-level required keys and stops with the missing key named, because a
   gateway that accepts but ignores `strict: true` returns shorter objects; `report.md`/`blueprint.md` table cells escape `|`.
   `url_citation` annotations keep `start_index`/`end_index` in `sources.json` when the endpoint sends them.
+
+## Verification on macOS (2026-09-29)
+
+- `appicon build` on a synthetic concept: `actool` compiled the AppIcon set and `aapt2` compile+link passed against `android-37.0` (build-tools 36.0.0).
+- `unittest discover tests`: 14 pass. One failed on macOS: `qlmanage` renders an empty SVG as nothing, so the glyph note said "no SVG renderer". It now says the glyph did not render.
+- Headless Chrome 153 hung in the agent's sandbox even with bare `--headless=new`, so the Chrome paths were not exercised there; `doctor` falls back to `qlmanage`.
+- Still unverified: `gpt-6` and multi-reference edits against the official OpenAI endpoint (no key), `COPY:returned-reference` on live smooth backgrounds, `--effort max` timing.

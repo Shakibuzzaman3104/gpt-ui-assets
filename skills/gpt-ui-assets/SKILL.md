@@ -338,7 +338,7 @@ python3 $K appicon build icon/concept_v2.png --out icon/build \
     `android/play_store_512.png` is the Play listing icon: 512 px, opaque, well under the 1024 KB limit (`play_store.kb`).
   - iOS: copy `ios/AppIcon.appiconset` into `Assets.xcassets`. Light is opaque. Dark is the foreground on transparency (the
     system draws the dark backing). Tinted is grayscale with alpha, no baked black. This follows Apple's asset-catalog
-    format for iOS 18 but was not verified with actool here, and actool does not check alpha.
+    format for iOS 18; the set compiles with Xcode's actool (macOS, 2026-09-29), which does not check alpha.
   - Web: the files and the `manifest-icons.json` snippet go in `public/`.
 
 ## Phase 5: animation
