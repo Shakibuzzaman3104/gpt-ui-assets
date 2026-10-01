@@ -60,8 +60,8 @@ python3 $K doctor                                                      # key, en
     | Never | `gpt-image-1`, `gpt-4o-*`, `codex-*` | `gpt-image-1` shuts down 2026-10-23; the others are not image generators for this kit. |
 
     Rules of thumb: a failed `transparent` call is a model problem (switch to 2.5 or 1.5), not a prompt problem; if a
-    `sequence` or `frames` render drifts, move Flare to Sunburst before changing the prompt; compare models with
-    `compare` on one asset before switching a whole project. In the kit's own campfire test all four models scored within
+    `sequence` or `frames` render drifts, move Flare to Sunburst before changing the prompt; try the other model on one asset (`--model`) and keep the
+    better `score` before switching a whole project. In the kit's own campfire test all four models scored within
     0.3 fid of each other on text-only generation, so the extra cost of Sunburst only pays off in edits.
   - `GPTKIT_RETRIES` (default 2) retries a call on 408/429/5xx and network errors, honouring `Retry-After`; quota/billing 429s
     are not retried. Every failure is one line, `gptkit <cmd>: HTTP 400 /images/edits [moderation_blocked]: ... | prompt: '...'`;
