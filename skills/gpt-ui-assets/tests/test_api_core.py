@@ -567,3 +567,28 @@ if __name__ == "__main__":
             t = time.time()
             fn()
             print(f"ok {k} ({time.time() - t:.1f}s)")
+
+
+def test_image_model_routing():
+    saved = K.requests.get
+    ids = {"data": [{"id": i} for i in ("gpt-image-2", "gpt-image-2.5-flare", "gpt-image-2.5-sunburst")]}
+    try:
+        K.requests.get = lambda url, headers=None, timeout=None: type("G", (), {"raise_for_status": lambda s: None, "json": lambda s: ids})()
+        K._listed_models.cache_clear()
+        with env(GPTKIT_API_KEY="sk-test", GPTKIT_CONFIG="/nonexistent/env", GPTKIT_IMAGE_MODEL=None):
+            K._config.cache_clear()
+            assert K.pick_image_model(task="concept") == "gpt-image-2.5-flare"
+            assert K.pick_image_model(task="precise", background="transparent") == "gpt-image-2.5-sunburst"
+            assert K.pick_image_model("mine", "precise") == "mine"
+            assert K.image_chain("precise", "transparent")[-1] == "gpt-image-2"
+            ids["data"] = [{"id": "gpt-image-2"}, {"id": "gpt-image-1.5"}]
+            K._listed_models.cache_clear()
+            assert K.pick_image_model(task="precise") == "gpt-image-2"
+            assert K.pick_image_model(task="precise", background="transparent") == "gpt-image-1.5"
+        with env(GPTKIT_API_KEY="sk-test", GPTKIT_CONFIG="/nonexistent/env", GPTKIT_IMAGE_MODEL="pinned"):
+            K._config.cache_clear()
+            assert K.pick_image_model(task="precise") == "pinned"
+    finally:
+        K.requests.get = saved
+        K._listed_models.cache_clear()
+        K._config.cache_clear()

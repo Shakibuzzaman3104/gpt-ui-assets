@@ -47,8 +47,10 @@ python3 $K doctor                                                      # key, en
     what your endpoint lists: if it says `gpt-6: NOT LISTED`, set `GPTKIT_TEXT_MODEL=gpt-6-luna` (or `-sol`, `gpt-6.1-sol`). Image models: `gpt-image-1`, `-1.5`, `-2`, `-2.5-flare`, `-2.5-sunburst`. `gpt-image-1`
     retires on 2026-10-23: prefer `gpt-image-1.5` or `gpt-image-2`.
   - **Which image model for which job** (researched 2026-10-01 from OpenAI's 2.5 announcement and third-party API write-ups;
-    the OpenAI docs host was unreachable from the sandbox, so confirm prices there). Pass it with `--model`, or set
-    `GPTKIT_IMAGE_MODEL` for the whole run:
+    the OpenAI docs host was unreachable from the sandbox, so confirm prices there). The kit applies this automatically:
+    `generate` calls use the **concept** chain (Flare, Sunburst, 2, 1.5) and `edit` calls the **precise** chain (Sunburst, Flare, 2, 1.5);
+    transparent requests push `gpt-image-2` to the end; the first model your endpoint lists wins. `--model` or a set
+    `GPTKIT_IMAGE_MODEL` overrides it (`doctor` shows which mode is active):
 
     | Job | Model | Why |
     |---|---|---|

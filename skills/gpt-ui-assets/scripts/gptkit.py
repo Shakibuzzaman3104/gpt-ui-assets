@@ -213,6 +213,7 @@ def _config():
     return {"base": pick("GPTKIT_BASE_URL", "OPENAI_BASE_URL", default="https://api.openai.com/v1").rstrip("/"),
             "key": pick("GPTKIT_API_KEY", "OPENAI_API_KEY"),
             "image_model": pick("GPTKIT_IMAGE_MODEL", default="gpt-image-2"),
+            "image_model_pinned": bool(pick("GPTKIT_IMAGE_MODEL")),
             "text_model": pick("GPTKIT_TEXT_MODEL", default="gpt-6"),
             "retries": int(retries), "debug": pick("GPTKIT_DEBUG", default="").lower() in _TRUE,
             "moderation": moderation, "config_path": str(path)}
@@ -414,9 +415,55 @@ def _image_result(resp):
     return raw, meta
 
 
-def generate(prompt, size="1024x1024", background="auto", model=None):
+# ---- image model routing: the best listed model for the job unless the user pinned one
+# concept: new art from a prompt (mockups, style, icon concepts): speed matters, Flare matches gpt-image-2 quality at ~half the latency.
+# precise: edits that must keep a reference intact (forge/fix, sequence and frame renders, icon layers): Sunburst is tuned for that.
+# gpt-image-2 only takes background auto/opaque, so it moves to the back of the chain when transparency is needed.
+IMAGE_ROUTES = {
+    "concept": ("gpt-image-2.5-flare", "gpt-image-2.5-sunburst", "gpt-image-2", "gpt-image-1.5"),
+    "precise": ("gpt-image-2.5-sunburst", "gpt-image-2.5-flare", "gpt-image-2", "gpt-image-1.5"),
+}
+NO_TRANSPARENCY = ("gpt-image-2",)
+
+
+def image_chain(task, background="auto"):
+    chain = IMAGE_ROUTES.get(task, IMAGE_ROUTES["concept"])
+    if background == "transparent":
+        chain = tuple(m for m in chain if m not in NO_TRANSPARENCY) + tuple(m for m in chain if m in NO_TRANSPARENCY)
+    return chain
+
+
+@functools.lru_cache(maxsize=None)
+def _listed_models(base, key):
+    try:
+        r = requests.get(base + "/models", headers={"Authorization": f"Bearer {key}"}, timeout=15)
+        r.raise_for_status()
+        return frozenset(m["id"] for m in r.json().get("data", []))
+    except Exception:
+        return None
+
+
+def pick_image_model(model=None, task="concept", background="auto"):
+    """--model wins, then a pinned GPTKIT_IMAGE_MODEL, then the first model of the task's chain the endpoint lists,
+    then the configured default (also used when the endpoint's model list cannot be read)."""
     c = _config()
-    body = {"model": model or c["image_model"], "prompt": prompt, "size": size, "output_format": "png", "quality": "high"}
+    if model:
+        return model
+    if c["image_model_pinned"] or not c["key"]:
+        return c["image_model"]
+    ids = _listed_models(c["base"], c["key"])
+    if ids:
+        for m in image_chain(task, background):
+            if m in ids:
+                _note_once(("image-model", task, background, m), f"  (image model {m}: auto-picked for {task}"
+                           f"{', transparent' if background == 'transparent' else ''}; pin one with --model or GPTKIT_IMAGE_MODEL)")
+                return m
+    return c["image_model"]
+
+
+def generate(prompt, size="1024x1024", background="auto", model=None, task="concept"):
+    c = _config()
+    body = {"model": pick_image_model(model, task, background), "prompt": prompt, "size": size, "output_format": "png", "quality": "high"}
     if background != "auto":
         body["background"] = background
     if c["moderation"]:
@@ -428,11 +475,11 @@ def generate(prompt, size="1024x1024", background="auto", model=None):
         raise
 
 
-def edit(ref_png: bytes, prompt, size="1024x1024", background="auto", model=None, fidelity="high"):
+def edit(ref_png: bytes, prompt, size="1024x1024", background="auto", model=None, fidelity="high", task="precise"):
     # One reference image per call: multi-image edits returned the reference itself on the sub2api gateway the kit
     # was probed against (the official API accepts up to 16; unverified here, see references/api-findings.md).
     c = _config()
-    data = {"model": model or c["image_model"], "prompt": prompt, "size": size, "output_format": "png",
+    data = {"model": pick_image_model(model, task, background), "prompt": prompt, "size": size, "output_format": "png",
             "quality": "high", "input_fidelity": fidelity}
     if background != "auto":
         data["background"] = background
@@ -1324,9 +1371,9 @@ def cmd_mockup(a):
         # the backend picks aspect from the wording, not from `size`, and a style-ref edit can return the reference
         for _ in range(2):
             if edit_png is not None:
-                img, meta = edit(edit_png, edit_prompt, a.size, model=a.model)
+                img, meta = edit(edit_png, edit_prompt, a.size, model=a.model, task="concept")
             elif ref_png is not None:
-                img, meta = edit(ref_png, style_prompt, a.size, model=a.model)
+                img, meta = edit(ref_png, style_prompt, a.size, model=a.model, task="concept")
             else:
                 img, meta = generate(prompt, a.size, model=a.model)
             meta["layout_diff"] = _layout_diff(ref, Image.open(io.BytesIO(img))) if ref is not None else None
@@ -4993,7 +5040,7 @@ def _opaque_error(img, what, model=None):
     if share > 0.95 or corners:
         c = _config()
         return (f"{what}: the image came back with an opaque background ({share:.0%} of it is opaque; "
-                f"background=transparent was ignored by {model or c['image_model']} at {c['base']})")
+                f"background=transparent was ignored by {pick_image_model(model, 'precise', 'transparent')} at {c['base']})")
     return None
 
 
@@ -8432,7 +8479,7 @@ def cmd_appicon_concepts(a):
         prompt = head + ICON_RULES.format(text=text)
         for _ in range(2):
             if ref is not None:
-                img, meta = edit(_png_bytes(_square_ref(ref)), prompt, "1024x1024", "opaque", a.model, a.fidelity)
+                img, meta = edit(_png_bytes(_square_ref(ref)), prompt, "1024x1024", "opaque", a.model, a.fidelity, task="concept")
             else:
                 img, meta = generate(prompt, "1024x1024", "opaque", a.model)
             if _aspect_ok(img, "1024x1024"):
@@ -14024,7 +14071,8 @@ def cmd_doctor(a):
     print(f"config file : {c['config_path']} ({'found' if Path(c['config_path']).exists() else 'not found'})")
     print(f"base url    : {c['base']}")
     print(f"api key     : {'set' if c['key'] else 'MISSING'}")
-    print(f"image model : {c['image_model']}")
+    print(f"image model : {c['image_model']}" + (" (pinned)" if c["image_model_pinned"] else
+          f" (default; auto-routed per task: concept {image_chain('concept')[0]}, precise {image_chain('precise')[0]}, first listed wins)"))
     print(f"text model  : {c['text_model']}")
     print(f"retries     : {c['retries']}")
     print(f"debug       : {'on' if c['debug'] else 'off'}")
