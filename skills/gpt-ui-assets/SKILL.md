@@ -46,6 +46,23 @@ python3 $K doctor                                                      # key, en
     `gpt-6` is an alias on some gateways; the official API lists `gpt-6-sol`, `gpt-6-luna`, `gpt-6-astra` and `gpt-6.1-sol`; the `gpt-5.x` families (5.2 to 5.6) also work as text models. `doctor` shows
     what your endpoint lists: if it says `gpt-6: NOT LISTED`, set `GPTKIT_TEXT_MODEL=gpt-6-luna` (or `-sol`, `gpt-6.1-sol`). Image models: `gpt-image-1`, `-1.5`, `-2`, `-2.5-flare`, `-2.5-sunburst`. `gpt-image-1`
     retires on 2026-10-23: prefer `gpt-image-1.5` or `gpt-image-2`.
+  - **Which image model for which job** (researched 2026-10-01 from OpenAI's 2.5 announcement and third-party API write-ups;
+    the OpenAI docs host was unreachable from the sandbox, so confirm prices there). Pass it with `--model`, or set
+    `GPTKIT_IMAGE_MODEL` for the whole run:
+
+    | Job | Model | Why |
+    |---|---|---|
+    | Default: mockups, backgrounds, illustrations, app-icon concepts, forge candidates | `gpt-image-2.5-flare` | Quality comparable to `gpt-image-2` at ~47% lower latency and the same token bill; supports `background: transparent`. |
+    | Edits that must stay consistent: `sequence` frames, `frames` sheets, multi-reference edits, art with embedded text, final hero assets | `gpt-image-2.5-sunburst` | Highest quality, tuned for precise edits and consistency (still ~26% faster than `gpt-image-2`). Used for the layout-driven sequence measurements. |
+    | Transparent PNG/WebP assets (forge, icons, sprites) | `gpt-image-2.5-flare` or `-sunburst`; else `gpt-image-1.5` | OpenAI documents `gpt-image-2` as accepting only `auto`/`opaque`, while 1.5 and 2.5 accept `transparent`. The kit saw real alpha from `gpt-image-2` on one gateway, but never rely on it: the kit errors with the model name when a transparent request returns opaque. |
+    | Endpoint lists no 2.5 model | `gpt-image-2` for opaque art, `gpt-image-1.5` when you need transparency | 2 has the best text rendering of the older models; 1.5 is cheaper at medium/high quality and keeps `input_fidelity`. |
+    | Draft or throwaway iterations | the chosen model at `quality: low` | Do not downgrade the model; low quality already costs ~$0.006 per 1024² image on 2/2.5. |
+    | Never | `gpt-image-1`, `gpt-4o-*`, `codex-*` | `gpt-image-1` shuts down 2026-10-23; the others are not image generators for this kit. |
+
+    Rules of thumb: a failed `transparent` call is a model problem (switch to 2.5 or 1.5), not a prompt problem; if a
+    `sequence` or `frames` render drifts, move Flare to Sunburst before changing the prompt; compare models with
+    `compare` on one asset before switching a whole project. In the kit's own campfire test all four models scored within
+    0.3 fid of each other on text-only generation, so the extra cost of Sunburst only pays off in edits.
   - `GPTKIT_RETRIES` (default 2) retries a call on 408/429/5xx and network errors, honouring `Retry-After`; quota/billing 429s
     are not retried. Every failure is one line, `gptkit <cmd>: HTTP 400 /images/edits [moderation_blocked]: ... | prompt: '...'`;
     `GPTKIT_DEBUG=1` shows the traceback instead. `GPTKIT_MODERATION=low` relaxes image moderation where the org allows it.
