@@ -43,8 +43,8 @@ python3 $K doctor                                                      # key, en
     gateway rejects an optional field (`input_fidelity`, `quality`, `background`, `reasoning`, `tools`, strict schema)
     the kit says so once and retries without it.
   - `GPTKIT_IMAGE_MODEL` (default `gpt-image-2`) and `GPTKIT_TEXT_MODEL` (default `gpt-6`, which needs vision and structured outputs).
-    `gpt-6` is an alias on some gateways; the official API lists `gpt-6-sol`, `gpt-6-luna` and `gpt-6-astra`. `doctor` shows
-    what your endpoint lists: if it says `gpt-6: NOT LISTED`, set `GPTKIT_TEXT_MODEL=gpt-6-luna` (or `-sol`). `gpt-image-1`
+    `gpt-6` is an alias on some gateways; the official API lists `gpt-6-sol`, `gpt-6-luna`, `gpt-6-astra` and `gpt-6.1-sol`; the `gpt-5.x` families (5.2 to 5.6) also work as text models. `doctor` shows
+    what your endpoint lists: if it says `gpt-6: NOT LISTED`, set `GPTKIT_TEXT_MODEL=gpt-6-luna` (or `-sol`, `gpt-6.1-sol`). Image models: `gpt-image-1`, `-1.5`, `-2`, `-2.5-flare`, `-2.5-sunburst`. `gpt-image-1`
     retires on 2026-10-23: prefer `gpt-image-1.5` or `gpt-image-2`.
   - `GPTKIT_RETRIES` (default 2) retries a call on 408/429/5xx and network errors, honouring `Retry-After`; quota/billing 429s
     are not retried. Every failure is one line, `gptkit <cmd>: HTTP 400 /images/edits [moderation_blocked]: ... | prompt: '...'`;

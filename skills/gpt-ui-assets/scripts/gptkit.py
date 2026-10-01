@@ -8,7 +8,7 @@ Config (environment variables win over the config file):
   GPTKIT_API_KEY  / OPENAI_API_KEY    required
   GPTKIT_IMAGE_MODEL                  default gpt-image-2
   GPTKIT_TEXT_MODEL                   default gpt-6 (vision + structured outputs; `doctor` lists the ids your endpoint
-                                      offers, e.g. gpt-6-luna / gpt-6-sol when the bare alias is not listed)
+                                      offers, e.g. gpt-6-luna / gpt-6-sol / gpt-6.1-sol when the bare alias is not listed)
   GPTKIT_CONFIG                       config file path, default ~/.config/gptkit/env (KEY=value lines)
   GPTKIT_RETRIES                      retries per API call on 408/429/5xx and transport errors, default 2
   GPTKIT_DEBUG                        1: re-raise errors with the traceback instead of the one-line "gptkit <cmd>: ..."
@@ -14086,7 +14086,7 @@ def cmd_doctor(a):
     except Exception as e:
         sys.exit(f"models      : request failed ({_redact(e)})")
     print(f"models      : {len(ids)} available")
-    for label, mid, like in (("image", c["image_model"], lambda i: "image" in i), ("text", c["text_model"], lambda i: i.startswith("gpt-6"))):
+    for label, mid, like in (("image", c["image_model"], lambda i: "image" in i), ("text", c["text_model"], _is_text_model)):
         if mid in ids:
             print(f"  {label:5s} {mid}: ok")
         else:
@@ -14096,6 +14096,14 @@ def cmd_doctor(a):
     images = sorted(i for i in ids if "image" in i)
     if images:
         print("  image models on this endpoint:", ", ".join(images))
+
+
+_NON_TEXT_MODEL = ("image", "audio", "realtime", "codex", "transcribe", "tts")
+
+
+def _is_text_model(i):
+    """Chat/vision-capable ids in the gpt-6 / gpt-5 families (skips image, audio, realtime and codex variants)."""
+    return i.startswith(("gpt-6", "gpt-5")) and not any(t in i for t in _NON_TEXT_MODEL)
 
 
 def cmd_score(a):

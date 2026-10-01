@@ -13,7 +13,7 @@ The official OpenAI API may honour parameters this backend ignores (see below). 
 | `POST /v1/images/edits` with `image[]` ×2 | **no** | returned the mockup itself (a faded full screenshot), which is the copy failure |
 | `POST /v1/responses` + `image_generation` tool | yes | gpt-6 rewrites the prompt (`revised_prompt`), 75 s, fidelity similar to an edit |
 | `POST /v1/responses` vision + `json_schema` strict | yes | asset inventory with tight bboxes in 77 s; the full design spec takes ~3 min |
-| `GET /v1/models` | yes | gpt-6, gpt-6-sol/luna/astra, gpt-5.6(-sol/-terra/-luna), gpt-5.5, gpt-5.4(-mini), gpt-image-1, -1.5, -2, -2.5-flare, -2.5-sunburst |
+| `GET /v1/models` | yes | gpt-6, gpt-6-sol/luna/astra, gpt-6.1-sol, gpt-5.6(-sol/-terra/-luna), gpt-5.5, gpt-5.4(-mini, -2026-03-05), gpt-5.3-codex-spark, gpt-5.2(-2025-12-11, -chat-latest, -pro, -pro-2025-12-11), codex-auto-review, gpt-4o-audio-preview, gpt-4o-realtime-preview, gpt-image-1, -1.5, -2, -2.5-flare, -2.5-sunburst |
 
 Everything in this table was measured against the `sub2api` gateway, not the official API. The official Images API
 defines `n` 1-10, the full `size`/`quality` enums, `moderation`, `output_compression` and up to 16 reference images per

@@ -479,14 +479,14 @@ def test_doctor_lines():
                 with contextlib.redirect_stdout(io.StringIO()) as out:
                     raises(lambda: K.cmd_doctor(ns), SystemExit)
             assert "svg render  : chrome (ok)" in out.getvalue()
-        ids = {"data": [{"id": i} for i in ("gpt-6-sol", "gpt-6-luna", "gpt-image-1.5", "gpt-5.4")]}
+        ids = {"data": [{"id": i} for i in ("gpt-6-sol", "gpt-6-luna", "gpt-image-1.5", "gpt-5.4", "gpt-5.3-codex-spark", "gpt-4o-audio-preview")]}
         K.requests.get = lambda url, headers=None, timeout=None: type("G", (), {"raise_for_status": lambda s: None, "json": lambda s: ids})()
         with env(GPTKIT_API_KEY="sk-test", GPTKIT_CONFIG="/nonexistent/env", GPTKIT_TEXT_MODEL="gpt-6", GPTKIT_IMAGE_MODEL="gpt-image-2"):
             with contextlib.redirect_stdout(io.StringIO()) as out:
                 K.cmd_doctor(ns)
         text = out.getvalue()
         assert "models      : 4 available" in text
-        assert "text  gpt-6: NOT LISTED (set GPTKIT_TEXT_MODEL to one of: gpt-6-luna, gpt-6-sol)" in text, text
+        assert "text  gpt-6: NOT LISTED (set GPTKIT_TEXT_MODEL to one of: gpt-5.4, gpt-6-luna, gpt-6-sol)" in text, text
         assert "image gpt-image-2: NOT LISTED (set GPTKIT_IMAGE_MODEL to one of: gpt-image-1.5)" in text, text
         with env(GPTKIT_API_KEY="sk-test", GPTKIT_CONFIG="/nonexistent/env", GPTKIT_TEXT_MODEL="gpt-6-sol", GPTKIT_IMAGE_MODEL="gpt-image-1.5"):
             with contextlib.redirect_stdout(io.StringIO()) as out:
