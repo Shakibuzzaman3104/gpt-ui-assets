@@ -53,6 +53,7 @@ This skill does what a designer would do instead:
 | Vectors | `trace` | Raster art → gradient-aware SVG/VectorDrawable, with a vector-or-raster recommendation |
 | App icon | `appicon concepts`, `appicon build` | Android adaptive (foreground, background, themed monochrome), legacy + Play 512, iOS 1024 + dark/tinted, favicons + PWA/maskable |
 | Animation | `frames`, `sequence`, `vectorize`, `rig`, `animate` | Procedural motion (no API calls), generated frames with QA, layout-driven sequences (code animates, GPT paints keys, EbSynth carries them to every frame of smoke, drops or spray when the plan says it can, else GPT paints every frame), WebP/APNG/Lottie, Lottie **and** AnimatedVectorDrawable, rigged 1:1 vector animation |
+| Hybrid screens | `material`, `state`, `stage` | Screens built in HTML/CSS/JS around GPT-painted materials; state variants pixel-identical outside the change; stills, a frame-exact motion clip and a presentation shot rendered through Chrome |
 | Build 1:1 | `fonts`, `redline`, `tokens`, `compare` | Google Fonts matched by rendering; measured radii and gaps; Compose/SwiftUI/CSS/Tailwind theme code; screenshot-vs-design heatmap with ranked fixes |
 | Export | `export`, `doctor` | Android densities, iOS imagesets, web 1x/2x; setup check |
 
