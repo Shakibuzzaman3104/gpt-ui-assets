@@ -3,7 +3,7 @@ name: gpt-ui-assets
 description: Research the market and generate a feature blueprint (gpt-6-sol, high reasoning, web-searched and cited), design platform-native app/web UIs with OpenAI image + vision models (gpt-image-2, gpt-6, or any OpenAI-compatible endpoint) and turn an APPROVED design into production assets redrawn from scratch 1:1 (never cropped from the screenshot) — icons as SVG/Android VectorDrawable, illustrations and backgrounds as clean PNG/WebP, launcher icons for Android/iOS/web, frame animations (including layout-driven sequences where GPT renders every frame of smoke, drops or spray), Lottie and AnimatedVectorDrawable — then build and verify the real UI. Use whenever the user wants market research, competitor analysis or a feature list/blueprint for an app idea, wants GPT/ChatGPT to design app screens, icons, images, illustrations or an app icon, approves a GPT design and says "go ahead"/"build it"/"give me the assets", asks for the assets "used in the UI", wants frames for an animated drawable, a Lottie or an animated vector, wants smoke, steam, rain, spray or embers animated in an icon's own style, or complains that GPT cropped assets out of a mockup.
 license: MIT
 metadata:
-  version: 3.1.0
+  version: 3.2.0
 ---
 
 # GPT UI assets
