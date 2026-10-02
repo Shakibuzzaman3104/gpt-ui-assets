@@ -456,22 +456,27 @@ def test_blueprint_missing_key_and_corrupt_report():
 # ---- doctor
 
 def test_doctor_lines():
-    saved_chrome, saved_get = K._chrome, K.requests.get
+    saved_chrome, saved_get, saved_cairo, saved_which = K._chrome, K.requests.get, K._cairosvg, K.shutil.which
     ns = argparse.Namespace()
     try:
         with env(GPTKIT_API_KEY=None, OPENAI_API_KEY=None, GPTKIT_CONFIG="/nonexistent/env", GPTKIT_RETRIES="3", GPTKIT_DEBUG="1"):
-            K._chrome = lambda: "/bin/false"
+            false_bin = saved_which("false")
+            K._chrome = lambda: false_bin
+            K._cairosvg = lambda: None
+            K.shutil.which = lambda t, *a, **k: None if t in ("rsvg-convert", "qlmanage") else saved_which(t, *a, **k)
             K._chrome_probe.cache_clear()
+            K._renderer_name.cache_clear()
             with contextlib.redirect_stdout(io.StringIO()) as out:
                 assert raises(lambda: K.cmd_doctor(ns), SystemExit).code == 1
             text = out.getvalue()
             assert "retries     : 3" in text and "debug       : on" in text and "api key     : MISSING" in text
-            assert "svg render  : none: chrome found at /bin/false but failed: /bin/false: exit code 1" in text, text
+            assert f"svg render  : none: chrome found at {false_bin} but failed: {false_bin}: exit code 1" in text, text
             aapt = next(l for l in text.splitlines() if l.startswith("aapt2"))
             assert ("compile only" in aapt and "android.jar" in aapt) or "link checks: android-" in aapt or "not found" in aapt
             assert not ("valid" in aapt)
-        K._chrome = saved_chrome
+        K._chrome, K._cairosvg, K.shutil.which = saved_chrome, saved_cairo, saved_which
         K._chrome_probe.cache_clear()
+        K._renderer_name.cache_clear()
         if K._chrome():  # a real Chrome must pass the probe with the shared flags (root gets --no-sandbox)
             ok, why = K._chrome_probe()
             assert ok, why
@@ -485,7 +490,7 @@ def test_doctor_lines():
             with contextlib.redirect_stdout(io.StringIO()) as out:
                 K.cmd_doctor(ns)
         text = out.getvalue()
-        assert "models      : 4 available" in text
+        assert "models      : 6 available" in text
         assert "text  gpt-6: NOT LISTED (set GPTKIT_TEXT_MODEL to one of: gpt-5.4, gpt-6-luna, gpt-6-sol)" in text, text
         assert "image gpt-image-2: NOT LISTED (set GPTKIT_IMAGE_MODEL to one of: gpt-image-1.5)" in text, text
         with env(GPTKIT_API_KEY="sk-test", GPTKIT_CONFIG="/nonexistent/env", GPTKIT_TEXT_MODEL="gpt-6-sol", GPTKIT_IMAGE_MODEL="gpt-image-1.5"):
@@ -493,8 +498,9 @@ def test_doctor_lines():
                 K.cmd_doctor(ns)
         assert "text  gpt-6-sol: ok" in out.getvalue() and "image gpt-image-1.5: ok" in out.getvalue()
     finally:
-        K._chrome, K.requests.get = saved_chrome, saved_get
+        K._chrome, K.requests.get, K._cairosvg, K.shutil.which = saved_chrome, saved_get, saved_cairo, saved_which
         K._chrome_probe.cache_clear()
+        K._renderer_name.cache_clear()
 
 
 # ---- main(): one line, exit 1, no traceback
@@ -560,15 +566,6 @@ def test_main_exits_one_line():
     assert rc == 1 and "Traceback" not in err and "did you mean" in err and err.count("\n") == 1, err
 
 
-if __name__ == "__main__":
-    import time
-    for k, fn in list(globals().items()):
-        if k.startswith("test_"):
-            t = time.time()
-            fn()
-            print(f"ok {k} ({time.time() - t:.1f}s)")
-
-
 def test_image_model_routing():
     saved = K.requests.get
     ids = {"data": [{"id": i} for i in ("gpt-image-2", "gpt-image-2.5-flare", "gpt-image-2.5-sunburst")]}
@@ -592,3 +589,12 @@ def test_image_model_routing():
         K.requests.get = saved
         K._listed_models.cache_clear()
         K._config.cache_clear()
+
+
+if __name__ == "__main__":
+    import time
+    for k, fn in list(globals().items()):
+        if k.startswith("test_"):
+            t = time.time()
+            fn()
+            print(f"ok {k} ({time.time() - t:.1f}s)")
