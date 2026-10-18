@@ -62,7 +62,7 @@ def cmd_cost(a):
         g["est_usd"] += row.get("est_usd", 0) or 0
     total = {k: sum(g[k] for g in groups.values()) for k in next(iter(groups.values()))} if groups else {
         "calls": 0, "image_calls": 0, "text_calls": 0, "tokens_in": 0, "tokens_out": 0, "est_usd": 0.0}
-    note = "list-price equivalent; through a subscription gateway (e.g. sub2api) this is quota, not money billed" \
+    note = "list-price equivalent; through a gateway or a plan-quota backend this is quota, not money billed" \
         if "api.openai.com" not in _config()["base"] else None
     if a.json:
         print(json.dumps({"groups": groups, "total": total, "malformed": malformed, "note": note}, indent=2))

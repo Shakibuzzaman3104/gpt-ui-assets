@@ -11,10 +11,14 @@ python3 $K doctor                                                      # key, en
 ## Config
 
 Config comes from env vars or `~/.config/gptkit/env` (`KEY=value` lines):
-- `GPTKIT_API_KEY` (or `OPENAI_API_KEY`), required. Never print or echo it.
+- `GPTKIT_BACKEND=auto|api|cli` (default `auto`): with an API key, auto uses the API; without one, it uses a ready
+  Codex CLI login on the user's ChatGPT plan. `python3 $K setup` reports readiness; `setup --backend api|cli|auto`
+  saves the selection. `setup --api-key-stdin` reads a key without echoing it.
+- `GPTKIT_API_KEY` (or `OPENAI_API_KEY`) is required for the API backend. Never print or echo it.
+- `GPTKIT_QUALITY=low|medium|high` (default `high`) sets API image output quality; low and medium reduce draft cost.
 - `GPTKIT_BASE_URL` (or `OPENAI_BASE_URL`), default `https://api.openai.com/v1`. OpenAI-compatible gateways work when they
   mirror `/images/generations` and `/images/edits` (multipart) and `/responses` including `reasoning`, the `web_search`
-  tool and strict `json_schema` (LiteLLM does; the kit's measurements were made on a `sub2api` gateway). Azure OpenAI
+  tool and strict `json_schema` (LiteLLM does; the kit's measurements were made on an OpenAI-compatible gateway). Azure OpenAI
   (`api-key` header, deployment URLs) and OpenRouter's native image API are not supported without changes. When a
   gateway rejects an optional field (`input_fidelity`, `quality`, `background`, `reasoning`, `tools`, strict schema)
   the kit says so once and retries without it.
@@ -23,6 +27,13 @@ Config comes from env vars or `~/.config/gptkit/env` (`KEY=value` lines):
 - `GPTKIT_RETRIES` (default 2) retries a call on 408/429/5xx and network errors, honouring `Retry-After`; quota/billing 429s
   are not retried. Every failure is one line, `gptkit <cmd>: HTTP 400 /images/edits [moderation_blocked]: ... | prompt: '...'`;
   `GPTKIT_DEBUG=1` shows the traceback instead. `GPTKIT_MODERATION=low` relaxes image moderation where the org allows it.
+
+### Local Codex CLI
+
+Install with `npm i -g @openai/codex`, sign in with `codex login`, then run `python3 $K setup --backend cli`. The kit
+uses `codex exec` with an ephemeral read-only workspace and no API key. Text, vision, and web research use your ChatGPT
+login; image generation uses Codex's `image_gen` tool. The local image tool has no fidelity, exact-size, quality, or
+candidate-count controls. `$CODEX_HOME` can point at a non-default Codex home.
 
 ## Optional tools (each used when present)
 
@@ -60,4 +71,4 @@ independent commands in parallel (e.g. `forge` and `svg`).
   `GPTKIT_LEDGER=off` disables it): command, project dir, model, the API's usage, web-search calls and the list-price
   estimate (`estimated: true` when the gateway stripped `usage`).
 - **`python3 $K cost [--since 7d|24h|YYYY-MM-DD] [--by cmd|model|day|dir] [--json]`** sums it. Through a subscription
-  gateway such as `sub2api` the dollars are a list-price equivalent of quota, not money billed; the output says so.
+  OpenAI-compatible gateway the dollars are a list-price equivalent of quota, not money billed; the output says so.

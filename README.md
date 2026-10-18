@@ -167,8 +167,8 @@ The measurements behind every rule are in [`references/api-findings.md`](skills/
 - Each image call takes 35–80 s and is billed at your provider's image pricing. Paid commands print a
   `plan: ~N image calls … ≈ $X` line first; `forge`, `sequence render` and `research` take `--dry-run`, and
   `GPTKIT_BUDGET_USD` stops a command whose estimate is over budget. Every call is logged to
-  `~/.cache/gptkit/ledger.jsonl`; `gptkit.py cost --by cmd` sums it at list prices (through a subscription gateway that
-  is quota, not money). `forge` with 2–3 candidates makes that
+  `~/.cache/gptkit/ledger.jsonl`; `gptkit.py cost --by cmd` sums it at list prices (through a gateway or the
+  Codex CLI backend that is plan quota, not money). `forge` with 2–3 candidates makes that
   many calls per raster asset. Icons take one vision call per 6 icons. Procedural animation, tracing, rigging, fonts,
   redline, tokens and compare make no image calls.
 - Some backends ignore `quality`, `size` and `n`. The kit trims, crops and resizes locally and runs candidates in parallel.

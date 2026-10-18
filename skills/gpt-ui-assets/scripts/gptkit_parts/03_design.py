@@ -99,6 +99,8 @@ PHONE_SIZE = "1152x2496"  # 9:19.5, modern iPhone proportions (1179x2556, 1206x2
 ASPECTS = {PHONE_SIZE: "tall 9:19.5 phone screen (modern iPhone proportions, about 2.17x taller than wide)",
            "1024x1536": "portrait 2:3 (phone screen, taller than wide)", "1536x1024": "landscape 3:2 (desktop/tablet, wider than tall)",
            "1024x1024": "square 1:1"}
+for _record in DEVICES.values():
+    ASPECTS.setdefault(_record["canvas"], _record["aspect"])
 ASPECT_TOL = 0.02  # a render within 2% of the requested width/height ratio passes as is
 CLASSIC_SIZES = ("1024x1536", "1536x1024", "1024x1024")  # the sizes every gpt-image model accepts
 FIT_MAX = 0.15     # local fitting moves at most 15% of the height; past that the render is saved with a warning
@@ -110,8 +112,9 @@ def _size_rejected(e):
 
 
 def _default_size(platform):
-    """Canvas for a new screen: the 9:19.5 phone canvas, except web, which designs a 3:2 desktop page."""
-    return "1536x1024" if platform == "web" else PHONE_SIZE
+    """Default canvas, preserving the historical phone canvas when no platform is selected."""
+    rec = _device_record(platform) if platform else None
+    return rec["canvas"] if rec else PHONE_SIZE
 
 
 def _ratio(size):
@@ -120,8 +123,54 @@ def _ratio(size):
 
 
 def _canvas_size(w, h):
-    """Request size for revising an existing WxH design: the canvas with the nearest ratio (a 9:19.5 screen stays one)."""
-    return min(ASPECTS, key=lambda s: abs(math.log(w / h / _ratio(s))))
+    """Request size for revising an existing WxH design: the canvas with the nearest ratio (a 9:19.5 screen stays one).
+    A foldable's folded and tabletop canvases are left out: they come from --device foldable --posture, never from a
+    guess, so a slightly narrow phone screen is not revised as a folded cover screen."""
+    postures = {r["canvas"] for k, r in DEVICES.items() if k[2] in ("folded", "tabletop")}
+    return min((s for s in ASPECTS if s not in postures), key=lambda s: abs(math.log(w / h / _ratio(s))))
+
+
+def _screen_meta(platform, record, device, orientation, posture, page, canvas):
+    orientation = orientation or ("landscape" if device == "tablet" else None)
+    posture = posture or ("flat" if device == "foldable" else None)
+    page = page or ("app" if platform == "web" else None)
+    return {"platform": platform, "device": device, "orientation": orientation, "posture": posture,
+            "page": page, "screen_dp": record["logical_w"] if record else _screen_dp(platform),
+            "logical_h": record["logical_h"] if record else None, "canvas": canvas,
+            "hinge": record["hinge"] if record else None}
+
+
+def _device_prompt(record):
+    if not record:
+        return ""
+    return (f" Device system UI: {record['system_ui']}. Device components: {record['components']}. "
+            f"Device metrics: {record['metrics']}. {record['rule']}")
+
+
+def _hinge_hits(issues, record, width, height):
+    hinge = record.get("hinge") if record else None
+    if not hinge:
+        return []
+    axis, fraction = hinge
+    extent = width if axis == "x" else height
+    logical = record["logical_w"] if axis == "x" else record["logical_h"]
+    band = 16 * extent / logical
+    lo, hi = extent * fraction - band, extent * fraction + band
+    hits = []
+    for issue in issues:
+        b = issue.get("bbox", {})
+        start = b.get("x" if axis == "x" else "y", -1)
+        end = start + b.get("w" if axis == "x" else "h", 0)
+        if start < hi and end > lo:
+            hits.append(issue)
+    return hits
+
+
+def _print_hinge_note(issues, record, width, height):
+    hits = _hinge_hits(issues, record, width, height)
+    if hits:
+        print("  ! hinge band intersects: " + "; ".join(
+            f"[{x.get('severity')}] {x.get('problem')} bbox={x.get('bbox')}" for x in hits))
 
 
 def _aspect_ok(img_bytes, size):
@@ -205,33 +254,97 @@ def cmd_mockup(a):
         sys.exit(f"gptkit: --size must be WIDTHxHEIGHT, e.g. {PHONE_SIZE} (9:19.5 phone), 1024x1536, 1536x1024 or "
                  f"1024x1024; got {a.size!r}")
     edit_png = _prep_ref(a.edit, what="--edit mockup") if a.edit else None
-    ref_png = _prep_ref(a.style_ref, what="--style-ref image") if a.style_ref else None
+    anchor_path = getattr(a, "anchor", None)
+    set_devices = [x.strip() for x in (getattr(a, "set", None) or "").split(",") if x.strip()]
+    if set_devices and not anchor_path:
+        sys.exit("gptkit: --set requires --anchor")
+    ref_path = anchor_path or a.style_ref
+    ref_png = _prep_ref(ref_path, what="--anchor image" if anchor_path else "--style-ref image") if ref_path else None
     ref = Image.open(io.BytesIO(ref_png)) if ref_png else None
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
-    platform = a.platform or (_design_meta(a.edit or a.style_ref).get("platform") if (a.edit or a.style_ref) else None)
+    source_meta = _design_meta(a.edit or ref_path) if (a.edit or ref_path) else {}
+    platform = a.platform or source_meta.get("platform")
     if not platform:
         print("  (no --platform: designing platform-neutral; pass --platform android|ios|web for native components)")
-    # an edit keeps the edited screen's canvas; a new screen gets the phone canvas (web: 3:2)
-    size = a.size or (_canvas_size(*Image.open(io.BytesIO(edit_png)).size) if edit_png else _default_size(platform))
+    requested_device = getattr(a, "device", None)
+    device_arg = requested_device or source_meta.get("device")
+    inherit_device = not requested_device or requested_device == source_meta.get("device")
+    orientation = getattr(a, "orientation", None) or (source_meta.get("orientation") if inherit_device else None)
+    posture = getattr(a, "posture", None) or (source_meta.get("posture") if inherit_device else None)
+    page = getattr(a, "page", None) or (source_meta.get("page") if inherit_device else None)
+    if not platform and (device_arg or orientation or posture or page or set_devices):
+        sys.exit("gptkit: --device/--orientation/--posture/--page/--set require --platform android|ios|web|macos|windows|linux")
+    try:
+        record = _device_record(platform, device_arg, orientation, posture, page) if platform else None
+        if set_devices:
+            for dname in set_devices:
+                _device_record(platform, dname, orientation if dname == "tablet" else None,
+                               posture if dname == "foldable" else None, page if platform == "web" else None)
+    except ValueError as e:
+        sys.exit(f"gptkit: {e}")
+    if set_devices:
+        screens = {}
+        for dname in set_devices:
+            child = argparse.Namespace(**vars(a))
+            child.set = None
+            child.device = dname
+            child.orientation = orientation if dname == "tablet" else None
+            child.posture = posture if dname == "foldable" else None
+            child.page = page if platform == "web" else None
+            child.name = f"{a.name}_{dname}"
+            child.variants = 1
+            child.anchor = anchor_path
+            child.style_ref = None
+            cmd_mockup(child)
+            made_path = out / f"{child.name}_v1.png"
+            final_path = out / f"{a.name}_{dname}.png"
+            if made_path.exists():
+                made_path.replace(final_path)
+                for suffix in ("_critique.png", "_critique.json"):
+                    aux = out / f"{child.name}_v1{suffix}"
+                    if aux.exists():
+                        aux.replace(out / f"{a.name}_{dname}{suffix}")
+            rec = _device_record(platform, dname, orientation if dname == "tablet" else None,
+                                 posture if dname == "foldable" else None, page if platform == "web" else None)
+            screens[final_path.name] = _screen_meta(platform, rec, dname, orientation, posture, page, rec["canvas"])
+        mf = out / "design.json"
+        existing = json.loads(mf.read_text()) if mf.exists() else {"platform": platform}
+        existing["screens"] = screens
+        existing["platform"] = platform
+        mf.write_text(json.dumps(existing, indent=2))
+        (out / "set.json").write_text(json.dumps({"anchor": str(Path(anchor_path)), "devices": {
+            d: str(out / f"{a.name}_{d}.png") for d in set_devices}}, indent=2))
+        return
+    if edit_png and not a.size:
+        size = (record["canvas"] if record and (a.device or a.posture or a.orientation)
+                else _canvas_size(*Image.open(io.BytesIO(edit_png)).size))
+    else:
+        size = a.size or (record["canvas"] if record else _default_size(platform))
     qa = not a.no_critique
     _plan(a.variants, a.variants if qa else 0, image_model=a.model, size=size, edits=bool(a.edit or a.style_ref))
     rule = _platform_rule(platform)
     house = _house_style(a.no_house_style)
 
     def prompt_for(sz):
-        asp = ASPECTS.get(sz, f"{sz} px")
+        asp = (record["aspect"] if record and sz == record["canvas"] else ASPECTS.get(sz, f"{sz} px"))
         if edit_png is not None:
-            return f"{a.prompt} Keep the {asp} canvas and everything not mentioned exactly as it is."
+            return f"{a.prompt} Keep the {asp.removesuffix(' canvas')} canvas and everything not mentioned exactly as it is."
         if a.raw:
             return a.prompt
-        return (STYLE_REF_PROMPT if ref_png is not None else MOCKUP_WRAP).format(prompt=a.prompt, aspect=asp) + house + rule
+        surface = "web page viewport" if platform == "web" else ("app window" if device_arg == "desktop" or platform in ("macos", "windows", "linux") else "app screen")
+        if anchor_path and record:
+            base = ADAPT_PROMPT.format(prompt=a.prompt, aspect=asp, device_rule=record["rule"])
+        else:
+            base = (STYLE_REF_PROMPT if ref_png is not None else MOCKUP_WRAP).format(prompt=a.prompt, aspect=asp, surface=surface)
+        return base + house + rule + _device_prompt(record)
     canvas = {"size": size}  # shared by the variants: drops to a classic size once if the endpoint rejects this one
     lock = threading.Lock()
     if platform:
         meta_path = out / "design.json"
         meta = _design_meta(meta_path) if meta_path.exists() else {}
-        meta.update({"platform": platform, "screen_dp": _screen_dp(platform)})
+        meta.update(_screen_meta(platform, record, device_arg or ("desktop" if platform in ("web", "macos", "windows", "linux") else "phone"),
+                                 orientation, posture, page, size))
         meta_path.write_text(json.dumps(meta, indent=2))
 
     def one(i):
@@ -255,8 +368,9 @@ def cmd_mockup(a):
                 continue
             attempts += 1
             im = Image.open(io.BytesIO(img))
-            meta["layout_diff"] = _layout_diff(ref, im) if ref is not None else None
-            copied = ref is not None and meta["layout_diff"] < 10
+            aspect_mismatch = ref is not None and abs(_ratio(sz) / (ref.width / ref.height) - 1) > 0.10
+            meta["layout_diff"] = _layout_diff(ref, im) if ref is not None and not aspect_mismatch else None
+            copied = ref is not None and not aspect_mismatch and meta["layout_diff"] < 10
             if copied:
                 print(f"  ! variant {i + 1} copied the style reference (layout_diff {meta['layout_diff']}), retrying")
             if _aspect_err(im, sz) <= ASPECT_TOL and not copied:
@@ -267,7 +381,7 @@ def cmd_mockup(a):
         if _aspect_err(im, sz) <= ASPECT_TOL:
             meta["aspect"] = "ok" + (f" ({fell_back.strip()})" if fell_back else "")
         else:
-            fitted, note = _fit_aspect(im, sz) if _aspect_ok(img, sz) else (None, "wrong orientation")
+            fitted, note = _fit_aspect(im, sz) if (not record or not record.get("hinge")) and _aspect_ok(img, sz) else (None, "foldable hinge geometry must not be fitted" if record and record.get("hinge") else "wrong orientation")
             if fitted is not None:
                 (out / f"{a.name}_v{i + 1}_raw.png").write_bytes(img)
                 img = _png_bytes(fitted)
@@ -302,16 +416,16 @@ def cmd_mockup(a):
             raise last_err or RuntimeError("mockup produced no image")
         sys.exit(f"gptkit: mockup produced no image (all {a.variants} variants failed, see above; last: {last_err})")
     if qa:
-        _mockup_qa(sorted(made), platform or "android", ref)
+        _mockup_qa(sorted(made), platform or "android", ref, record)
 
 
-def _mockup_qa(paths, platform, ref):
+def _mockup_qa(paths, platform, ref, record=None):
     """Design QA of each new variant (same files as `critique`), in parallel; a failed call is reported, never hidden."""
-    dp = _screen_dp(platform)
+    dp = record["logical_w"] if record else _screen_dp(platform)
 
     def one(p):
         img = _open_image(p, "mockup")
-        return img, critique(img, dp, platform, ref)
+        return img, critique(img, dp, platform, ref, device_record=record)
     with cf.ThreadPoolExecutor(len(paths)) as ex:
         futs = [ex.submit(one, p) for p in paths]
     print("design QA (critique):")
@@ -323,6 +437,7 @@ def _mockup_qa(paths, platform, ref):
             continue
         print(f"{p.name}: {len(issues)} issues, weight {_weight(issues)}")
         _print_issues(issues)
+        _print_hinge_note(issues, record, img.width, img.height)
         _issue_overlay(img, issues, p.parent / f"{p.stem}_critique.png")
         log = {"mockup": str(p), "rounds": [{"image": str(p), "issues": issues, "weight": _weight(issues)}], "best": str(p)}
         (p.parent / f"{p.stem}_critique.json").write_text(json.dumps(log, indent=2))
@@ -349,12 +464,14 @@ def measured_contrast(img, bbox):
     return round((hi + 0.05) / (lo + 0.05), 1)
 
 
-def critique(img, dp=390, platform="android", style_ref=None, note=None):
+def critique(img, dp=390, platform="android", style_ref=None, note=None, device_record=None):
     rule = CRITIQUE_REF_RULE if style_ref is not None else ""
-    touch = 48 if platform == "android" else 44
+    rec = device_record or _device_record(platform)
+    touch = rec["touch"] if rec else (48 if platform == "android" else 44)
+    device_rule = rec["checks"] if rec else "platform-neutral layout and system UI"
     label = PLATFORMS[platform]["label"] if platform in PLATFORMS else platform
     text = CRITIQUE_PROMPT.format(W=img.width, H=img.height, dp=dp, k=img.width / dp, platform=label, touch=touch,
-                                  ref_rule=rule) + (f"\nThe user also says: {note}" if note else "")
+                                  device_rule=device_rule, ref_rule=rule) + (f"\nThe user also says: {note}" if note else "")
     parts = [text, img.convert("RGB")] + ([style_ref.convert("RGB")] if style_ref is not None else [])
     issues = _clean_issues(ask(parts, CRITIQUE_SCHEMA, "design_qa"), "issues", img)
     for i, x in enumerate(issues):
@@ -435,11 +552,18 @@ def cmd_critique(a):
     ref = _open_image(a.style_ref, "--style-ref image") if a.style_ref else None
     out.mkdir(parents=True, exist_ok=True)
     a.platform = a.platform or _design_meta(src).get("platform") or "android"
-    a.screen_dp = _screen_dp(a.platform, a.screen_dp)
-    issues = critique(cur, a.screen_dp, a.platform, ref, a.note)
+    design = _design_meta(src)
+    a.device = design.get("device", "phone")
+    try:
+        record = _device_record(a.platform, a.device, design.get("orientation"), design.get("posture"), design.get("page"))
+    except ValueError:
+        record = _device_record(a.platform)
+    a.screen_dp = _screen_dp(a.platform, a.screen_dp or design.get("screen_dp") or (record["logical_w"] if record else None))
+    issues = critique(cur, a.screen_dp, a.platform, ref, a.note, record)
     log = {"mockup": str(src), "rounds": [{"image": str(src), "issues": issues, "weight": _weight(issues)}]}
     print(f"{src.name}: {len(issues)} issues, weight {_weight(issues)}")
     _print_issues(issues)
+    _print_hinge_note(issues, record, cur.width, cur.height)
     _issue_overlay(cur, issues, out / f"{src.stem}_critique.png")
     min_w = SEVERITY[a.min_severity]
     for rnd in range(a.rounds if a.apply else 0):
@@ -528,8 +652,9 @@ def cmd_manifest(a):
     local = out / "mockup.png"
     if mock_path != local.resolve():
         mock.save(local)
-    platform = a.platform or _design_meta(mock_path).get("platform")
-    screen_dp = _screen_dp(platform, a.screen_dp)
+    design_meta = _design_meta(mock_path)
+    platform = a.platform or design_meta.get("platform")
+    screen_dp = _screen_dp(platform, a.screen_dp or design_meta.get("screen_dp"))
     native = (f"\n- Target platform: {PLATFORMS[platform]['label']}. Native components ({PLATFORMS[platform]['components']}) "
               "are built in code with the platform toolkit: never list a component itself (tab bar, app bar, switch, slider, "
               "chip, button, sheet) as an asset, only custom glyphs/artwork inside it (e.g. the tab icons, not the tab bar).") \
@@ -590,13 +715,14 @@ def cmd_spec(a):
         return cmd_recalibrate(a.dir, a.scale)
     d, m, mock = _load(a.dir)
     platform = m.get("platform")
+    design_meta = _design_meta(d / m["mockup"])
     styles = _platform_styles(platform)
     target = (f" Target platform: {PLATFORMS[platform]['label']}. For every component set 'native' to the native "
               f"component that should implement it (from: {PLATFORMS[platform]['components']}; add its variant, e.g. "
               "'Card (elevated)'), 'system' for UI the OS draws (status bar, home indicator), or 'custom' when none fits. For every text style set 'platform_style' to the closest "
               f"style of {PLATFORMS[platform]['type']}" + (f", named as one of: {', '.join(styles)}." if styles else ".")) if platform else \
         " Set 'native' to 'custom' and 'platform_style' to '' (no target platform given)."
-    screen_dp = m.get("screen_dp") or _screen_dp(platform)
+    screen_dp = design_meta.get("screen_dp") or m.get("screen_dp") or _screen_dp(platform)
     res = ask([f"This is an APPROVED UI design ({mock.width}x{mock.height}px; the screen is {screen_dp}dp wide). "
                "Extract the design spec a developer needs to rebuild it 1:1: palette (hex), every text style "
                "(role, a sample string, likely font family, size in px of THIS image, weight, letter spacing, colour), "

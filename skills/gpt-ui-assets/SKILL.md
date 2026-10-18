@@ -1,6 +1,6 @@
 ---
 name: gpt-ui-assets
-description: Design app and web screens with OpenAI's GPT image and vision models, then turn an approved design into production assets redrawn 1:1 (never cropped from the screenshot) — SVG/VectorDrawable icons, PNG/WebP illustrations and backgrounds, Android/iOS/web launcher icons, frame animations, Lottie and AnimatedVectorDrawable, smoke/steam/rain/spray loops in the art's own style — plus theme code and fonts measured from the pixels and a screenshot diff of the built UI. Also writes GPT-researched feature blueprints that feed the mockups. Use whenever the user wants GPT/ChatGPT to design screens, icons, illustrations or an app icon; approves a GPT design and says "go ahead", "build it" or "give me the assets"; wants the assets "used in the UI"; wants an animated drawable, Lottie or AVD made from existing art; or complains that GPT cropped assets out of a mockup. Not for go/no-go idea validation (product-idea-validator) or design direction without GPT (design-muse).
+description: Design app, tablet, foldable, desktop-app and website screens with OpenAI's GPT image and vision models (API key or the local Codex CLI), then turn an approved design into production assets redrawn 1:1, never cropped: SVG/VectorDrawable icons, PNG/WebP illustrations, launcher icons, frame, Lottie and AVD animation, smoke/steam/rain loops, theme code and fonts measured from the pixels, and a screenshot diff of the built UI. Also writes GPT-researched feature blueprints. Use whenever the user wants GPT/ChatGPT to design screens, icons, illustrations or an app icon; approves a GPT design ("go ahead", "build it", "give me the assets"); wants assets used in the UI; wants an animated drawable, Lottie or AVD from existing art; or complains that GPT cropped assets out of a mockup. Not for go/no-go idea validation, or design direction without GPT.
 license: MIT
 metadata:
   version: 4.0.0
@@ -23,9 +23,11 @@ accept "GPT can't" as the end of the road:
 | Exact colours, fonts, geometry, theme code, 1:1 check of the built screen | Measurement from pixels (`tokens`, `fonts`, `redline`, `compare`) plus you, the engineer |
 | Anything a human must judge | You: Read every review sheet before handing anything over |
 
-`K` is `scripts/gptkit.py` inside this skill's directory. Every command documents itself with `python3 $K <cmd> -h`.
+`K` is `scripts/gptkit.py` inside this skill's base directory (the folder holding this SKILL.md; Claude Code prints it
+as "Base directory for this skill" when the skill loads, whether it was installed as a plugin or copied into
+`~/.claude/skills`). Every command documents itself with `python3 $K <cmd> -h`.
 ```bash
-K="<this skill's directory>/scripts/gptkit.py"
+K="<this skill's base directory>/scripts/gptkit.py"
 ```
 
 ## Before you start
@@ -122,14 +124,13 @@ python3 $K compare build/home shot.png
 - Hand over files with their destinations (`res/drawable`, `Assets.xcassets`, `public/`) and say what was verified and
   what was not.
 
-## Other skills that fit around this one
+## Pairs well with (if installed)
 
-- **design-muse**, for art direction and real-app references before a `mockup`. Put the chosen direction (palette,
-  type, shape, style family) into the mockup brief, and log the result there.
-- **product-idea-validator**, for a go/no-go verdict before `research`. **product-blueprint**, when the user needs a full
-  PRD and technical design rather than a feature blueprint.
-- **play-store-listings**, after `appicon build`: `android/play_store_512.png` is the listing icon, and the approved
-  mockups are the source for the feature graphic and screenshots.
+- An art-direction or design-reference skill before a `mockup`: put the chosen direction (palette, type, shape, style
+  family) into the mockup brief.
+- An idea-validation or PRD skill before `research`, when the user needs a go/no-go verdict or a full specification.
+- A store-listing skill after `appicon build`: `android/play_store_512.png` is the listing icon, and the approved mockups
+  are the source for the feature graphic and screenshots.
 
 ## Reference files
 

@@ -27,9 +27,10 @@ Rules of thumb:
 
 ## Text models
 
-`GPTKIT_TEXT_MODEL` defaults to `gpt-6` (needs vision and structured outputs). `gpt-6` is an alias on some gateways; the
-official API lists `gpt-6-sol`, `gpt-6-luna`, `gpt-6-astra` and `gpt-6.1-sol`. If `doctor` says `gpt-6: NOT LISTED`, set
-`GPTKIT_TEXT_MODEL=gpt-6-luna` (or `-sol`, `gpt-6.1-sol`). `research`/`blueprint` default to `gpt-6-sol` with high effort.
+`GPTKIT_TEXT_MODEL` pins the text model. Otherwise the API backend picks the first readable `/models` match from
+`gpt-6.1-sol`, `gpt-6-sol`, `gpt-6`, `gpt-6-luna`, falling back to `gpt-6-sol`. The local Codex backend uses the first
+of `gpt-6.1-sol`, `gpt-6-sol`, `gpt-6-luna` listed in `~/.codex/models_cache.json`, falling back to `gpt-6-luna`.
+`research`/`blueprint` default to `gpt-6-sol` with high effort.
 The `gpt-5.x` families also work, but several are retiring (below).
 
 ## Prices (USD, standard tier)
@@ -43,8 +44,8 @@ The `gpt-5.x` families also work, but several are retiring (below).
 
 Web search: $10 per 1,000 calls plus the search content tokens at the model's rates. OpenAI's calculator gives an
 output-only estimate for a 1024×1024 image of about $0.006 (low), $0.013 (medium) and $0.053 (high); reference images and
-prompt tokens add to that. Through a subscription gateway such as `sub2api` these are list-price equivalents of quota,
-not money billed.
+prompt tokens add to that. Through an OpenAI-compatible gateway these are list-price equivalents of quota, not money billed.
+`GPTKIT_QUALITY` sets API image quality (`low`, `medium`, or `high`); the Codex CLI image tool does not expose quality.
 
 ## Retirements
 

@@ -52,8 +52,8 @@ def main():
     p.set_defaults(fn=cmd_status)
     p = sub.add_parser("mockup", help="generate UI mockup variants (or --edit an existing one)")
     p.add_argument("prompt"); p.add_argument("--out", required=True); p.add_argument("--name", default="mockup")
-    p.add_argument("--size", help=f"WIDTHxHEIGHT canvas (default: {PHONE_SIZE}, the 9:19.5 iPhone-proportion phone screen; "
-                   "web 1536x1024; --edit keeps the edited screen's canvas). Every render is checked against it and "
+    p.add_argument("--size", help=f"WIDTHxHEIGHT canvas (default depends on --platform/--device; phone: {PHONE_SIZE}; "
+                   "desktop: 2304x1440; --edit keeps the edited screen's canvas). Every render is checked against it and "
                    "fitted locally when it comes back off")
     p.add_argument("--variants", type=_pos_int, default=1, help="images generated in parallel")
     p.add_argument("--no-critique", action="store_true", help="skip the automatic design QA of each variant")
@@ -62,6 +62,12 @@ def main():
     p.add_argument("--edit", help="existing mockup PNG to revise with the prompt"); p.add_argument("--raw", action="store_true")
     p.add_argument("--style-ref", help="approved screen PNG: design a NEW screen in its exact design language")
     p.add_argument("--platform", choices=list(PLATFORMS), help="target platform: native components, system UI, metrics")
+    p.add_argument("--device", choices=["phone", "tablet", "foldable", "desktop"], help="target form factor (default: phone for Android/iOS; desktop for web/desktop OSes)")
+    p.add_argument("--orientation", choices=["portrait", "landscape"], help="tablet orientation (default: landscape)")
+    p.add_argument("--posture", choices=["flat", "tabletop", "folded"], help="foldable posture (default: flat)")
+    p.add_argument("--page", choices=["app", "landing"], help="web page type (default: app)")
+    p.add_argument("--set", dest="set", help="comma-separated form factors to render from an approved anchor")
+    p.add_argument("--anchor", help="approved screen PNG used as the style reference for --set")
     p.add_argument("--model", default=None); p.set_defaults(fn=cmd_mockup)
     p = sub.add_parser("critique", help="vision design QA of a mockup; --apply edits the fixes in, kept only if better")
     p.add_argument("mockup"); p.add_argument("--out", help="output dir (default: the mockup's dir)")
@@ -265,6 +271,7 @@ def main():
     _color_args(p); p.set_defaults(fn=cmd_pick)
     _design_to_code_parsers(sub)
     _hybrid_parsers(sub)
+    _backend_parsers(sub)
     p = sub.add_parser("score", help="score arbitrary PNG or SVG files against a manifest asset (JSON per file, no API)")
     p.add_argument("dir"); p.add_argument("name", help="asset name from assets.json"); p.add_argument("files", nargs="+")
     p.set_defaults(fn=cmd_score)

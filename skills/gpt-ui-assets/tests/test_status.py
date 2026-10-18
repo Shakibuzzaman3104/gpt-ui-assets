@@ -3,12 +3,14 @@ import contextlib
 import io
 import json
 import shutil
+import os
 import sys
 import tempfile
 import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+os.environ.setdefault("GPTKIT_CODEX", "none")  # the offline tests never reach a real Codex CLI
 import gptkit as g  # noqa: E402
 
 

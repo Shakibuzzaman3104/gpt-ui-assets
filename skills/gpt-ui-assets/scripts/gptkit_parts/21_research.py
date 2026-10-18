@@ -14,6 +14,8 @@ def think(prompt, schema=None, name="result", model=None, effort="high", search=
     truncation, empty or non-JSON answer raises ApiError (see _responses_text)."""
     if effort not in EFFORTS:
         raise ValueError(f"think: effort must be one of {', '.join(EFFORTS)}, got {effort!r}")
+    if _selected_backend() == "cli":
+        return _cli_think(prompt, schema=schema, name=name, model=model, effort=effort, search=search)
     chosen_model = model or RESEARCH_MODEL
     _warn_retired_model(chosen_model)
     body = {"model": chosen_model, "store": False, "reasoning": {"effort": effort},

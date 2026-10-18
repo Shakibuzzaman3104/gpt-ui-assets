@@ -24,6 +24,7 @@ HERE = Path(__file__).parent
 SCRIPTS = HERE.parent / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 import gptkit as K  # noqa: E402
+os.environ.setdefault("GPTKIT_CODEX", "none")  # the offline tests never reach a real Codex CLI
 
 W, H = 1024, 1536
 

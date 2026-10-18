@@ -15,6 +15,7 @@ from PIL import Image, ImageDraw
 HERE = Path(__file__).parent
 sys.path.insert(0, str(HERE.parent / "scripts"))
 import gptkit as K  # noqa: E402
+os.environ.setdefault("GPTKIT_CODEX", "none")  # the offline tests never reach a real Codex CLI
 
 W, H = 1024, 1536
 

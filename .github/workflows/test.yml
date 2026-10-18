@@ -1,0 +1,36 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python: ["3.9", "3.12"]
+    defaults:
+      run:
+        working-directory: skills/gpt-ui-assets
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install dependencies
+        run: pip install -r scripts/requirements.txt fonttools
+      - name: Run the offline test suite
+        env:
+          GPTKIT_CHROME: none
+        run: |
+          fail=0
+          for t in tests/test_*.py; do
+            echo "::group::$t"
+            python "$t" || { echo "::error::$t failed"; fail=1; }
+            echo "::endgroup::"
+          done
+          exit $fail

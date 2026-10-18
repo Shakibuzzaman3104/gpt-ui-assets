@@ -20,7 +20,7 @@ _LEDGER_WARNED = False
 _LEDGER_CMD, _LEDGER_DIR = "", None
 
 
-def _ledger_record(endpoint, model, body, *, image=False, quality=None, size=None):
+def _ledger_record(endpoint, model, body, *, image=False, quality=None, size=None, backend="api"):
     """Append parsed successful usage; a failed local ledger must never fail a paid command."""
     global _LEDGER_WARNED
     path = os.environ.get("GPTKIT_LEDGER")
@@ -60,11 +60,13 @@ def _ledger_record(endpoint, model, body, *, image=False, quality=None, size=Non
     web_calls = sum(1 for item in outputs if isinstance(item, dict) and item.get("type") == "web_search_call")
     if not image:
         cost += web_calls * PRICES["web_search"]["per_call"]
+    if backend == "cli":
+        cost, unknown = 0.0, False
     entry = {"ts": datetime.now(timezone.utc).isoformat(), "cmd": _LEDGER_CMD or "unknown",
              "dir": str(Path(_LEDGER_DIR).expanduser().resolve()) if _LEDGER_DIR else None,
              "endpoint": endpoint, "model": model, "quality": quality if image else None,
              "size": size if image else None, "usage": usage, "web_search_calls": web_calls,
-             "est_usd": round(cost, 8), "estimated": bool(estimated or unknown)}
+             "est_usd": round(cost, 8), "estimated": bool(estimated or unknown), "backend": backend}
     try:
         with _LEDGER_LOCK:
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -79,13 +81,14 @@ def _ledger_record(endpoint, model, body, *, image=False, quality=None, size=Non
 
 
 def _plan(image_calls=0, text_calls=0, model=None, *, image_model=None, task="concept", background="auto",
-          size="1024x1024", edits=False, tokens_in=20000, tokens_out=5000, web_calls=0, dry_run=False, what=None):
+          size="1024x1024", edits=False, tokens_in=20000, tokens_out=5000, web_calls=0, dry_run=False, what=None,
+          quality=None):
     """Print (and, with GPTKIT_BUDGET_USD, enforce) a list-price estimate before a command starts paid work.
     An image call is priced as high-quality output scaled by area, plus ~1,500 image-input tokens when it sends a
     reference (edits) and ~300 prompt tokens; rough by design, it is meant to catch a 10x surprise, not to bill."""
     if not image_calls and not text_calls:
         return 0.0
-    text_model = model or _config()["text_model"]
+    text_model = model or pick_text_model()
     if image_calls:
         image_model = pick_image_model(image_model, task, background)
     ip = PRICES.get(image_model, PRICES["gpt-image-2"])
@@ -98,13 +101,17 @@ def _plan(image_calls=0, text_calls=0, model=None, *, image_model=None, task="co
             return 1024 * 1024
     sizes = list(size) if isinstance(size, (list, tuple)) else [size]  # one size per call when they differ (forge)
     mean_area = sum(area(s) for s in sizes) / max(1, len(sizes))
-    per_image = (1756 * mean_area / 1024 ** 2 * ip.get("image_out", 30) + 300 * ip.get("text_in", 5)
+    quality = quality or _config().get("quality", "high")
+    output_tokens = {"low": 196, "medium": 439, "high": 1756}.get(quality, 1756)
+    per_image = (output_tokens * mean_area / 1024 ** 2 * ip.get("image_out", 30) + 300 * ip.get("text_in", 5)
                  + (1500 * ip.get("image_in", 8) if edits else 0)) / 1e6
     estimate = image_calls * per_image + text_calls * (tokens_in * tp.get("in", 2) + tokens_out * tp.get("out", 10)) / 1e6
     estimate += web_calls * PRICES["web_search"]["per_call"]
     parts = ([f"~{image_calls} image call{'s' if image_calls != 1 else ''} ({image_model})"] if image_calls else []) + \
             ([f"{text_calls} text call{'s' if text_calls != 1 else ''} ({text_model})"] if text_calls else [])
     detail = " + ".join(parts) + f" ≈ ${estimate:.2f} list price"
+    if image_calls and quality != "high":
+        detail += f" (quality={quality})"
     budget = os.environ.get("GPTKIT_BUDGET_USD")
     if budget is not None:
         try:
@@ -285,13 +292,22 @@ def _config():
     moderation = pick("GPTKIT_MODERATION")
     if moderation and moderation not in ("low", "auto"):
         sys.exit(f"gptkit: GPTKIT_MODERATION must be low or auto, got {moderation!r}")
+    backend = pick("GPTKIT_BACKEND", default="auto").lower()
+    if backend not in ("api", "cli", "auto"):
+        sys.exit(f"gptkit: GPTKIT_BACKEND must be api, cli or auto, got {backend!r}")
+    quality = pick("GPTKIT_QUALITY", default="high").lower()
+    if quality not in ("low", "medium", "high"):
+        sys.exit(f"gptkit: GPTKIT_QUALITY must be low, medium or high, got {quality!r}")
     return {"base": pick("GPTKIT_BASE_URL", "OPENAI_BASE_URL", default="https://api.openai.com/v1").rstrip("/"),
             "key": pick("GPTKIT_API_KEY", "OPENAI_API_KEY"),
             "image_model": pick("GPTKIT_IMAGE_MODEL", default="gpt-image-2"),
             "image_model_pinned": bool(pick("GPTKIT_IMAGE_MODEL")),
-            "text_model": pick("GPTKIT_TEXT_MODEL", default="gpt-6"),
+            "text_model": pick("GPTKIT_TEXT_MODEL", default=None),
+            "text_model_pinned": bool(pick("GPTKIT_TEXT_MODEL")),
+            "backend": backend, "quality": quality,
             "retries": int(retries), "debug": pick("GPTKIT_DEBUG", default="").lower() in _TRUE,
-            "moderation": moderation, "house_style": pick("GPTKIT_HOUSE_STYLE"), "config_path": str(path)}
+            "moderation": moderation, "house_style": pick("GPTKIT_HOUSE_STYLE"), "codex": pick("GPTKIT_CODEX", default="codex"),
+            "config_path": str(path)}
 
 
 def _auth():
@@ -564,9 +580,29 @@ def pick_image_model(model=None, task="concept", background="auto"):
     return c["image_model"]
 
 
+TEXT_ROUTE = ("gpt-6.1-sol", "gpt-6-sol", "gpt-6", "gpt-6-luna")
+
+
+def pick_text_model(model=None):
+    """The text model for ask/critique: the argument, a pinned GPTKIT_TEXT_MODEL, else the first of TEXT_ROUTE the
+    endpoint lists (gpt-6-sol when the list is unavailable)."""
+    c = _config()
+    if model:
+        return model
+    if c.get("text_model_pinned"):
+        return c["text_model"] or "gpt-6-sol"
+    if c.get("key"):
+        ids = _listed_models(c["base"], c["key"])
+        if ids:
+            return next((m for m in TEXT_ROUTE if m in ids), "gpt-6-sol")
+    return "gpt-6-sol"
+
+
 def generate(prompt, size="1024x1024", background="auto", model=None, task="concept"):
     c = _config()
-    body = {"model": pick_image_model(model, task, background), "prompt": prompt, "size": size, "output_format": "png", "quality": "high"}
+    if _selected_backend() == "cli":
+        return _cli_generate(prompt, size=size, background=background, model=model, task=task)
+    body = {"model": pick_image_model(model, task, background), "prompt": prompt, "size": size, "output_format": "png", "quality": c.get("quality", "high")}
     if background != "auto":
         body["background"] = background
     if c["moderation"]:
@@ -583,11 +619,13 @@ def generate(prompt, size="1024x1024", background="auto", model=None, task="conc
 
 
 def edit(ref_png: bytes, prompt, size="1024x1024", background="auto", model=None, fidelity="high", task="precise"):
-    # One reference image per call: multi-image edits returned the reference itself on the sub2api gateway the kit
+    # One reference image per call: multi-image edits returned the reference itself on an OpenAI-compatible gateway the kit
     # was probed against (the official API accepts up to 16; unverified here, see references/api-findings.md).
     c = _config()
+    if _selected_backend() == "cli":
+        return _cli_edit(ref_png, prompt, size=size, background=background, model=model, fidelity=fidelity, task=task)
     data = {"model": pick_image_model(model, task, background), "prompt": prompt, "size": size, "output_format": "png",
-            "quality": "high", "input_fidelity": fidelity}
+            "quality": c.get("quality", "high"), "input_fidelity": fidelity}
     if background != "auto":
         data["background"] = background
     if c["moderation"]:
@@ -624,7 +662,7 @@ def _responses(body, timeout=900):
                 return _call("/responses", json_body=b, timeout=timeout)
             raise
     resp = _with_fallback(send, body, RESPONSES_OPTIONAL)
-    _ledger_record("/responses", body.get("model") or _config()["text_model"], resp)
+    _ledger_record("/responses", body.get("model") or pick_text_model(), resp)
     return resp
 
 
@@ -672,7 +710,9 @@ def ask(parts, schema=None, name="result", model=None):
             content.append({"type": "input_text", "text": p})
         else:
             content.append({"type": "input_image", "image_url": _data_url(p)})
-    chosen_model = model or _config()["text_model"]
+    if _selected_backend() == "cli":
+        return _cli_ask(parts, schema=schema, name=name, model=model)
+    chosen_model = pick_text_model(model)
     _warn_retired_model(chosen_model)
     body = {"model": chosen_model, "store": False, "input": [{"role": "user", "content": content}]}
     if schema == "json":
@@ -680,7 +720,10 @@ def ask(parts, schema=None, name="result", model=None):
     elif schema:
         body["text"] = {"format": {"type": "json_schema", "name": name, "strict": True, "schema": schema}}
     try:
-        return _responses_text(_responses(body), schema)[0]
+        answer = _responses_text(_responses(body), schema)[0]
+        if schema and isinstance(schema, dict) and "required" in schema:
+            return _check_keys(answer, schema, name)
+        return answer
     except ApiError as e:
         e.prompt = e.prompt or next((p for p in parts if isinstance(p, str)), "")[:200]
         raise

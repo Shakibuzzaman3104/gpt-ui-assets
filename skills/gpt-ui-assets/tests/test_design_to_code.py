@@ -2,7 +2,7 @@
 
 Fixtures are drawn with Pillow's bundled default font (no downloads); the API is never called (`ask` is monkeypatched
 where a vision path is exercised); Google Fonts is replaced by a tiny metadata list and the OFL-licensed subsetted
-TTFs in tests/fonts/ (Inter 300/400/500/700, Lora 700, Basic Latin only)."""
+TTFs in tests/fonts/ (Inter 300/400/500/700, Roboto 400 and SerifTest 700, a renamed Lora subset; Basic Latin only)."""
 import contextlib
 import io
 import json
@@ -19,6 +19,7 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+os.environ.setdefault("GPTKIT_CODEX", "none")  # the offline tests never reach a real Codex CLI
 import gptkit as g  # noqa: E402
 
 FONTS = Path(__file__).resolve().parent / "fonts"
@@ -507,8 +508,11 @@ def _no_net(*a, **k):
     raise g.requests.ConnectionError("network disabled in tests")
 
 
+LOCAL_FILE = {"Lora": "SerifTest"}  # the Lora subset is renamed: Lora's licence reserves its name for unmodified fonts
+
+
 def _local_ttf(fam, w, it=False):
-    p = FONTS / f"{fam}-{w}.ttf"
+    p = FONTS / f"{LOCAL_FILE.get(fam, fam)}-{w}.ttf"
     if p.exists() and not it:
         return p
     g._GF_TTF_ERRORS[(fam, w, it)] = "ConnectionError: network disabled in tests"

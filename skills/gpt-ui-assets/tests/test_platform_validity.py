@@ -13,6 +13,7 @@ import numpy as np
 from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+os.environ.setdefault("GPTKIT_CODEX", "none")  # the offline tests never reach a real Codex CLI
 import gptkit as g  # noqa: E402
 
 A = "{http://schemas.android.com/apk/res/android}"

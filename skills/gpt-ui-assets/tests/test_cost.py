@@ -13,12 +13,14 @@ from pathlib import Path
 
 HERE = Path(__file__).parent
 sys.path.insert(0, str(HERE.parent / "scripts"))
+os.environ.setdefault("GPTKIT_CODEX", "none")  # the offline tests never reach a real Codex CLI
 import gptkit as K
 
 
 @contextlib.contextmanager
 def env(**values):
     values.setdefault("GPTKIT_CONFIG", "/nonexistent/gptkit-env")
+    values.setdefault("GPTKIT_BACKEND", "api")  # K._call is mocked; no key is needed
     old = {k: os.environ.get(k) for k in values}
     for k, v in values.items():
         if v is None:
@@ -119,7 +121,8 @@ def test_budget_exceeded_and_dry_run_no_calls():
             K.cmd_mockup(argparse.Namespace(edit=None, style_ref=None, size="1024x1536", out=td,
                                             platform=None, raw=False, prompt="test", model=None,
                                             variants=1, name="mockup", no_critique=False,
-                                            no_house_style=False))
+                                            no_house_style=False, device=None, orientation=None, posture=None,
+                                            page=None, set=None, anchor=None))
         except SystemExit as e:
             assert "exceeds GPTKIT_BUDGET_USD" in str(e)
         else:

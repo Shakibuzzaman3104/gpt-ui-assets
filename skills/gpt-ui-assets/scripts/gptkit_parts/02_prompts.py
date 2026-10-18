@@ -4,7 +4,7 @@
 
 # ---------------------------------------------------------------- prompts
 
-MOCKUP_WRAP = ("High-fidelity production UI design render of a single app screen on a {aspect} canvas. {prompt} "
+MOCKUP_WRAP = ("High-fidelity production UI design render of a single {surface} on a {aspect} canvas. {prompt} "
                "Flat, pixel-crisp screen render at 1:1, no device frame, no hands, no perspective, no watermark. "
                "Real, legible UI text. Consistent spacing grid and one cohesive icon style.")
 
@@ -62,7 +62,127 @@ PLATFORMS = {
         "icons": "one consistent icon set (e.g. Material Symbols or Lucide)",
         "screen_dp": 390,
     },
+    "macos": {"label": "native macOS 26 app (SwiftUI / AppKit)", "system_ui": "macOS unified app toolbar and sidebar",
+              "components": "NavigationSplitView, sidebar, toolbar, inspector, popover, native controls",
+              "metrics": "8 pt spacing rhythm, 28 pt minimum controls", "type": "SF Pro 13 pt body and native text styles",
+              "icons": "SF Symbols", "screen_dp": 1280},
+    "windows": {"label": "native Windows 11 Fluent 2 app (WinUI 3)", "system_ui": "Windows title bar and caption buttons",
+                "components": "NavigationView, CommandBar, InfoBar, teaching tip, native controls",
+                "metrics": "4 px base spacing, 32 epx minimum controls", "type": "Segoe UI Variable 14 px body",
+                "icons": "Fluent System Icons", "screen_dp": 1280},
+    "linux": {"label": "native GNOME/libadwaita desktop app", "system_ui": "GNOME header bar and window controls",
+              "components": "AdwHeaderBar, AdwNavigationView, sidebar, dialogs, native controls",
+              "metrics": "8 px spacing rhythm, 32 px minimum controls", "type": "Cantarell or Inter 14 px body",
+              "icons": "GNOME symbolic icons", "screen_dp": 1280},
 }
+
+def _device(canvas, logical_w, logical_h, touch, hinge, aspect, system_ui, components, metrics, rule, checks):
+    return {"canvas": canvas, "logical_w": logical_w, "logical_h": logical_h, "touch": touch,
+            "hinge": hinge, "aspect": aspect, "system_ui": system_ui, "components": components,
+            "metrics": metrics, "rule": rule, "checks": checks}
+
+
+_TABLET_CHECKS = "not a stretched phone or a single full-width column over about 840 dp; avoid lines over 75 characters and giant edge-to-edge buttons; navigation fits (rail/sidebar/iPad top tab bar rather than a phone bottom bar at expanded width); panes are sensible; dialogs centre or float; device chrome is correct"
+_DESKTOP_CHECKS = "correct OS chrome (macOS traffic lights top-left; Windows/Linux caption buttons top-right); no mobile status/home/tab chrome; pointer-sized controls; hover and focus states; sidebar, toolbar and content structure"
+_WEB_CHECKS = "above-the-fold hierarchy; centred max-width container and readable line length; breakpoint-appropriate navigation; no device/browser chrome; visible focus/hover; labelled forms"
+DEVICES = {
+    ("android", "phone", "default"): _device("1152x2496", 412, 915, 48, None,
+        "tall 9:19.5 phone canvas", "Android status bar and gesture navigation handle", "NavigationBar, TopAppBar, cards, sheets",
+        "4/8 dp grid, 48 dp touch targets", "Form factor: Android phone, compact width; use a single-column phone layout and bottom navigation.", "phone layout and Android system UI"),
+    ("ios", "phone", "default"): _device("1152x2496", 393, 852, 44, None, "tall 9:19.5 phone canvas",
+        "iOS status bar with Dynamic Island and home indicator", "NavigationStack, floating Liquid Glass TabBar, sheets",
+        "8 pt rhythm, 44 pt touch targets", "Form factor: iPhone full-screen app with safe areas and native bottom tab bar.", "phone layout, safe areas and iPhone system UI"),
+    ("web", "phone", "app"): _device("1152x2496", 390, 844, 44, None, "tall 9:19.5 phone canvas",
+        "no device or browser chrome", "responsive web navigation, cards, labelled forms", "44 px touch targets, visible focus, 8 px grid",
+        "Form factor: responsive web app at a 390x844 mobile breakpoint; hamburger or bottom navigation and 44 px touch targets.", _WEB_CHECKS),
+    ("web", "phone", "landing"): _device("1152x2496", 390, 844, 44, None, "tall 9:19.5 phone canvas",
+        "no device or browser chrome", "responsive web navigation, hero, CTA", "44 px touch targets, visible focus, 8 px grid",
+        "Form factor: responsive landing page at a 390x844 mobile breakpoint; compact nav, stacked hero and visible primary CTA.", _WEB_CHECKS),
+    ("android", "tablet", "landscape"): _device("2304x1440", 1280, 800, 48, None, "wide landscape canvas about 1.6:1",
+        "Android status bar and edge-to-edge app UI", "NavigationSuiteScaffold, WideNavigationRail (collapsed 96 dp / expanded 220-360 dp), ListDetailPaneScaffold, SupportingPaneScaffold (70/30), LazyVerticalGrid(Adaptive)",
+        "4/8 dp grid, 48 dp touch targets", "Form factor: Android tablet in landscape, a 1280x800 dp window (Expanded width), wide landscape canvas about 1.6:1. Use a NavigationRail on the left (96 dp, icons with labels) and a two-pane list-detail layout (ListDetailPaneScaffold): a 360 dp list pane and a flexible detail pane, 24 dp gap, 24 dp outer margins. Do NOT draw an enlarged phone layout or one stretched column.", _TABLET_CHECKS),
+    ("android", "tablet", "portrait"): _device("1440x2304", 800, 1280, 48, None, "tall portrait tablet canvas",
+        "Android status bar and edge-to-edge app UI", "NavigationSuiteScaffold, NavigationRail or NavigationBar, ListDetailPaneScaffold, LazyVerticalGrid(Adaptive)",
+        "4/8 dp grid, 48 dp touch targets", "Form factor: Android tablet portrait, 800x1280 dp (Medium width). Use a rail or bottom bar and a single pane or 50/50 split; retain tablet margins and do not stretch a phone column.", _TABLET_CHECKS),
+    ("ios", "tablet", "landscape"): _device("2320x1600", 1210, 834, 44, None, "wide iPad landscape canvas about 1.45:1",
+        "iPad status bar with time/date top left and battery top right, home indicator bottom centre; no Dynamic Island or notch",
+        "TabView .sidebarAdaptable or NavigationSplitView, split sidebar/list/detail, popovers, pointer hover",
+        "44 pt touch targets, 16-20 pt margins", "Form factor: iPad (iPadOS 26) full-screen app in landscape, 1210x834 pt. A sidebar on the left (TabView .sidebarAdaptable / NavigationSplitView) or the floating tab bar at top centre, and a split view sidebar | list | detail. iPad status bar with time and date at top left and battery at top right, NO Dynamic Island or notch; home indicator at bottom centre. Popovers instead of full-screen sheets, pointer hover effects.", _TABLET_CHECKS + "; no Dynamic Island"),
+    ("ios", "tablet", "portrait"): _device("1600x2320", 834, 1210, 44, None, "tall iPad portrait canvas",
+        "iPad status bar with time/date top left and battery top right, home indicator bottom centre; no Dynamic Island or notch",
+        "TabView .sidebarAdaptable or NavigationSplitView, split view, popovers", "44 pt touch targets, 16-20 pt margins",
+        "Form factor: iPad (iPadOS 26) full-screen app in portrait, 834x1210 pt. Use a sidebar or top floating tab bar with a useful single or split pane. Status bar time/date top left, battery top right; NO Dynamic Island or notch; home indicator bottom centre. Prefer popovers and show pointer hover affordances.", _TABLET_CHECKS + "; no Dynamic Island"),
+    ("android", "foldable", "flat"): _device("1840x1904", 852, 883, 48, ("x", 0.5), "nearly square, slightly taller than wide",
+        "Android status bar and gesture handle; no device frame", "NavigationSuiteScaffold, WideNavigationRail, ListDetailPaneScaffold, LazyVerticalGrid(Adaptive)",
+        "48 dp touch targets", "Form factor: book-style foldable (Pixel 9 Pro Fold class) fully unfolded, a nearly square 852x883 dp inner display, slightly taller than wide. A vertical fold runs exactly down the centre (x = 50%): treat it as a gutter, two panes, one on each side, no text, button, number or face crossing the centre line. Do not draw the hinge, crease or device.", "report any critical element crossing the vertical hinge band (+-16 dp) as high severity with a bbox; panes split at hinge or avoid it; use near-square shape"),
+    ("android", "foldable", "tabletop"): _device("1904x1840", 883, 852, 48, ("y", 0.5), "nearly square tabletop canvas",
+        "Android status bar; no device frame", "ShortNavigationBarMedium, SupportingPaneScaffold",
+        "48 dp touch targets", "Form factor: book-style foldable half-opened in tabletop posture, 883x852 dp. The horizontal fold is exactly at y = 50%: content or media in the top half, controls in the bottom half, nothing across the fold. Do not draw the device or crease.", "report any critical element crossing the horizontal hinge band (+-16 dp) as high severity with a bbox; content/media top and controls bottom; use near-square shape"),
+    ("android", "foldable", "folded"): _device("1104x2480", 443, 994, 48, None, "tall cover-screen canvas",
+        "Android status bar and gesture handle", "phone TopAppBar, NavigationBar, compact single-column layout", "48 dp touch targets",
+        "Form factor: folded book-style phone using its 443x994 dp cover screen; compose a phone-like single-column layout.", "cover screen uses phone layout and Android chrome"),
+}
+
+_DESKTOP_RULES = {
+ "macos": "Form factor: A macOS 26 app window, 1280x800 pt, filling the canvas edge to edge: no wallpaper, Dock, menu bar or drop shadow. Three traffic-light buttons at top left inside a unified toolbar with the title and SF Symbol buttons, a translucent source-list sidebar about 220 pt wide, a content area, an optional inspector. SF Pro 13 pt body, 28 pt controls, pointer density, one hover row and one keyboard focus ring visible.",
+ "windows": "Form factor: A Windows 11 Fluent 2 (WinUI 3) app window, 1280x800 epx, filling the canvas. A 48 px Mica title bar with a 16 px app icon and title at the left, a centred search box, minimize/maximize/close at the top right. A NavigationView left pane (expanded, about 320 px, icons with labels, Settings at the bottom). Segoe UI Variable 14 px body, 4 px control corners, 8 px window/dialog corners.",
+ "linux": "Form factor: A GNOME/libadwaita app window, 1280x800 px, filling the canvas. Header bar with main actions at the start, title or view switcher centred, menu at the end, window controls at the right; Adwaita sidebar. Cantarell/Inter 14 px body and native pointer controls.",
+}
+for _os in ("macos", "windows", "linux"):
+    DEVICES[(_os, "desktop", "default")] = _device("2304x1440", 1280, 800,
+        28 if _os == "macos" else 32, None, "wide landscape canvas about 1.6:1",
+        "OS-native window title bar, toolbar and sidebar", PLATFORMS[_os]["components"], PLATFORMS[_os]["metrics"],
+        _DESKTOP_RULES[_os], _DESKTOP_CHECKS)
+DEVICES[("android", "desktop", "default")] = _device("2304x1440", 1280, 800, 48, None,
+    "wide landscape canvas about 1.6:1", "Android desktop window chrome without phone status/navigation bars", "NavigationRail, list-detail panes, toolbar",
+    "48 dp touch targets", "Form factor: Android app in a 1280x800 dp desktop window; omit phone status/navigation bars and use a rail, toolbar and multi-pane content.", _DESKTOP_CHECKS)
+for _dev, _page in (("desktop", "app"), ("desktop", "landing"), ("tablet", "app"), ("tablet", "landing"), ("phone", "app"), ("phone", "landing")):
+    _canvas, _lw, _lh, _rule = {
+      ("desktop", "app"): ("2304x1440", 1440, 900, "A web app with a 240-280 px sidebar, 56-64 px top bar with search and account, page header with actions, KPI cards or table."),
+      ("desktop", "landing"): ("2304x1440", 1440, 900, "A landing page with header nav (logo, links, CTA), hero headline, one-line value proposition and primary CTA visible, then the start of social proof/features."),
+      ("tablet", "app"): ("1536x2048", 768, 1024, "Responsive tablet app with 44 px touch targets and navigation suited to this breakpoint."),
+      ("tablet", "landing"): ("1536x2048", 768, 1024, "Responsive tablet landing page with navigation and 44 px touch targets."),
+      ("phone", "app"): ("1152x2496", 390, 844, "Responsive mobile web app with hamburger or bottom navigation and 44 px touch targets."),
+      ("phone", "landing"): ("1152x2496", 390, 844, "Responsive mobile landing page with stacked hero, visible CTA and 44 px touch targets."),
+    }[(_dev, _page)]
+    if _dev == "desktop":
+        _rule = "Form factor: Web " + _rule + " At a 1440x900 desktop viewport, first screenful only, flat, no browser window, address bar or device. Content in a centred 1200-1280 px container on a 12-column grid."
+    DEVICES[("web", _dev, _page)] = _device(_canvas, _lw, _lh, 24 if _dev == "desktop" else 44, None,
+        "wide desktop viewport about 1.6:1" if _dev == "desktop" else ("tablet portrait viewport" if _dev == "tablet" else "tall mobile viewport"),
+        "no browser chrome or device frame", "semantic responsive web navigation, forms and content", "WCAG target size; visible focus and hover",
+        _rule, _WEB_CHECKS)
+
+DEVICE_VALID = {"android": {"phone", "tablet", "foldable", "desktop"}, "ios": {"phone", "tablet"},
+                "web": {"phone", "tablet", "desktop"}, "macos": {"desktop"}, "windows": {"desktop"}, "linux": {"desktop"}}
+
+
+def _device_record(platform, device=None, orientation=None, posture=None, page=None):
+    if not platform:
+        return None
+    default = "desktop" if platform in ("web", "macos", "windows", "linux") else "phone"
+    device = device or default
+    allowed = DEVICE_VALID.get(platform, {"phone"})
+    if device not in allowed:
+        raise ValueError(f"{platform} supports {', '.join(sorted(allowed))}")
+    if orientation and device != "tablet":
+        raise ValueError("--orientation applies to --device tablet (portrait|landscape)")
+    if posture and device != "foldable":
+        raise ValueError("--posture applies to --device foldable (flat|tabletop|folded)")
+    if page and platform != "web":
+        raise ValueError("--page applies to --platform web (app|landing)")
+    if device == "tablet":
+        variant = orientation or ("landscape" if platform == "android" else "landscape")
+    elif device == "foldable":
+        variant = posture or "flat"
+    elif platform == "web":
+        variant = page or "app"
+    else:
+        variant = "default"
+    key = (platform, device, variant)
+    if key not in DEVICES:
+        valid = sorted(k[2] for k in DEVICES if k[:2] == key[:2])
+        raise ValueError(f"{platform} {device} supports {', '.join(valid)}")
+    return DEVICES[key]
 
 PLATFORM_RULE = ("Target platform: {label}. Build the screen from this platform's native components wherever one fits: "
                  "{components}. Show the {system_ui}. Metrics: {metrics}. Typography: {type}. Icons: {icons}. "
@@ -84,6 +204,9 @@ def _design_meta(path):
                 print(f"  ! ignoring unreadable {f}: {e}")
                 return {}
             meta = meta if isinstance(meta, dict) else {}
+            per_screen = meta.get("screens", {}).get(Path(path).name) if isinstance(meta.get("screens"), dict) else None
+            if isinstance(per_screen, dict):
+                meta = dict(meta, **per_screen)
             if meta.get("platform") is not None and meta["platform"] not in PLATFORMS:
                 print(f"  ! {f}: unknown platform {meta.pop('platform')!r} ignored (use {', '.join(PLATFORMS)})")
             return meta
@@ -102,7 +225,7 @@ STYLE_REF_PROMPT = ("The attached image is an APPROVED screen of this app. Desig
                     "sections, cards or copy: compose a new layout for this screen's purpose, with new content. "
                     "Flat, pixel-crisp screen render at 1:1, no device frame. Real, legible UI text.")
 
-CRITIQUE_PROMPT = """Do design QA on this app UI mockup ({W}x{H} px; the screen is {dp}dp wide, so 1dp = {k:.2f}px;
+CRITIQUE_PROMPT = """Do design QA on this app UI mockup ({W}x{H} px; the screen is {dp} logical units wide, so 1 unit = {k:.2f}px;
 target platform: {platform}). It will be built in code. Report only real defects a developer or user would hit, most
 severe first:
 - text: every string that is garbled, misspelled, nonsense, truncated or oddly cased (quote it exactly).
@@ -110,12 +233,13 @@ severe first:
 - icons: mixed icon styles (outline vs filled, stroke weight, corners), ambiguous or malformed glyphs.
 - contrast/accessibility: text or icons below WCAG AA (4.5:1 body, 3:1 large text and icons), text illegibly small
   RELATIVE to the rest of the screen (not absolute sizes: the drawing scale is inexact and is calibrated later),
-  controls that cannot get a {touch}dp touch target (a smaller visible pill or icon with room around it is fine).
+  controls that cannot get a {touch} logical-unit touch target (a smaller visible pill or icon with room around it is fine).
 - overlap: a floating element (FAB, snackbar, sheet, badge, mini player) covering text, numbers, list rows or
   artwork; elements colliding, or hidden under the navigation bar or system bars. High when it hides content.
 - platform: {platform} guideline problems (navigation pattern, tab count, safe areas, standard controls), and system
   UI that belongs to another platform (e.g. an iOS "9:41" status bar or Dynamic Island on Android, Android status
   icons or a gesture pill on iOS).
+- adaptivity: {device_rule}
 - implementability: what code can't build cleanly (text baked into artwork, impossible overlaps, inconsistent radii,
   content cut off).{ref_rule}
 Report each root cause ONCE: group repeated instances (e.g. several labels with the same size problem) into one
@@ -128,12 +252,18 @@ CRITIQUE_REF_RULE = """
 - consistency: the SECOND image is an approved screen of the same app. Flag differences in app name, navigation
   items/icons, typefaces, palette and component styling (bbox refers to the first image)."""
 
+ADAPT_PROMPT = ("The attached image is the approved screen of this app and style reference. Create the SAME screen for a "
+                "different form factor: {device_rule} Keep the same app name, navigation destinations, icons, palette, "
+                "type and dataset. Recompose for this form factor (phone list -> tablet list-detail; bottom bar -> rail/sidebar; "
+                "feed -> adaptive grid; detail -> 70/30 supporting pane; web hero -> stacked mobile hero). Preserve the same "
+                "information architecture and data, not a scaled copy. {prompt} Render a distinct responsive composition.")
+
 ISSUE_ITEM = {"type": "object", "additionalProperties": False,
               "required": ["severity", "category", "bbox", "problem", "edit"],
-              "properties": {
+                  "properties": {
                   "severity": {"type": "string", "enum": ["high", "medium", "low"]},
                   "category": {"type": "string", "enum": ["text", "alignment", "icons", "contrast", "accessibility",
-                                                          "overlap", "platform", "implementability", "consistency"]},
+                                                          "overlap", "platform", "adaptivity", "implementability", "consistency"]},
                   "bbox": {"type": "object", "additionalProperties": False, "required": ["x", "y", "w", "h"],
                            "properties": {k: {"type": "integer"} for k in "xywh"}},
                   "problem": {"type": "string"}, "edit": {"type": "string"}}}
@@ -190,6 +320,7 @@ artwork that sits behind UI (kind "background"). Rules:
 - Exclude plain text, solid/gradient fills, simple shapes, dividers, shadows and standard containers code can draw.
 - Exclude system UI the OS draws: status bar (time, wifi, signal, battery, notification icons), Dynamic Island,
   home indicator, gesture handle, system navigation buttons.
+- Exclude window chrome (traffic lights, caption buttons, title bar), taskbar, Dock and browser chrome.
 - One entry per distinct graphic. Identical repeats (same icon used twice) appear once.
 - bbox is TIGHT around the graphic itself in this image's pixels (exclude any circle/card behind an icon unless that
   backdrop is part of the artwork).

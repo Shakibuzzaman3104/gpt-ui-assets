@@ -4,14 +4,19 @@
 
 def cmd_doctor(a):
     c = _config()
+    api_ready, cli_ready, selected, reason = _backend_status()
+    print(f"backend     : {selected} (auto: {reason})" if c["backend"] == "auto" else f"backend     : {selected}")
+    print(f"  {'✓' if api_ready else '✗'} API backend: " + ("API key set" if api_ready else "set GPTKIT_API_KEY in ~/.config/gptkit/env (chmod 600) or run `setup`"))
+    print(f"  {'✓' if cli_ready else '✗'} Local CLI: " + ("Codex installed and logged in" if cli_ready else "npm i -g @openai/codex && codex login"))
     print(f"config file : {c['config_path']} ({'found' if Path(c['config_path']).exists() else 'not found'})")
     print(f"base url    : {c['base']}")
     print(f"api key     : {'set' if c['key'] else 'MISSING'}")
     print(f"image model : {c['image_model']}" + (" (pinned)" if c["image_model_pinned"] else
           f" (default; auto-routed per task: concept {image_chain('concept')[0]}, precise {image_chain('precise')[0]}, first listed wins)"))
-    print(f"text model  : {c['text_model']}")
+    text_model = c["text_model"] or pick_text_model()
+    print(f"text model  : {text_model}")
     today = _today()
-    for label, mid in (("image", c["image_model"]), ("text", c["text_model"])):
+    for label, mid in (("image", c["image_model"]), ("text", text_model)):
         retirement = RETIREMENTS.get(mid)
         if retirement:
             days = (date.fromisoformat(retirement[0]) - date.fromisoformat(today)).days
@@ -69,7 +74,10 @@ def cmd_doctor(a):
         gf_line = f"not cached: fonts/compare need {GF_METADATA} once (7-day cache)"
     print(f"fonts cache : {gf_line}")
     if not c["key"]:
-        sys.exit(1)
+        if not cli_ready:
+            print("set GPTKIT_API_KEY in ~/.config/gptkit/env (chmod 600) or run `setup`")
+            sys.exit(1)
+        return
     base, headers = _auth()
     try:
         r = requests.get(base + "/models", headers=headers, timeout=30)
@@ -78,7 +86,7 @@ def cmd_doctor(a):
     except Exception as e:
         sys.exit(f"models      : request failed ({_redact(e)})")
     print(f"models      : {len(ids)} available")
-    for label, mid, like in (("image", c["image_model"], lambda i: "image" in i), ("text", c["text_model"], _is_text_model)):
+    for label, mid, like in (("image", c["image_model"], lambda i: "image" in i), ("text", text_model, _is_text_model)):
         if mid in ids:
             print(f"  {label:5s} {mid}: ok")
         else:

@@ -1,4 +1,5 @@
 """SVG -> VectorDrawable and 24-grid normalisation checks. Run: python3 tests/test_svg.py (or pytest)."""
+import os
 import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -6,6 +7,7 @@ from pathlib import Path
 HERE = Path(__file__).parent
 sys.path.insert(0, str(HERE.parent / "scripts"))
 import gptkit as K  # noqa: E402
+os.environ.setdefault("GPTKIT_CODEX", "none")  # the offline tests never reach a real Codex CLI
 
 FIX = HERE / "svg"
 FX = FIX / "fx"  # real-world edge cases: converted individually, not part of the round-trip corpus

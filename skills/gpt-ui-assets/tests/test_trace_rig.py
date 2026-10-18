@@ -1,5 +1,6 @@
 """Offline checks for trace / rig / animate (no API). Run: python3 skills/gpt-ui-assets/tests/test_trace_rig.py"""
 import json
+import os
 import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -8,6 +9,7 @@ import numpy as np
 from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+os.environ.setdefault("GPTKIT_CODEX", "none")  # the offline tests never reach a real Codex CLI
 import gptkit as g  # noqa: E402
 
 

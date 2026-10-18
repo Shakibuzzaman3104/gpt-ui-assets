@@ -3,6 +3,7 @@ import argparse
 import contextlib
 import io
 import json
+import os
 import sys
 import tempfile
 from pathlib import Path
@@ -12,6 +13,7 @@ from PIL import Image, ImageDraw
 HERE = Path(__file__).parent
 sys.path.insert(0, str(HERE.parent / "scripts"))
 import gptkit as K  # noqa: E402
+os.environ.setdefault("GPTKIT_CODEX", "none")  # the offline tests never reach a real Codex CLI
 
 W, H = 400, 600
 
@@ -272,7 +274,7 @@ def _png(size, color="white"):
 def _mockup_args(td, **kw):
     a = argparse.Namespace(prompt="habit tracker", out=str(Path(td) / "out"), name="mockup", size="1024x1536", variants=1,
                            edit=None, raw=False, style_ref=None, platform="android", model=None, no_critique=True,
-                           no_house_style=False)
+                           no_house_style=False, device=None, orientation=None, posture=None, page=None, set=None, anchor=None)
     vars(a).update(kw)
     return a
 
@@ -338,7 +340,8 @@ def test_mockup_wrong_aspect_warns():
         assert code == 0 and len(calls) == 2, (out, calls)
         assert "! variant 1: backend returned 1536x1024 instead of the requested 1024x1536 aspect after 2 attempts" in out, out
         assert (Path(td) / "out" / "mockup_v1.png").exists()
-        assert json.loads((Path(td) / "out" / "design.json").read_text()) == {"platform": "android", "screen_dp": 412}
+        written = json.loads((Path(td) / "out" / "design.json").read_text())
+        assert written["platform"] == "android" and written["device"] == "phone" and written["screen_dp"] == 412
         calls.clear()
         with patched(generate=lambda p, size="1024x1024", **k_: (calls.append(size), (_png((1024, 1536)), {"quality": "high", "size": size}))[1]):
             code, out = run(K.cmd_mockup, _mockup_args(td))
@@ -427,7 +430,7 @@ def test_mockup_default_canvas_is_phone():
         code, out = run(K.cmd_mockup, _mockup_args(td, size=None))
         assert code == 0 and sizes == [K.PHONE_SIZE] and "aspect=ok" in out, (out, sizes)
         code, out = run(K.cmd_mockup, _mockup_args(td, size=None, platform="web", name="w"))
-        assert code == 0 and sizes[-1] == "1536x1024", (out, sizes)
+        assert code == 0 and sizes[-1] == "2304x1440", (out, sizes)
     assert abs(K._ratio(K.PHONE_SIZE) - 9 / 19.5) < 1e-3
     assert K._canvas_size(803, 1958) == K.PHONE_SIZE and K._canvas_size(1024, 1536) == "1024x1536"
     assert K._canvas_size(1536, 1024) == "1536x1024"

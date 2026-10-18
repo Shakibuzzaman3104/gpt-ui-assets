@@ -31,6 +31,25 @@ python3 $K critique design/profile/mockup_v1.png --style-ref design/home/mockup_
     then fits it locally: rows are removed from, or repeated inside, the flat gaps between sections, so nothing is
     stretched. The untouched render is kept as `<name>_vN_raw.png`. Each output line ends `aspect=ok`,
     `aspect=fitted ...` or `aspect=OFF (...)`. Fitting stops at 15% of the height; an `OFF` variant needs a re-run.
+
+## Form factors
+
+`--device` chooses the logical device layout as well as the image canvas. Android supports phone, tablet, foldable and
+desktop; iOS supports phone and iPad; web supports phone, tablet and desktop; macOS, Windows and Linux use desktop.
+The default is phone for Android/iOS and desktop for web and desktop operating systems. Tablets default to landscape;
+foldables default to flat; web defaults to an app page. `--orientation portrait` selects a portrait tablet, while
+`--posture tabletop|folded` selects the corresponding foldable layout and `--page landing` selects a web landing page.
+
+```bash
+python3 $K mockup "inbox with unread counts and message preview" --platform android --device tablet --out design/inbox
+python3 $K mockup "media controls" --platform android --device foldable --posture tabletop --out design/player
+python3 $K mockup "team dashboard" --platform web --device desktop --page app --out design/dashboard
+python3 $K mockup "inbox" --platform android --set tablet,desktop --anchor design/home/approved.png --out design/inbox
+```
+
+The canvas and logical dimensions are stored in `design.json`, so critique and later measurement use the selected
+device width (including web's 1440 px desktop viewport). Foldable aspect fitting is disabled to preserve the hinge
+position. A set render writes `<name>_<device>.png` for each device and records the anchor and files in `set.json`.
 - **House style:** every `mockup` and `--style-ref` prompt carries the house art direction: clean, decluttered, modern;
   one focal point and one accent; artwork only where it carries meaning (hero, empty state, onboarding); real content,
   no ads or promos unless the brief asks for them. `--edit` does not add it (an edit changes only what it names).
