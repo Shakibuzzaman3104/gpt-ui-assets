@@ -15,6 +15,7 @@ HERE = Path(__file__).parent
 KIT = HERE.parent / "scripts" / "gptkit.py"
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 os.environ.setdefault("GPTKIT_CODEX", "none")  # the offline tests never reach a real Codex CLI
+os.environ.setdefault("GPTKIT_LEDGER", "off")  # nor append mocked calls to the user's cost ledger
 import gptkit as gk  # noqa: E402
 
 

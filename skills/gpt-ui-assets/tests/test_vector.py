@@ -16,6 +16,7 @@ from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 os.environ.setdefault("GPTKIT_CODEX", "none")  # the offline tests never reach a real Codex CLI
+os.environ.setdefault("GPTKIT_LEDGER", "off")  # nor append mocked calls to the user's cost ledger
 import gptkit as gk  # noqa: E402
 
 HEART = ("M22 40.5 8.2 27.1C3.9 22.8 1.75 19.2 1.75 14.1 1.75 7.6 6.1 3.5 11.7 3.5 16.1 3.5 19.4 6.2 22 9.7 "

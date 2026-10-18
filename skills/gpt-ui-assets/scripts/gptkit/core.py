@@ -106,6 +106,11 @@ def _plan(image_calls=0, text_calls=0, model=None, *, image_model=None, task="co
     reference (edits) and ~300 prompt tokens; rough by design, it is meant to catch a 10x surprise, not to bill."""
     if not image_calls and not text_calls:
         return 0.0
+    if _cli_backend_likely():
+        parts = ([f"~{image_calls} image_gen call{'s' if image_calls != 1 else ''}"] if image_calls else []) + \
+                ([f"{text_calls} text call{'s' if text_calls != 1 else ''}"] if text_calls else [])
+        print("plan: " + " + ".join(parts) + " on the Codex CLI (ChatGPT plan quota, no API cost)")
+        return 0.0
     text_model = model or pick_text_model()
     if image_calls:
         image_model = pick_image_model(image_model, task, background)
@@ -141,6 +146,13 @@ def _plan(image_calls=0, text_calls=0, model=None, *, image_model=None, task="co
                      "--candidates/--variants/--only (nothing was called)")
     print("plan: " + detail)
     return estimate
+
+
+def _cli_backend_likely():
+    """True when paid work will run on the Codex CLI, without exiting when no backend is ready (the call itself does)."""
+    from .codex_cli import _codex_readiness  # deferred: codex_cli imports this module
+    c = _config()
+    return c.get("backend") == "cli" or (c.get("backend", "auto") == "auto" and not c.get("key") and _codex_readiness())
 
 
 # ---------------------------------------------------------------- shared helpers (plan contract C1; owner g1-api-core)

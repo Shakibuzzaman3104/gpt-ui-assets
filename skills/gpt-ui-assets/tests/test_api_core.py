@@ -18,6 +18,7 @@ SCRIPTS = HERE.parent / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 import gptkit as K  # noqa: E402
 os.environ.setdefault("GPTKIT_CODEX", "none")  # the offline tests never reach a real Codex CLI
+os.environ.setdefault("GPTKIT_LEDGER", "off")  # nor append mocked calls to the user's cost ledger
 
 FIX = HERE / "api_core"
 MODERATION = {"error": {"message": "Your request was rejected by the safety system.", "type": "user_error",

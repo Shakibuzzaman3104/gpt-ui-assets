@@ -499,7 +499,24 @@ def critique(img, dp=390, platform="android", style_ref=None, note=None, device_
         x["id"] = i + 1
         if x["category"] == "contrast" and x["bbox"]["w"] > 2 and x["bbox"]["h"] > 2:
             x["measured_contrast"] = measured_contrast(img, x["bbox"])
+            _weigh_contrast(x)
     return issues
+
+
+def _contrast_target(issue):
+    """The WCAG ratio the issue claims is missed: 3:1 for graphics and large text when it says so, else 4.5:1."""
+    text = f"{issue.get('problem', '')} {issue.get('edit', '')}"
+    return 3.0 if re.search(r"\b3(\.0)?\s*:\s*1\b", text) and not re.search(r"\b4\.5\s*:\s*1\b", text) else 4.5
+
+
+def _weigh_contrast(issue):
+    """A contrast issue whose measured ratio already meets its target drops to low: the estimate (perimeter background
+    vs the most distinct 5% of pixels) can miss a thin element, so it is kept and flagged for a look, not deleted."""
+    target = _contrast_target(issue)
+    if issue["measured_contrast"] >= target:
+        issue["measured_passes"] = target
+        if issue.get("severity") in ("high", "medium"):
+            issue["severity"] = "low"
 
 
 def _clean_issues(res, key, img):
@@ -562,6 +579,8 @@ def _issue_overlay(img, issues, out):
 def _print_issues(issues):
     for x in issues:
         mc = f"  [measured {x['measured_contrast']}:1]" if "measured_contrast" in x else ""
+        if "measured_passes" in x:
+            mc = f"  [measured {x['measured_contrast']}:1, meets {x['measured_passes']:g}:1 here; check by eye]"
         print(f"  {x.get('id', ''):>3}. {str(x.get('severity')):6s} {str(x.get('category', '')):16s} {x.get('problem', '')}"
               f"{mc}\n      edit: {x.get('edit', '')}")
 

@@ -8,6 +8,7 @@ HERE = Path(__file__).parent
 sys.path.insert(0, str(HERE.parent / "scripts"))
 import gptkit as K  # noqa: E402
 os.environ.setdefault("GPTKIT_CODEX", "none")  # the offline tests never reach a real Codex CLI
+os.environ.setdefault("GPTKIT_LEDGER", "off")  # nor append mocked calls to the user's cost ledger
 
 FIX = HERE / "svg"
 FX = FIX / "fx"  # real-world edge cases: converted individually, not part of the round-trip corpus

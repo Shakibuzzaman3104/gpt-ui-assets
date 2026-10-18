@@ -20,6 +20,7 @@ SKILL_DOCS = [SKILL_MD] + sorted(p for p in (ROOT / "references").glob("*.md") i
 
 sys.path.insert(0, str(ROOT / "scripts"))
 os.environ.setdefault("GPTKIT_CODEX", "none")  # the offline tests never reach a real Codex CLI
+os.environ.setdefault("GPTKIT_LEDGER", "off")  # nor append mocked calls to the user's cost ledger
 import gptkit as K  # noqa: E402
 
 

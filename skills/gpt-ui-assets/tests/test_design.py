@@ -14,6 +14,7 @@ HERE = Path(__file__).parent
 sys.path.insert(0, str(HERE.parent / "scripts"))
 import gptkit as K  # noqa: E402
 os.environ.setdefault("GPTKIT_CODEX", "none")  # the offline tests never reach a real Codex CLI
+os.environ.setdefault("GPTKIT_LEDGER", "off")  # nor append mocked calls to the user's cost ledger
 
 W, H = 400, 600
 
@@ -149,7 +150,9 @@ def test_critique_overlay_hostile_bboxes():
         assert got[2]["bbox"] == {"x": 280, "y": 460, "w": 120, "h": 140} and "measured_contrast" in got[2]
         assert "dropped an issue whose bbox" in out and "way outside" in out, out
         assert "unknown issue severity 'critical'" in out, out
-        assert log["rounds"][0]["weight"] == 3 + 2 + 2
+        # the contrast issue's box measures well above 4.5:1 on this mock, so it drops to low (weight 1)
+        assert got[2]["measured_contrast"] >= 4.5 and got[2]["severity"] == "low", got[2]
+        assert log["rounds"][0]["weight"] == 3 + 2 + 1
         # the overlay helper itself tolerates an inverted box and an unknown severity (older logs)
         K._issue_overlay(Image.open(mock), [{"id": 1, "severity": "urgent", "bbox": {"x": 50, "y": 50, "w": -20, "h": -20}}],
                          Path(td) / "ov.png")
@@ -561,6 +564,23 @@ def test_mockup_falls_back_when_size_is_rejected():
         else:
             raise AssertionError("a non-size 400 must not be swallowed")
 
+
+
+def test_contrast_issue_that_measures_passing_drops_to_low():
+    graphic = {"problem": "The pale bars fall below 3:1 contrast", "edit": "", "severity": "medium", "measured_contrast": 3.7}
+    K._weigh_contrast(graphic)
+    assert graphic["severity"] == "low" and graphic["measured_passes"] == 3.0
+    text = {"problem": "Labels fall below 4.5:1", "edit": "", "severity": "medium", "measured_contrast": 3.7}
+    K._weigh_contrast(text)
+    assert text["severity"] == "medium" and "measured_passes" not in text
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        K._print_issues([dict(graphic, id=1, category="contrast")])
+    assert "meets 3:1 here; check by eye" in out.getvalue()
+
+
+def test_house_style_asks_for_an_original_product_name():
+    assert "invent an original product name" in K.HOUSE_STYLE and "real company" in K.HOUSE_STYLE
 
 if __name__ == "__main__":
     for k, fn in list(globals().items()):

@@ -14,6 +14,7 @@ from PIL import Image
 sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
 import gptkit as K  # noqa: E402
 os.environ["GPTKIT_CODEX"] = "codex"  # subprocess.run is faked below; argv[0] is the default binary name
+os.environ.setdefault("GPTKIT_LEDGER", "off")  # never append mocked calls to the user's cost ledger
 
 
 @contextlib.contextmanager
@@ -225,6 +226,14 @@ def run_tests():
             K._listed_models, K.requests.post = saved_list, saved_post
 
 
+
+def test_plan_on_the_cli_backend_is_quota_not_money():
+    with env(GPTKIT_CONFIG="/nonexistent", GPTKIT_BACKEND="cli", GPTKIT_BUDGET_USD="0.01"):
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            assert K._plan(3, 1, image_model="gpt-image-2") == 0.0
+    assert "Codex CLI (ChatGPT plan quota, no API cost)" in out.getvalue() and "$" not in out.getvalue()
+
 if __name__ == "__main__":
     run_tests()
+    test_plan_on_the_cli_backend_is_quota_not_money()
     print("ok")

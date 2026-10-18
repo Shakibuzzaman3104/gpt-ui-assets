@@ -17,6 +17,7 @@ from PIL import Image, ImageDraw
 K = Path(__file__).resolve().parents[1] / "scripts" / "gptkit.py"
 sys.path.insert(0, str(K.parent))
 os.environ.setdefault("GPTKIT_CODEX", "none")  # the offline tests never reach a real Codex CLI
+os.environ.setdefault("GPTKIT_LEDGER", "off")  # nor append mocked calls to the user's cost ledger
 import gptkit as g  # noqa: E402
 
 KEYED = {"base": "http://mock.invalid/v1", "key": "sk-test", "image_model": "gpt-image-2", "image_model_pinned": True,

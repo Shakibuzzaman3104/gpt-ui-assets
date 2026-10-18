@@ -16,7 +16,8 @@ HOUSE_STYLE = ("House style (unless the brief says otherwise): a clean, declutte
                "clear focal point and hierarchy, only the elements this screen needs, one accent colour, no ornamental "
                "noise. Add illustration or artwork only where it carries meaning or warmth (a hero, an empty state, "
                "onboarding), in one consistent style. Show real product content only: no ads, ad banners, promos or "
-               "placeholder marketing unless the brief asks for them.")
+               "placeholder marketing unless the brief asks for them. If the brief names no product, invent an original "
+               "product name; never use a real company's or app's name, logo or brand mark.")
 
 
 def _house_style(skip=False):
