@@ -18,8 +18,8 @@ K = Path(__file__).resolve().parents[1] / "scripts" / "gptkit.py"
 sys.path.insert(0, str(K.parent))
 import gptkit as g  # noqa: E402
 
-KEYED = {"base": "http://mock.invalid/v1", "key": "sk-test", "image_model": "gpt-image-2", "text_model": "gpt-6",
-         "config_path": "-"}
+KEYED = {"base": "http://mock.invalid/v1", "key": "sk-test", "image_model": "gpt-image-2", "image_model_pinned": True,
+         "text_model": "gpt-6", "retries": 0, "debug": False, "moderation": None, "config_path": "-"}
 CIRCLE = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 108 108"><circle cx="54" cy="54" r="24" fill="#000"/></svg>'
 
 
