@@ -99,35 +99,6 @@ def _dominant(rgb):
     return px[key == np.bincount(key).argmax()].mean(0)
 
 
-def _screen_background(img):
-    """Hex of a UI screen's background: the dominant colour among flat pixels (photos and gradients don't count)."""
-    rgb = np.asarray(img.convert("RGB"), np.float64)
-    H = rgb.shape[0]
-    rgb = rgb[int(0.06 * H):int(0.9 * H)]  # status bar and navigation stay out
-    g = rgb.mean(2)
-    ii, ii2 = (np.pad(x, ((1, 0), (1, 0))).cumsum(0).cumsum(1) for x in (g, g * g))
-    r = 3
-    box = lambda s: (s[2 * r + 1:, 2 * r + 1:] - s[:-2 * r - 1, 2 * r + 1:] - s[2 * r + 1:, :-2 * r - 1]
-                     + s[:-2 * r - 1, :-2 * r - 1]) / (2 * r + 1) ** 2
-    flat = np.zeros(g.shape, bool)
-    flat[r:-r, r:-r] = box(ii2) - box(ii) ** 2 < 20
-    px = rgb[::3, ::3][flat[::3, ::3]]
-    return _to_hex(_dominant(px)) if len(px) else None
-
-
-def _fill_colour(img, boxes):
-    """Hex of the most common saturated colour inside the given pixel boxes, or None when they hold too little colour."""
-    px = [np.asarray(img.convert("RGB").crop((b["x"], b["y"], b["x"] + b["w"], b["y"] + b["h"])), int).reshape(-1, 3)
-          for b in boxes if b["w"] > 0 and b["h"] > 0]
-    px = np.concatenate(px) if px else np.zeros((0, 3), int)
-    lab = _lab_arr(px.astype(np.uint8))
-    px = px[np.hypot(lab[:, 1], lab[:, 2]) > 20]
-    if len(px) < 50:
-        return None
-    key = (px[:, 0] >> 3) * 1024 + (px[:, 1] >> 3) * 32 + (px[:, 2] >> 3)
-    return _to_hex(np.median(px[key == np.bincount(key).argmax()], 0))
-
-
 def _d2c_runs(flags, merge=1):
     """[start, end) runs of True, joining runs separated by gaps shorter than `merge`."""
     idx = np.flatnonzero(np.diff(np.concatenate([[0], np.asarray(flags, dtype=np.int8), [0]])))

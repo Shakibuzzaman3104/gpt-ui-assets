@@ -350,17 +350,6 @@ VERIFY_SCHEMA = {"type": "object", "additionalProperties": False, "required": ["
                                                                           "fixed": {"type": "boolean"}}}},
                      "new_issues": {"type": "array", "items": ISSUE_ITEM}}}
 
-ACCENT_PROMPT = ("This UI screen is {W}x{H} px. Give the bounding boxes (pixels) of up to 3 elements filled with the app's "
-                 "accent colour (the brand or action colour): the primary filled button, the active navigation indicator, a "
-                 "selected chip or the send/primary icon button. Only elements whose fill is the accent; not photos, "
-                 "illustrations, status colours (red/green gains and losses) or category tags. An empty list if the UI has no "
-                 "accent colour.")
-ACCENT_SCHEMA = {"type": "object", "additionalProperties": False, "required": ["elements"],
-                 "properties": {"elements": {"type": "array", "items": {
-                     "type": "object", "additionalProperties": False, "required": ["what", "x", "y", "w", "h"],
-                     "properties": {"what": {"type": "string"}, "x": {"type": "integer"}, "y": {"type": "integer"},
-                                    "w": {"type": "integer"}, "h": {"type": "integer"}}}}}}
-
 SEVERITY = {"high": 3, "medium": 2, "low": 1}
 
 

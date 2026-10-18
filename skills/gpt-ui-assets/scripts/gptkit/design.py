@@ -18,7 +18,7 @@ from .core import (
 )
 from .imaging import _mean_diff, _rgba, ref_crop
 from .prompts import (
-    ACCENT_HUES, ACCENT_PROMPT, ACCENT_SCHEMA, ADAPT_PROMPT, ASSET_PROMPT, BACKGROUND_PROMPT, CANDIDATE_FOCUS, CRITIQUE_PROMPT,
+    ACCENT_HUES, ADAPT_PROMPT, ASSET_PROMPT, BACKGROUND_PROMPT, CANDIDATE_FOCUS, CRITIQUE_PROMPT,
     CRITIQUE_REF_RULE, CRITIQUE_SCHEMA, DEVICES, MANIFEST_PROMPT, MANIFEST_SCHEMA, MOCKUP_WRAP, PLATFORMS, SEVERITY,
     DIRECTIONS_PROMPT, DIRECTIONS_SCHEMA, SPEC_SCHEMA, STYLE_FAMILIES, STYLE_REF_PROMPT, VERIFY_SCHEMA,
     _aspect_words, _design_meta, _device_record, _direction_text, _house_style, _platform_rule,
@@ -346,11 +346,10 @@ def cmd_mockup(a):
     else:
         size = a.size or (record["canvas"] if record else _default_size(platform))
     qa = not a.no_critique
-    _plan(a.variants, (a.variants if qa else 0) + (ref_png is not None) + directions, image_model=a.model, size=size,
+    _plan(a.variants, (a.variants if qa else 0) + directions, image_model=a.model, size=size,
           edits=bool(a.edit or a.style_ref))
     rule = _platform_rule(platform)
     house = _house_style(a.no_house_style)
-    colours = _reference_colours(ref) if ref is not None else ""
     dirs = _art_directions(platform or "app", a.variants, a.prompt) if directions else None
 
     def prompt_for(sz, i=0):
@@ -361,9 +360,9 @@ def cmd_mockup(a):
             return a.prompt
         surface = "web page viewport" if platform == "web" else ("app window" if device_arg == "desktop" or platform in ("macos", "windows", "linux") else "app screen")
         if anchor_path and record:
-            base = ADAPT_PROMPT.format(prompt=a.prompt + colours, aspect=asp, device_rule=record["rule"])
+            base = ADAPT_PROMPT.format(prompt=a.prompt, aspect=asp, device_rule=record["rule"])
         else:
-            base = (STYLE_REF_PROMPT if ref_png is not None else MOCKUP_WRAP).format(prompt=a.prompt + colours, aspect=asp,
+            base = (STYLE_REF_PROMPT if ref_png is not None else MOCKUP_WRAP).format(prompt=a.prompt, aspect=asp,
                                                                                     surface=surface)
             if dirs and i < len(dirs["directions"]):
                 base += " " + _direction_text(dirs["directions"][i])
@@ -383,8 +382,11 @@ def cmd_mockup(a):
             f"{a.name}_v{i + 1}.png": {**d, "hue": dirs["hues"][i]} for i, d in enumerate(dirs["directions"])}}
         meta_path.write_text(json.dumps(meta, indent=2))
     elif (out / "design.json").exists():  # a re-render without directions must not keep the old ones on its files
-        meta = json.loads((out / "design.json").read_text())
-        old = (meta.get("directions") or {}).get("variants") or {}
+        try:
+            meta = json.loads((out / "design.json").read_text())
+        except (OSError, ValueError):
+            meta = {}
+        old = (meta.get("directions") or {}).get("variants") or {} if isinstance(meta, dict) else {}
         if any(re.fullmatch(rf"{re.escape(a.name)}_v\d+\.png", k) for k in old):
             meta["directions"]["variants"] = {k: v for k, v in old.items()
                                               if not re.fullmatch(rf"{re.escape(a.name)}_v\d+\.png", k)}
@@ -482,23 +484,6 @@ def _art_directions(platform, n, brief, rng=random):
     for line in lines:
         print(line)
     return {"families": [a for a, _ in fam], "hues": hues, "directions": directions}
-
-
-def _reference_colours(img):
-    """Prompt words carrying the approved screen's measured background and accent. A reference image alone lets the
-    accent drift; vision only locates the accent-filled elements, their colour is measured from the pixels."""
-    from .measure import _fill_colour, _screen_background  # deferred: only needed with a reference
-    bg = _screen_background(img)
-    try:
-        found = ask([ACCENT_PROMPT.format(W=img.width, H=img.height), img.convert("RGB")], ACCENT_SCHEMA, "accent_boxes")
-        boxes = [b for b in (_clip_bbox(e, img.width, img.height) for e in found.get("elements") or []) if b]
-    except (ApiError, AttributeError) as e:
-        print(f"  ! the reference's accent colour was not located ({e}); passing only its background colour")
-        boxes = []
-    accent = _fill_colour(img, boxes)
-    named = [f"background {bg}"] * bool(bg) + [f"accent {accent}"] * bool(accent)
-    return (f" Keep the approved screen's colours ({', '.join(named)}) unless this brief names other colours or a theme."
-            if named else "")
 
 
 def _mockup_qa(paths, platform, ref, record=None):
