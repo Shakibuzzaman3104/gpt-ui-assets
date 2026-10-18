@@ -589,35 +589,8 @@ def _icon_glyph(a, concept, sil_mask, limit, res, work, M):
     return glyph, info
 
 
-def cmd_appicon_build(a):
-    if a.name != _res_name(a.name):
-        sys.exit(f"appicon build: --name {a.name!r} is not a valid Android resource name ([a-z0-9_], starting with a "
-                 f"letter, not a Java keyword); use --name {_res_name(a.name, 'ic_')}")
-    if a.bg_color is not None:
-        if not re.fullmatch(r"#?([0-9a-fA-F]{3}|[0-9a-fA-F]{6})", a.bg_color):
-            sys.exit(f"appicon build: --bg-color must be #RRGGBB or #RGB (got {a.bg_color!r})")
-        a.bg_color = "#" + a.bg_color.lstrip("#").upper()
-    src = _open_image(a.concept, "concept", "the square concept PNG to build from")
-    out = Path(a.out)
-    res, work = out / "android" / "res", out / "work"
-    for p in (res, work, out / "review"):
-        p.mkdir(parents=True, exist_ok=True)
-    N, M = 1024, 1536
-    vp = (M // 6, M // 6, M // 6 + N, M // 6 + N)
-    alpha = ImageStat.Stat(src.getchannel("A"))
-    concept = src.convert("RGB")
-    side = min(concept.size)
-    concept = concept.crop(((concept.width - side) // 2, (concept.height - side) // 2,
-                            (concept.width + side) // 2, (concept.height + side) // 2)).resize((N, N), Image.LANCZOS)
-    C = np.asarray(concept, float)
-    _, resid, coef = _bg_fit(concept)
-    report = {"concept": str(a.concept)}
-    if alpha.mean[0] < 250 or alpha.stddev[0] > 8:
-        msg = (f"concept has transparency (alpha mean {alpha.mean[0]:.0f}, std {alpha.stddev[0]:.0f}): it is flattened onto "
-               "black; appicon build expects the opaque full-bleed concept, not a foreground or background layer")
-        print(f"  ! {msg}")
-        report["warnings"] = [msg]
-
+def _appicon_build_layers(a, concept, coef, resid, res, work, N, M, vp, C, report):
+    """Build the selected background and separate the foreground against it."""
     # background first: the foreground is matted against exactly the background layer that ships
     bgm, bg_ref, report["background"] = _icon_background(a, concept, coef, resid, res, work, N, M)
     report["background"]["resource"] = bg_ref
@@ -658,7 +631,11 @@ def cmd_appicon_build(a):
             fg = _register(api_fg, target)
             report["separation"]["api"] = _sep_metrics(fg, C, B)
     fg.save(work / "foreground_concept_aligned.png")
+    return bgm, bg_ref, B, fg
 
+
+def _appicon_build_android_layers(a, fg, concept, res, work, M, N, report, bgm, bg_ref, B, C):
+    """Fit the foreground to Android's safe zone and write monochrome resources."""
     # safe zone: the concept maps onto the 72dp viewport; shrink the subject only if it leaves the 66dp circle
     limit, shrink = 33 * a.fg_scale, 1.0
     for _ in range(3):
@@ -715,7 +692,12 @@ def cmd_appicon_build(a):
            f'{mono_line}\n</adaptive-icon>\n')
     for n in (a.name, f"{a.name}_round"):
         (res / "mipmap-anydpi-v26" / f"{n}.xml").write_text(xml)
+    return fgm, limit, shrink, sz, monos, mono_ref
 
+
+def _appicon_build_platform_outputs(a, out, res, work, N, M, vp, alpha, concept, report, bgm, fgm, fg,
+                                    shrink, sz, monos, mono_ref):
+    """Write legacy, Play Store, iOS, web and review-sheet icon outputs."""
     # legacy 48dp launcher icons (2dp inset) and the Play Store 512
     comp = bgm.copy()
     comp.alpha_composite(fgm)
@@ -812,6 +794,41 @@ def cmd_appicon_build(a):
     (out / "appicon.json").write_text(json.dumps(report, indent=2))
     print(json.dumps(report, indent=2))
     print(f"-> {res}\n-> {ios}\n-> {web}\nreview sheet -> {sheet_path}")
+
+def cmd_appicon_build(a):
+    if a.name != _res_name(a.name):
+        sys.exit(f"appicon build: --name {a.name!r} is not a valid Android resource name ([a-z0-9_], starting with a "
+                 f"letter, not a Java keyword); use --name {_res_name(a.name, 'ic_')}")
+    if a.bg_color is not None:
+        if not re.fullmatch(r"#?([0-9a-fA-F]{3}|[0-9a-fA-F]{6})", a.bg_color):
+            sys.exit(f"appicon build: --bg-color must be #RRGGBB or #RGB (got {a.bg_color!r})")
+        a.bg_color = "#" + a.bg_color.lstrip("#").upper()
+    src = _open_image(a.concept, "concept", "the square concept PNG to build from")
+    out = Path(a.out)
+    res, work = out / "android" / "res", out / "work"
+    for p in (res, work, out / "review"):
+        p.mkdir(parents=True, exist_ok=True)
+    N, M = 1024, 1536
+    vp = (M // 6, M // 6, M // 6 + N, M // 6 + N)
+    alpha = ImageStat.Stat(src.getchannel("A"))
+    concept = src.convert("RGB")
+    side = min(concept.size)
+    concept = concept.crop(((concept.width - side) // 2, (concept.height - side) // 2,
+                            (concept.width + side) // 2, (concept.height + side) // 2)).resize((N, N), Image.LANCZOS)
+    C = np.asarray(concept, float)
+    _, resid, coef = _bg_fit(concept)
+    report = {"concept": str(a.concept)}
+    if alpha.mean[0] < 250 or alpha.stddev[0] > 8:
+        msg = (f"concept has transparency (alpha mean {alpha.mean[0]:.0f}, std {alpha.stddev[0]:.0f}): it is flattened onto "
+               "black; appicon build expects the opaque full-bleed concept, not a foreground or background layer")
+        print(f"  ! {msg}")
+        report["warnings"] = [msg]
+
+    bgm, bg_ref, B, fg = _appicon_build_layers(a, concept, coef, resid, res, work, N, M, vp, C, report)
+    fgm, limit, shrink, sz, monos, mono_ref = _appicon_build_android_layers(
+        a, fg, concept, res, work, M, N, report, bgm, bg_ref, B, C)
+    _appicon_build_platform_outputs(a, out, res, work, N, M, vp, alpha, concept, report, bgm, fgm, fg,
+                                    shrink, sz, monos, mono_ref)
 
 
 def cmd_pick(a):

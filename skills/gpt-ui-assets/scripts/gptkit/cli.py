@@ -57,11 +57,8 @@ def _color_arg(s):
     return s
 
 
-def build_parser():
-    """Every subcommand and flag, as (parser, subparsers); main() parses with it."""
-    from .codex_cli import _backend_parsers  # deferred: codex_cli imports this module
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    sub = ap.add_subparsers(dest="cmd", required=True)
+def _research_parsers(sub):
+    """Add research parsers to the command line."""
     efforts = ["high", "xhigh", "max"]
     p = sub.add_parser("cost", help="summarise API usage and estimated list-price cost")
     p.add_argument("--since", help="7d, 24h or YYYY-MM-DD")
@@ -89,6 +86,10 @@ def build_parser():
     p.add_argument("--out", help="output dir (default DIR): blueprint.md, blueprint.json, screens.json")
     p.add_argument("--model", default=RESEARCH_MODEL, help=f"reasoning model (default {RESEARCH_MODEL})")
     p.add_argument("--effort", choices=efforts, default="xhigh", help="reasoning effort"); p.set_defaults(fn=cmd_blueprint)
+
+
+def _design_parsers(sub):
+    """Add design parsers to the command line."""
     p = sub.add_parser("doctor", help="check config, API access, models and optional tools (Chrome probe, aapt2 level)")
     p.set_defaults(fn=cmd_doctor)
     p = sub.add_parser("status", help="offline project progress, recorded problems and next commands")
@@ -137,6 +138,10 @@ def build_parser():
     p.add_argument("--recalibrate", action="store_true", help="only redo the px->dp scale of an existing spec (no API)")
     p.add_argument("--model", default=None, help="text/vision model (default GPTKIT_TEXT_MODEL)")
     p.set_defaults(fn=cmd_spec)
+
+
+def _asset_parsers(sub):
+    """Add asset parsers to the command line."""
     p = sub.add_parser("forge", help="redraw png assets from scratch, 1:1, with candidates + scoring")
     p.add_argument("dir", help="project dir with assets.json (from manifest)")
     p.add_argument("--only", help="comma-separated asset names (default: every png-format asset without a final file)")
@@ -180,6 +185,10 @@ def build_parser():
     p.add_argument("--prefix", default="ic_", help="resource name prefix (names are lower-cased to [a-z0-9_])")
     p.add_argument("--no-check", action="store_true", help="skip the render round-trip and aapt2 validation")
     p.set_defaults(fn=cmd_vd)
+
+
+def _animation_parsers(sub):
+    """Add animation parsers to the command line."""
     p = sub.add_parser("frames", help="frame-by-frame animation from a forged asset (moving layer sprite sheet, "
                                       "or --procedural local motion)")
     p.add_argument("dir"); p.add_argument("name"); p.add_argument("--moving", help="part that moves (generated route)")
@@ -270,6 +279,10 @@ def build_parser():
     p.add_argument("--review-frames", type=_pos_int, default=8, help="frames in keys_review.png")
     p.add_argument("--preview-bg", type=_color_arg, default="#1b1d33", help="background colour of keys_review.png and preview.html")
     p.set_defaults(fn=cmd_vectorize)
+
+
+def _export_parsers(sub):
+    """Add image export parsers to the command line."""
     p = sub.add_parser("export", help="export a PNG to android densities / ios imageset / web")
     p.add_argument("file", help="source image (PNG with alpha; any size)"); p.add_argument("--dp", type=_pos_float, required=True, help="width in dp/pt/css px")
     p.add_argument("--hdp", type=_pos_float, help="height in dp/pt/css px (default: keeps the aspect ratio)")
@@ -279,6 +292,10 @@ def build_parser():
     p.add_argument("--format", choices=["webp", "png"], help="android/web file format (default webp; ios is always png)")
     p.add_argument("--quality", type=int, help="WebP quality 0-100; 100 = lossless (default: lossless for <= 256 colours, else 90)")
     p.set_defaults(fn=cmd_export)
+
+
+def _appicon_parsers(sub):
+    """Add app icon parsers to the command line."""
     p = sub.add_parser("appicon", help="app launcher icons: concepts, then Android adaptive / iOS / web icon sets")
     isub = p.add_subparsers(dest="icmd", required=True)
     q = isub.add_parser("concepts", help="square full-bleed icon concepts + mask review sheet")
@@ -314,15 +331,32 @@ def build_parser():
     p.add_argument("dir"); p.add_argument("name", help="asset name from assets.json")
     p.add_argument("candidate", help="N of the tile labelled cN in review/forge_*.png, or a path to any PNG")
     _color_args(p); p.set_defaults(fn=cmd_pick)
+
+
+def _integration_parsers(sub, backend_parsers):
+    """Add design-to-code, hybrid, backend, score, trace and rig parsers."""
     _design_to_code_parsers(sub)
     _hybrid_parsers(sub)
-    _backend_parsers(sub)
+    backend_parsers(sub)
     p = sub.add_parser("score", help="score arbitrary PNG or SVG files against a manifest asset (JSON per file, no API)")
     p.add_argument("dir"); p.add_argument("name", help="asset name from assets.json"); p.add_argument("files", nargs="+")
     p.set_defaults(fn=cmd_score)
     _add_trace_rig_parsers(sub)
-    return ap, sub
 
+
+def build_parser():
+    """Every subcommand and flag, as (parser, subparsers); main() parses with it."""
+    from .codex_cli import _backend_parsers  # deferred: codex_cli imports this module
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    _research_parsers(sub)
+    _design_parsers(sub)
+    _asset_parsers(sub)
+    _animation_parsers(sub)
+    _export_parsers(sub)
+    _appicon_parsers(sub)
+    _integration_parsers(sub, _backend_parsers)
+    return ap, sub
 
 def main(standalone=False, argv=None):
     """The CLI. `standalone` is True when run as a script (gptkit.py), False when called from Python."""

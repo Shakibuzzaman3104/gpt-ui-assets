@@ -123,8 +123,8 @@ def _status_arg(path):
     return shlex.quote(str(path))
 
 
-def _status_scan(base):
-    """Discover bounded project dirs; status never opens images or makes network calls."""
+def _status_scan_directories(base):
+    """Walk the bounded project tree in stable order."""
     base = Path(base).resolve()
     dirs = [base]
     for here, names, files in os.walk(base):
@@ -135,18 +135,277 @@ def _status_scan(base):
             names[:] = []
         dirs.append(p)
     dirs = sorted(set(dirs), key=lambda p: (len(p.parts), str(p)))
-    units = []
-    seen = set()
+    return dirs
+
+
+def _status_scan_build_mockups(dirs):
+    """Index build directories by the approved mockup bytes they contain."""
     # manifest copies the approved mockup into the build dir: matching bytes link a design to its build
     build_mockups = {}
     for d in dirs:
         if (d / "assets.json").exists() and (d / "mockup.png").exists():
             build_mockups.setdefault(_status_sha(d / "mockup.png"), []).append(d)
-    def add(d, kind, label, checks, problems=None, nxt=None):
-        key = (str(d), kind)
-        if key not in seen:
-            seen.add(key)
-            units.append(_status_unit(d, kind, label, checks, problems, nxt))
+    return build_mockups
+
+
+def _status_scan_add(units, seen, d, kind, label, checks, problems=None, nxt=None):
+    """Append a discovered status unit only once per directory and kind."""
+    key = (str(d), kind)
+    if key not in seen:
+        seen.add(key)
+        units.append(_status_unit(d, kind, label, checks, problems, nxt))
+
+
+def _status_scan_project_units(d, children, names, build_mockups, units, seen):
+    """Record research, blueprint, design, critique and hybrid work in one directory."""
+    if {"report.json", "sources.json"} <= names or "findings" in {p.name for p in d.iterdir() if p.is_dir()}:
+        probs, checks = [], []
+        for n in ("report.json", "report.md", "findings", "sources.json"):
+            exists = (d / n).exists()
+            checks.append({"name": n, "status": "done" if exists else "missing"})
+            if n.endswith(".json") and exists:
+                _, err = _status_json(d / n)
+                if err: probs.append(err)
+        nxt = [] if (d / "report.json").exists() else [f"python3 $K research \"<idea>\" --out {_status_arg(d)}"]
+        if (d / "report.json").exists() and not (d / "screens.json").exists() and not (d / "blueprint.md").exists():
+            nxt = [f"python3 $K blueprint {_status_arg(d)}"]
+        _status_scan_add(units, seen, d, "research", d.name, checks, probs, nxt)
+    if "blueprint.md" in names or "screens.json" in names:
+        checks = [{"name": n, "status": "done" if (d / n).exists() else "missing"}
+                  for n in ("blueprint.md", "screens.json")]
+        probs = []
+        for n in ("screens.json",):
+            if (d / n).exists():
+                _, err = _status_json(d / n)
+                if err: probs.append(err)
+        _status_scan_add(units, seen, d, "blueprint", d.name, checks, probs, [] if all(c["status"] == "done" for c in checks)
+            else [f"python3 $K blueprint {_status_arg(d)}"])
+    mockups = [p for p in children if p.suffix.lower() == ".png" and p.name.startswith("mockup")]
+    if (mockups or "design.json" in names) and "assets.json" not in names:  # a build dir keeps its own mockup.png
+        design = d / "design.json"
+        checks = [{"name": "mockup PNGs", "status": "done" if mockups else "missing"},
+                  {"name": "design.json", "status": "done" if design.exists() else "missing"}]
+        probs = []
+        if design.exists():
+            _, err = _status_json(design)
+            if err: probs.append(err)
+        latest = max(mockups, key=lambda p: p.stat().st_mtime) if mockups else None
+        built = [b for m in mockups for b in build_mockups.get(_status_sha(m), [])]
+        if built:
+            checks.append({"name": "manifest (" + ", ".join(_status_arg(b) for b in built) + ")", "status": "done"})
+        nxt = [f"python3 $K mockup \"<brief>\" --out {_status_arg(d)}"] if not latest else [] if built else \
+            [f"once the user approves a variant: python3 $K manifest {_status_arg(latest)} --out <build dir>"]
+        _status_scan_add(units, seen, d, "design", d.name, checks, probs, nxt)
+    critiques = [p for p in children if p.name.endswith("_critique.json")]
+    for p in critiques:
+        data, err = _status_json(p)
+        probs = [err] if err else []
+        issues = []
+        if isinstance(data, dict):
+            for rnd in data.get("rounds", []):
+                if isinstance(rnd, dict):
+                    for batch in (rnd.get("issues"), rnd.get("new_issues")):
+                        if isinstance(batch, list): issues.extend(x for x in batch if isinstance(x, dict))
+        high = sum(1 for x in issues if isinstance(x, dict) and x.get("severity") == "high")
+        if high: probs.append(f"{high} high-severity critique issue(s)")
+        _status_scan_add(units, seen, d, "critique", p.stem, [{"name": p.name, "status": "done"}], probs, [])
+    if "stage.json" in names or "material.json" in names or "stage" in names:
+        probs, checks = [], []
+        for n in ("material.json", "stage.json", "frames", "motion_sheet.png"):
+            exists = (d / n).exists()
+            checks.append({"name": n, "status": "done" if exists else "missing"})
+            if n == "material.json" and exists:
+                data, err = _status_json(d / n)
+                if err: probs.append(err)
+                elif isinstance(data, dict):
+                    for name, entry in data.items():
+                        if not isinstance(entry, dict):
+                            probs.append(f"material.json: damaged entry {name}"); continue
+                        candidates = entry.get("candidates") or {}
+                        flags = sorted({flag for c in candidates.values() if isinstance(c, dict)
+                                        for flag in c.get("flags", [])}) if isinstance(candidates, dict) else []
+                        if flags: probs.append(f"{name}: {' '.join(flags)}")
+        if (d / "stage.json").exists():
+            data, err = _status_json(d / "stage.json")
+            if err: probs.append(err)
+            elif isinstance(data, dict): probs.extend(str(x) for x in data.get("errors", []))
+        _status_scan_add(units, seen, d, "hybrid", d.name, checks, probs, [])
+
+
+def _status_scan_build_unit(d, names, build_mockups, units, seen):
+    """Inspect a manifest build and report missing, stale or pending assets."""
+    if "assets.json" in names:
+        probs, checks = [], []
+        core = ("assets.json", "manifest_overlay.png", "design_spec.json", "forge_report.json", "assets/", "svg_report.json",
+                "svg/", "tokens/tokens.json", "compare/report.json")
+        for n in core + ("icon_spec.json", "review/", "icons/", "traced/", "rig/", "anim/", "vector/", "frames/"):
+            npath = d / n.rstrip("/")
+            is_dir = n.endswith("/")
+            exists = (npath.is_dir() and any(npath.iterdir())) if is_dir else npath.exists()  # an empty dir is not done
+            if not exists and n not in core:
+                continue  # optional outputs are listed only once they exist
+            state = "done" if exists else "missing"
+            checks.append({"name": n, "status": state})
+            if n.endswith(".json") and exists:
+                data, err = _status_json(npath)
+                if err: probs.append(err)
+                if n == "forge_report.json" and isinstance(data, dict):
+                    flagged, incomplete = [], []
+                    for name, entry in data.items():
+                        if not isinstance(entry, dict):
+                            probs.append(f"forge_report.json: damaged entry {name}"); continue
+                        # the same test forge uses to re-queue: flagged winner, unfinished run or no final file
+                        if entry.get("needs_attention"): flagged.append(name)
+                        elif _incomplete(entry) or not (d / "assets" / f"{name}.png").exists(): incomplete.append(name)
+                    if flagged: probs.append("NEEDS ATTENTION: " + ", ".join(flagged))
+                    if incomplete: probs.append("no final file: " + ", ".join(incomplete))
+                if n == "svg_report.json" and isinstance(data, dict):
+                    for name, entry in data.items():
+                        if isinstance(entry, dict) and entry.get("error"): probs.append(f"svg {name}: {entry['error']}")
+        def stale(output, inputs, label):
+            op = d / output
+            ins = [d / x for x in inputs if (d / x).exists()]
+            if op.exists() and ins and op.stat().st_mtime < max(x.stat().st_mtime for x in ins):
+                probs.append(f"STALE: {label} older than " + ", ".join(x.name for x in ins if x.stat().st_mtime > op.stat().st_mtime))
+                for c in checks:
+                    if c["name"] == output: c["status"] = "STALE"
+        stale("design_spec.json", ["assets.json"], "design_spec.json")
+        stale("svg", ["design_spec.json"], "svg/")
+        stale("tokens/tokens.json", ["design_spec.json", "fonts/fonts.json"], "tokens")
+        stale("compare/report.json", ["tokens/tokens.json"], "compare")
+        manifest, _ = _status_json(d / "assets.json")
+        report, _ = _status_json(d / "forge_report.json") if (d / "forge_report.json").exists() else ({}, None)
+        report = report if isinstance(report, dict) else {}
+        pngs = [x.get("name") for x in (manifest or {}).get("assets", []) if isinstance(x, dict) and x.get("format") == "png"] \
+            if isinstance(manifest, dict) else []
+        unforged = [n for n in pngs if n and n not in report and not (d / "assets" / f"{n}.png").exists()]
+        if unforged and (d / "forge_report.json").exists():
+            probs.append("not forged yet: " + ", ".join(unforged))
+        svgs = [x.get("name") for x in (manifest or {}).get("assets", []) if isinstance(x, dict) and x.get("format") == "svg"] \
+            if isinstance(manifest, dict) else []
+        nxt = []
+        if not (d / "design_spec.json").exists() or any(c["name"] == "design_spec.json" and c["status"] == "STALE" for c in checks):
+            nxt = [f"python3 $K spec {_status_arg(d)}"]
+        elif (pngs and not (d / "forge_report.json").exists()) or any("NEEDS ATTENTION" in x or "no final file" in x for x in probs):
+            flagged = next((x.partition(": ")[2] for x in probs if x.startswith("NEEDS ATTENTION:")), "")
+            nxt = ([f"read {_status_arg(d / 'review')}/forge_*.png, then python3 $K pick {_status_arg(d)} <name> <N>, "
+                    f"python3 $K fix {_status_arg(d)} <name>, or python3 $K forge {_status_arg(d)} --only "
+                    f"{flagged.replace(', ', ',')} --force --candidates 3"] if flagged else []) + \
+                  ([f"python3 $K forge {_status_arg(d)}"] if not flagged or any(x.startswith(("no final file", "not forged")) for x in probs) else [])
+            if svgs and not (d / "svg_report.json").exists():
+                nxt.append(f"python3 $K svg {_status_arg(d)}   (in parallel with forge)")
+        elif unforged:
+            nxt = [f"python3 $K forge {_status_arg(d)}"] + ([f"python3 $K svg {_status_arg(d)}   (in parallel with forge)"]
+                                                           if svgs and not (d / "svg_report.json").exists() else [])
+        elif svgs and not (d / "svg_report.json").exists(): nxt = [f"python3 $K svg {_status_arg(d)}"]
+        elif not (d / "tokens" / "tokens.json").exists(): nxt = [f"python3 $K tokens {_status_arg(d)}"]
+        elif not (d / "compare" / "report.json").exists(): nxt = [f"python3 $K compare {_status_arg(d)} <screenshot>"]
+        else: nxt = ["review reports; no pending kit step"]
+        _status_scan_add(units, seen, d, "build", d.name, checks, probs, nxt)
+
+
+def _status_scan_misc_units(d, children, names, units, seen):
+    """Record app icon, sequence, token, comparison, font and animation outputs."""
+    if "appicon.json" in names:
+        data, err = _status_json(d / "appicon.json")
+        probs = [err] if err else []
+        if isinstance(data, dict):
+            for key in ("safe_zone", "glyph"):
+                if isinstance(data.get(key), dict) and data[key].get("ok") is False: probs.append(f"{key}.ok is false")
+            probs.extend(str(x) for x in data.get("warnings", []))
+        _status_scan_add(units, seen, d, "appicon", d.name, [{"name": "appicon.json", "status": "done"}], probs, [])
+    concept_pngs = [p for p in children if p.suffix.lower() == ".png" and re.match(r"concept(?:_v\d+)?\.png$", p.name)]
+    if "concepts" in names or concept_pngs:
+        checks = [{"name": "concept PNGs", "status": "done" if concept_pngs else "missing"},
+                  {"name": "review/", "status": "done" if (d / "review").is_dir() and any((d / "review").iterdir()) else "missing"}]
+        chosen = concept_pngs[0] if len(concept_pngs) == 1 else None
+        nxt = [f"python3 $K appicon build {_status_arg(chosen)} --out {_status_arg(d / 'build')}" ] if chosen else []
+        _status_scan_add(units, seen, d, "appicon concepts", d.name, checks, [], nxt)
+    if "sequence.json" in names:
+        meta, err = _status_json(d / "sequence.json")
+        probs = [err] if err else []
+        checks = [{"name": "sequence.json", "status": "done"}]
+        if isinstance(meta, dict) and isinstance(meta.get("frames"), int) and 0 <= meta["frames"] <= 10000:
+            if meta.get("route"):
+                checks.append({"name": "route", "status": str(meta["route"].get("engine", meta["route"]))})
+            missing = []
+            for i in range(meta["frames"]):
+                raw = d / "raw" / f"{i:03d}.png"
+                side = raw.with_suffix(".json")
+                if not raw.exists(): missing.append(i)
+                elif side.exists():
+                    side_data, _ = _status_json(side)
+                    guide = meta.get("guide_sha1") or []
+                    if not isinstance(side_data, dict) or i >= len(guide) or side_data.get("guide_sha1") != guide[i]:
+                        probs.append(f"stale frame {i}")
+            if missing: probs.append(f"frames missing: {missing[:10]}")
+            checks.append({"name": "raw frames", "status": "missing" if missing else "done"})
+            qa, qe = _status_json(d / "report.json") if (d / "report.json").exists() else (None, None)
+            if qe: probs.append(qe)
+            elif isinstance(qa, dict):
+                if qa.get("route"): checks.append({"name": "route", "status": str(qa["route"])})
+                q = qa.get("outliers") or (qa.get("sequence", {}).get("outliers", []) if isinstance(qa.get("sequence"), dict) else [])
+                if q: probs.append(f"outlier frames: {q}")
+        nxt = [f"python3 $K sequence {_status_arg(d)} <name> render"] if any("missing" in p for p in probs) else []
+        _status_scan_add(units, seen, d, "sequence", d.name, checks, probs, nxt)
+    if "tokens.json" in names and d.name == "tokens":
+        data, err = _status_json(d / "tokens.json")
+        probs = [err] if err else []
+        if isinstance(data, dict):
+            probs.extend(f"verify {k}: {v}" for k, v in (data.get("verify") or {}).items()
+                         if v is False or (isinstance(v, dict) and not v.get("ok", True))
+                         or (isinstance(v, str) and v.startswith("FAILED")))
+        check = {"name": "tokens.json", "status": "done"}
+        inputs = [p for p in (d.parent / "design_spec.json", d.parent / "fonts" / "fonts.json") if p.exists()]
+        if inputs and (d / "tokens.json").stat().st_mtime < max(p.stat().st_mtime for p in inputs):
+            check["status"] = "STALE"
+            probs.append("STALE: tokens.json older than " + ", ".join(p.name for p in inputs if p.stat().st_mtime > (d / "tokens.json").stat().st_mtime))
+        _status_scan_add(units, seen, d, "tokens", d.name, [check], probs, [f"python3 $K tokens {_status_arg(d.parent)}"] if check["status"] == "STALE" else [])
+    if "report.json" in names and d.name == "compare":
+        data, err = _status_json(d / "report.json")
+        probs = [err] if err else []
+        score = data.get("overall", {}).get("score") if isinstance(data, dict) and isinstance(data.get("overall"), dict) else None
+        if score is not None: probs.append(f"overall.score {score}/100")
+        check = {"name": "report.json", "status": "done"}
+        tokens = d.parent / "tokens" / "tokens.json"
+        if tokens.exists() and (d / "report.json").stat().st_mtime < tokens.stat().st_mtime:
+            check["status"] = "STALE"
+            probs.append("STALE: compare report.json older than tokens.json")
+        _status_scan_add(units, seen, d, "compare", d.name, [check], probs,
+            [f"python3 $K compare {_status_arg(d.parent)} <screenshot>"] if check["status"] == "STALE" else [])
+    if "fonts.json" in names and d.name == "fonts":
+        _, err = _status_json(d / "fonts.json")
+        _status_scan_add(units, seen, d, "fonts", d.name, [{"name": "fonts.json", "status": "done"}], [err] if err else [], [])
+    if "redline.json" in names and d.name == "redline":
+        _, err = _status_json(d / "redline.json")
+        _status_scan_add(units, seen, d, "redline", d.name, [{"name": "redline.json", "status": "done"}], [err] if err else [], [])
+    if "animation_report.json" in names:
+        data, err = _status_json(d / "animation_report.json")
+        probs = [err] if err else []
+        if isinstance(data, dict):
+            for name, motion in (data.get("motion") or {}).items():
+                if isinstance(motion, dict) and motion.get("max", 1) < 0.2:
+                    probs.append(f"{name}: max travel {motion.get('max')} (< 0.2)")
+        _status_scan_add(units, seen, d, "animation", d.name, [{"name": "animation_report.json", "status": "done"}], probs, [])
+    for p in (p for p in children if p.name.endswith(".trace.json")):
+        data, err = _status_json(p)
+        probs = [err] if err else []
+        if isinstance(data, dict):
+            advice = data.get("advice")
+            if isinstance(advice, dict) and advice.get("prefer") in ("png", "webp"):
+                probs.append(f"advice.prefer: {advice['prefer']}")
+        _status_scan_add(units, seen, d, "trace", p.stem, [{"name": p.name, "status": "done"}], probs, [])
+    if "layers.json" in names:
+        _, err = _status_json(d / "layers.json")
+        _status_scan_add(units, seen, d, "layers", d.name, [{"name": "layers.json", "status": "done"}], [err] if err else [], [])
+    if "frames_review.png" in names:
+        _status_scan_add(units, seen, d, "frames", d.name, [{"name": "frames_review.png", "status": "done"}], [], [])
+
+
+def _status_scan_units(dirs, build_mockups):
+    """Inspect each discovered directory and assemble its status units."""
+    units = []
+    seen = set()
     for d in dirs:
         # Ignore individual oversized artifacts and JSONs which cannot be read.
         children = []
@@ -155,241 +414,19 @@ def _status_scan(base):
         except OSError:
             continue
         names = {p.name for p in children}
-        if {"report.json", "sources.json"} <= names or "findings" in {p.name for p in d.iterdir() if p.is_dir()}:
-            probs, checks = [], []
-            for n in ("report.json", "report.md", "findings", "sources.json"):
-                exists = (d / n).exists()
-                checks.append({"name": n, "status": "done" if exists else "missing"})
-                if n.endswith(".json") and exists:
-                    _, err = _status_json(d / n)
-                    if err: probs.append(err)
-            nxt = [] if (d / "report.json").exists() else [f"python3 $K research \"<idea>\" --out {_status_arg(d)}"]
-            if (d / "report.json").exists() and not (d / "screens.json").exists() and not (d / "blueprint.md").exists():
-                nxt = [f"python3 $K blueprint {_status_arg(d)}"]
-            add(d, "research", d.name, checks, probs, nxt)
-        if "blueprint.md" in names or "screens.json" in names:
-            checks = [{"name": n, "status": "done" if (d / n).exists() else "missing"}
-                      for n in ("blueprint.md", "screens.json")]
-            probs = []
-            for n in ("screens.json",):
-                if (d / n).exists():
-                    _, err = _status_json(d / n)
-                    if err: probs.append(err)
-            add(d, "blueprint", d.name, checks, probs, [] if all(c["status"] == "done" for c in checks)
-                else [f"python3 $K blueprint {_status_arg(d)}"])
-        mockups = [p for p in children if p.suffix.lower() == ".png" and p.name.startswith("mockup")]
-        if (mockups or "design.json" in names) and "assets.json" not in names:  # a build dir keeps its own mockup.png
-            design = d / "design.json"
-            checks = [{"name": "mockup PNGs", "status": "done" if mockups else "missing"},
-                      {"name": "design.json", "status": "done" if design.exists() else "missing"}]
-            probs = []
-            if design.exists():
-                _, err = _status_json(design)
-                if err: probs.append(err)
-            latest = max(mockups, key=lambda p: p.stat().st_mtime) if mockups else None
-            built = [b for m in mockups for b in build_mockups.get(_status_sha(m), [])]
-            if built:
-                checks.append({"name": "manifest (" + ", ".join(_status_arg(b) for b in built) + ")", "status": "done"})
-            nxt = [f"python3 $K mockup \"<brief>\" --out {_status_arg(d)}"] if not latest else [] if built else \
-                [f"once the user approves a variant: python3 $K manifest {_status_arg(latest)} --out <build dir>"]
-            add(d, "design", d.name, checks, probs, nxt)
-        critiques = [p for p in children if p.name.endswith("_critique.json")]
-        for p in critiques:
-            data, err = _status_json(p)
-            probs = [err] if err else []
-            issues = []
-            if isinstance(data, dict):
-                for rnd in data.get("rounds", []):
-                    if isinstance(rnd, dict):
-                        for batch in (rnd.get("issues"), rnd.get("new_issues")):
-                            if isinstance(batch, list): issues.extend(x for x in batch if isinstance(x, dict))
-            high = sum(1 for x in issues if isinstance(x, dict) and x.get("severity") == "high")
-            if high: probs.append(f"{high} high-severity critique issue(s)")
-            add(d, "critique", p.stem, [{"name": p.name, "status": "done"}], probs, [])
-        if "stage.json" in names or "material.json" in names or "stage" in names:
-            probs, checks = [], []
-            for n in ("material.json", "stage.json", "frames", "motion_sheet.png"):
-                exists = (d / n).exists()
-                checks.append({"name": n, "status": "done" if exists else "missing"})
-                if n == "material.json" and exists:
-                    data, err = _status_json(d / n)
-                    if err: probs.append(err)
-                    elif isinstance(data, dict):
-                        for name, entry in data.items():
-                            if not isinstance(entry, dict):
-                                probs.append(f"material.json: damaged entry {name}"); continue
-                            candidates = entry.get("candidates") or {}
-                            flags = sorted({flag for c in candidates.values() if isinstance(c, dict)
-                                            for flag in c.get("flags", [])}) if isinstance(candidates, dict) else []
-                            if flags: probs.append(f"{name}: {' '.join(flags)}")
-            if (d / "stage.json").exists():
-                data, err = _status_json(d / "stage.json")
-                if err: probs.append(err)
-                elif isinstance(data, dict): probs.extend(str(x) for x in data.get("errors", []))
-            add(d, "hybrid", d.name, checks, probs, [])
-        if "assets.json" in names:
-            probs, checks = [], []
-            core = ("assets.json", "manifest_overlay.png", "design_spec.json", "forge_report.json", "assets/", "svg_report.json",
-                    "svg/", "tokens/tokens.json", "compare/report.json")
-            for n in core + ("icon_spec.json", "review/", "icons/", "traced/", "rig/", "anim/", "vector/", "frames/"):
-                npath = d / n.rstrip("/")
-                is_dir = n.endswith("/")
-                exists = (npath.is_dir() and any(npath.iterdir())) if is_dir else npath.exists()  # an empty dir is not done
-                if not exists and n not in core:
-                    continue  # optional outputs are listed only once they exist
-                state = "done" if exists else "missing"
-                checks.append({"name": n, "status": state})
-                if n.endswith(".json") and exists:
-                    data, err = _status_json(npath)
-                    if err: probs.append(err)
-                    if n == "forge_report.json" and isinstance(data, dict):
-                        flagged, incomplete = [], []
-                        for name, entry in data.items():
-                            if not isinstance(entry, dict):
-                                probs.append(f"forge_report.json: damaged entry {name}"); continue
-                            # the same test forge uses to re-queue: flagged winner, unfinished run or no final file
-                            if entry.get("needs_attention"): flagged.append(name)
-                            elif _incomplete(entry) or not (d / "assets" / f"{name}.png").exists(): incomplete.append(name)
-                        if flagged: probs.append("NEEDS ATTENTION: " + ", ".join(flagged))
-                        if incomplete: probs.append("no final file: " + ", ".join(incomplete))
-                    if n == "svg_report.json" and isinstance(data, dict):
-                        for name, entry in data.items():
-                            if isinstance(entry, dict) and entry.get("error"): probs.append(f"svg {name}: {entry['error']}")
-            def stale(output, inputs, label):
-                op = d / output
-                ins = [d / x for x in inputs if (d / x).exists()]
-                if op.exists() and ins and op.stat().st_mtime < max(x.stat().st_mtime for x in ins):
-                    probs.append(f"STALE: {label} older than " + ", ".join(x.name for x in ins if x.stat().st_mtime > op.stat().st_mtime))
-                    for c in checks:
-                        if c["name"] == output: c["status"] = "STALE"
-            stale("design_spec.json", ["assets.json"], "design_spec.json")
-            stale("svg", ["design_spec.json"], "svg/")
-            stale("tokens/tokens.json", ["design_spec.json", "fonts/fonts.json"], "tokens")
-            stale("compare/report.json", ["tokens/tokens.json"], "compare")
-            manifest, _ = _status_json(d / "assets.json")
-            report, _ = _status_json(d / "forge_report.json") if (d / "forge_report.json").exists() else ({}, None)
-            report = report if isinstance(report, dict) else {}
-            pngs = [x.get("name") for x in (manifest or {}).get("assets", []) if isinstance(x, dict) and x.get("format") == "png"] \
-                if isinstance(manifest, dict) else []
-            unforged = [n for n in pngs if n and n not in report and not (d / "assets" / f"{n}.png").exists()]
-            if unforged and (d / "forge_report.json").exists():
-                probs.append("not forged yet: " + ", ".join(unforged))
-            svgs = [x.get("name") for x in (manifest or {}).get("assets", []) if isinstance(x, dict) and x.get("format") == "svg"] \
-                if isinstance(manifest, dict) else []
-            nxt = []
-            if not (d / "design_spec.json").exists() or any(c["name"] == "design_spec.json" and c["status"] == "STALE" for c in checks):
-                nxt = [f"python3 $K spec {_status_arg(d)}"]
-            elif (pngs and not (d / "forge_report.json").exists()) or any("NEEDS ATTENTION" in x or "no final file" in x for x in probs):
-                flagged = next((x.partition(": ")[2] for x in probs if x.startswith("NEEDS ATTENTION:")), "")
-                nxt = ([f"read {_status_arg(d / 'review')}/forge_*.png, then python3 $K pick {_status_arg(d)} <name> <N>, "
-                        f"python3 $K fix {_status_arg(d)} <name>, or python3 $K forge {_status_arg(d)} --only "
-                        f"{flagged.replace(', ', ',')} --force --candidates 3"] if flagged else []) + \
-                      ([f"python3 $K forge {_status_arg(d)}"] if not flagged or any(x.startswith(("no final file", "not forged")) for x in probs) else [])
-                if svgs and not (d / "svg_report.json").exists():
-                    nxt.append(f"python3 $K svg {_status_arg(d)}   (in parallel with forge)")
-            elif unforged:
-                nxt = [f"python3 $K forge {_status_arg(d)}"] + ([f"python3 $K svg {_status_arg(d)}   (in parallel with forge)"]
-                                                               if svgs and not (d / "svg_report.json").exists() else [])
-            elif svgs and not (d / "svg_report.json").exists(): nxt = [f"python3 $K svg {_status_arg(d)}"]
-            elif not (d / "tokens" / "tokens.json").exists(): nxt = [f"python3 $K tokens {_status_arg(d)}"]
-            elif not (d / "compare" / "report.json").exists(): nxt = [f"python3 $K compare {_status_arg(d)} <screenshot>"]
-            else: nxt = ["review reports; no pending kit step"]
-            add(d, "build", d.name, checks, probs, nxt)
-        if "appicon.json" in names:
-            data, err = _status_json(d / "appicon.json")
-            probs = [err] if err else []
-            if isinstance(data, dict):
-                for key in ("safe_zone", "glyph"):
-                    if isinstance(data.get(key), dict) and data[key].get("ok") is False: probs.append(f"{key}.ok is false")
-                probs.extend(str(x) for x in data.get("warnings", []))
-            add(d, "appicon", d.name, [{"name": "appicon.json", "status": "done"}], probs, [])
-        concept_pngs = [p for p in children if p.suffix.lower() == ".png" and re.match(r"concept(?:_v\d+)?\.png$", p.name)]
-        if "concepts" in names or concept_pngs:
-            checks = [{"name": "concept PNGs", "status": "done" if concept_pngs else "missing"},
-                      {"name": "review/", "status": "done" if (d / "review").is_dir() and any((d / "review").iterdir()) else "missing"}]
-            chosen = concept_pngs[0] if len(concept_pngs) == 1 else None
-            nxt = [f"python3 $K appicon build {_status_arg(chosen)} --out {_status_arg(d / 'build')}" ] if chosen else []
-            add(d, "appicon concepts", d.name, checks, [], nxt)
-        if "sequence.json" in names:
-            meta, err = _status_json(d / "sequence.json")
-            probs = [err] if err else []
-            checks = [{"name": "sequence.json", "status": "done"}]
-            if isinstance(meta, dict) and isinstance(meta.get("frames"), int) and 0 <= meta["frames"] <= 10000:
-                if meta.get("route"):
-                    checks.append({"name": "route", "status": str(meta["route"].get("engine", meta["route"]))})
-                missing = []
-                for i in range(meta["frames"]):
-                    raw = d / "raw" / f"{i:03d}.png"
-                    side = raw.with_suffix(".json")
-                    if not raw.exists(): missing.append(i)
-                    elif side.exists():
-                        side_data, _ = _status_json(side)
-                        guide = meta.get("guide_sha1") or []
-                        if not isinstance(side_data, dict) or i >= len(guide) or side_data.get("guide_sha1") != guide[i]:
-                            probs.append(f"stale frame {i}")
-                if missing: probs.append(f"frames missing: {missing[:10]}")
-                checks.append({"name": "raw frames", "status": "missing" if missing else "done"})
-                qa, qe = _status_json(d / "report.json") if (d / "report.json").exists() else (None, None)
-                if qe: probs.append(qe)
-                elif isinstance(qa, dict):
-                    if qa.get("route"): checks.append({"name": "route", "status": str(qa["route"])})
-                    q = qa.get("outliers") or (qa.get("sequence", {}).get("outliers", []) if isinstance(qa.get("sequence"), dict) else [])
-                    if q: probs.append(f"outlier frames: {q}")
-            nxt = [f"python3 $K sequence {_status_arg(d)} <name> render"] if any("missing" in p for p in probs) else []
-            add(d, "sequence", d.name, checks, probs, nxt)
-        if "tokens.json" in names and d.name == "tokens":
-            data, err = _status_json(d / "tokens.json")
-            probs = [err] if err else []
-            if isinstance(data, dict):
-                probs.extend(f"verify {k}: {v}" for k, v in (data.get("verify") or {}).items()
-                             if v is False or (isinstance(v, dict) and not v.get("ok", True))
-                             or (isinstance(v, str) and v.startswith("FAILED")))
-            check = {"name": "tokens.json", "status": "done"}
-            inputs = [p for p in (d.parent / "design_spec.json", d.parent / "fonts" / "fonts.json") if p.exists()]
-            if inputs and (d / "tokens.json").stat().st_mtime < max(p.stat().st_mtime for p in inputs):
-                check["status"] = "STALE"
-                probs.append("STALE: tokens.json older than " + ", ".join(p.name for p in inputs if p.stat().st_mtime > (d / "tokens.json").stat().st_mtime))
-            add(d, "tokens", d.name, [check], probs, [f"python3 $K tokens {_status_arg(d.parent)}"] if check["status"] == "STALE" else [])
-        if "report.json" in names and d.name == "compare":
-            data, err = _status_json(d / "report.json")
-            probs = [err] if err else []
-            score = data.get("overall", {}).get("score") if isinstance(data, dict) and isinstance(data.get("overall"), dict) else None
-            if score is not None: probs.append(f"overall.score {score}/100")
-            check = {"name": "report.json", "status": "done"}
-            tokens = d.parent / "tokens" / "tokens.json"
-            if tokens.exists() and (d / "report.json").stat().st_mtime < tokens.stat().st_mtime:
-                check["status"] = "STALE"
-                probs.append("STALE: compare report.json older than tokens.json")
-            add(d, "compare", d.name, [check], probs,
-                [f"python3 $K compare {_status_arg(d.parent)} <screenshot>"] if check["status"] == "STALE" else [])
-        if "fonts.json" in names and d.name == "fonts":
-            _, err = _status_json(d / "fonts.json")
-            add(d, "fonts", d.name, [{"name": "fonts.json", "status": "done"}], [err] if err else [], [])
-        if "redline.json" in names and d.name == "redline":
-            _, err = _status_json(d / "redline.json")
-            add(d, "redline", d.name, [{"name": "redline.json", "status": "done"}], [err] if err else [], [])
-        if "animation_report.json" in names:
-            data, err = _status_json(d / "animation_report.json")
-            probs = [err] if err else []
-            if isinstance(data, dict):
-                for name, motion in (data.get("motion") or {}).items():
-                    if isinstance(motion, dict) and motion.get("max", 1) < 0.2:
-                        probs.append(f"{name}: max travel {motion.get('max')} (< 0.2)")
-            add(d, "animation", d.name, [{"name": "animation_report.json", "status": "done"}], probs, [])
-        for p in (p for p in children if p.name.endswith(".trace.json")):
-            data, err = _status_json(p)
-            probs = [err] if err else []
-            if isinstance(data, dict):
-                advice = data.get("advice")
-                if isinstance(advice, dict) and advice.get("prefer") in ("png", "webp"):
-                    probs.append(f"advice.prefer: {advice['prefer']}")
-            add(d, "trace", p.stem, [{"name": p.name, "status": "done"}], probs, [])
-        if "layers.json" in names:
-            _, err = _status_json(d / "layers.json")
-            add(d, "layers", d.name, [{"name": "layers.json", "status": "done"}], [err] if err else [], [])
-        if "frames_review.png" in names:
-            add(d, "frames", d.name, [{"name": "frames_review.png", "status": "done"}], [], [])
+        _status_scan_project_units(d, children, names, build_mockups, units, seen)
+        _status_scan_build_unit(d, names, build_mockups, units, seen)
+        _status_scan_misc_units(d, children, names, units, seen)
     return units
+
+
+
+def _status_scan(base):
+    """Discover bounded project dirs; status never opens images or makes network calls."""
+    base = Path(base).resolve()
+    dirs = _status_scan_directories(base)
+    build_mockups = _status_scan_build_mockups(dirs)
+    return _status_scan_units(dirs, build_mockups)
 
 
 def cmd_status(a):
