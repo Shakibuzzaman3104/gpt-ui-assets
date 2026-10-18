@@ -187,10 +187,10 @@ def _chrome_err(r):
 @functools.cache
 def _chrome_probe():
     """(True, '') when headless Chrome can actually render here, else (False, reason). One 64x64 shot, cached."""
-    from .previews import _chrome  # deferred: previews imports this module
+    from .previews import _chrome, _chrome_missing_reason  # deferred: previews imports this module
     exe = _chrome()
     if not exe:
-        return False, "no Chrome/Chromium found (set GPTKIT_CHROME)"
+        return False, _chrome_missing_reason()
     with tempfile.TemporaryDirectory() as td:
         png = Path(td) / "p.png"
         try:

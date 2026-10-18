@@ -14,7 +14,7 @@ import numpy as np
 from PIL import Image, ImageDraw
 
 from .core import _JAVA_KEYWORDS, _chrome_err, _chrome_flags, _clip_bbox, _need, _open_image, _read_json
-from .previews import _chrome
+from .previews import _chrome, _chrome_missing_reason
 from .measure import _de_hex, _hexi, _lab_arr, _norm_hex, _save_text_boxes, _text_targets, _to_hex
 
 # ---- tokens: design_spec.json -> Compose / SwiftUI / CSS / Tailwind
@@ -938,7 +938,7 @@ def _verify_tokens(tm, out, a, platforms=("compose", "swiftui", "web")):
                     print(f"  ! headless Chrome produced no screenshot: {why}")
             probe.unlink(missing_ok=True)
         else:
-            res["css"] = "skipped (no Chrome; set GPTKIT_CHROME)"
+            res["css"] = f"skipped ({_chrome_missing_reason()})"
     return res
 
 

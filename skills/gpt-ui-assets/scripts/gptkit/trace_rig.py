@@ -21,7 +21,7 @@ from .imaging import _rgba, sheet
 from .vectordrawable import _aapt2_line, _vd_lint, aapt2_check, aapt2_level, svg_to_vd, vd_to_svg
 from .frames import _square
 from .vectorize import _TOK, _d, _hex_rgb, _subpaths, _validate_vec, build_lottie
-from .previews import _check_vec, _chrome, _lottie_js, _vec_svg
+from .previews import _check_vec, _chrome, _chrome_missing_reason, _lottie_js, _vec_svg
 
 # ---- raster -> vector tracing, part rigs, procedural keyframes
 
@@ -30,7 +30,7 @@ _CHROME_FAILED_REASON = None  # why the last headless capture produced nothing (
 
 def _tr_chrome_reason():
     """One line saying why fidelity was not measured (no Chrome, or Chrome started and produced no screenshot)."""
-    return _CHROME_FAILED_REASON or ("no Chrome/Chromium found (set GPTKIT_CHROME)" if not _chrome()
+    return _CHROME_FAILED_REASON or (_chrome_missing_reason() if not _chrome()
                                      else "headless Chrome produced no screenshot")
 
 
@@ -975,7 +975,7 @@ def cmd_trace(a):
     if a.preset == "vtracer" and (a.colors is not None or a.tol is not None):
         print("  ! --preset vtracer ignores --colors and --tol (vtracer has its own colour/curve settings)")
     if not _chrome():
-        print("  (no Chrome/Chromium found: fidelity is not measured; set GPTKIT_CHROME to enable it)")
+        print(f"  ({_chrome_missing_reason()}: fidelity is not measured)")
     (out / "review").mkdir(parents=True, exist_ok=True)
     failed = 0
     for f in a.files:

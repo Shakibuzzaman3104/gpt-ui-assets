@@ -36,9 +36,24 @@ from .vectorize import (
 LOTTIE_JS = "https://cdnjs.cloudflare.com/ajax/libs/lottie-web/5.12.2/lottie.min.js"
 
 
+def _codex_seatbelt():
+    """True inside the Codex CLI's macOS sandbox. Chrome cannot start there: Seatbelt blocks its registration with the
+    window server, so it aborts in TransformProcessType (SIGABRT, and a crash report every launch)."""
+    return sys.platform == "darwin" and bool(os.environ.get("CODEX_SANDBOX"))
+
+
+def _chrome_missing_reason():
+    """Why _chrome() returned None, in one line."""
+    if os.environ.get("GPTKIT_CHROME") == "none":
+        return "Chrome disabled (GPTKIT_CHROME=none)"
+    if _codex_seatbelt():
+        return "Chrome cannot start inside the Codex sandbox (CODEX_SANDBOX is set); run this outside it"
+    return "no Chrome/Chromium found (set GPTKIT_CHROME)"
+
+
 @functools.cache
 def _chrome():
-    if os.environ.get("GPTKIT_CHROME") == "none":
+    if os.environ.get("GPTKIT_CHROME") == "none" or _codex_seatbelt():
         return None
     for c in (os.environ.get("GPTKIT_CHROME"), "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
               "/Applications/Chromium.app/Contents/MacOS/Chromium",
@@ -104,7 +119,7 @@ def _chrome_shot(html, out, w, h, budget=8000, timeout=120):
     global _SHOT_REASON, _warned_shot
     exe = _chrome()
     if not exe:
-        _SHOT_REASON = "no Chrome/Chromium found (set GPTKIT_CHROME)"
+        _SHOT_REASON = _chrome_missing_reason()
         return None
     out = Path(out)
     out.unlink(missing_ok=True)

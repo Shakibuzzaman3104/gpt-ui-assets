@@ -233,7 +233,26 @@ def test_plan_on_the_cli_backend_is_quota_not_money():
             assert K._plan(3, 1, image_model="gpt-image-2") == 0.0
     assert "Codex CLI (ChatGPT plan quota, no API cost)" in out.getvalue() and "$" not in out.getvalue()
 
+
+def test_chrome_is_never_launched_inside_the_codex_sandbox():
+    """Chrome aborts in TransformProcessType under Codex's Seatbelt profile; the kit must not start it there."""
+    import sys as _sys
+    saved_platform = _sys.platform
+    try:
+        _sys.platform = "darwin"
+        with env(CODEX_SANDBOX="seatbelt", GPTKIT_CHROME=None):
+            K._chrome.cache_clear()
+            assert K._chrome() is None and K._codex_seatbelt()
+            assert "Codex sandbox" in K._chrome_missing_reason()
+        with env(CODEX_SANDBOX=None, GPTKIT_CHROME="none"):
+            K._chrome.cache_clear()
+            assert K._chrome() is None and "GPTKIT_CHROME=none" in K._chrome_missing_reason()
+    finally:
+        _sys.platform = saved_platform
+        K._chrome.cache_clear()
+
 if __name__ == "__main__":
     run_tests()
     test_plan_on_the_cli_backend_is_quota_not_money()
+    test_chrome_is_never_launched_inside_the_codex_sandbox()
     print("ok")

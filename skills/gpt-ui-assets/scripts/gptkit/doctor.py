@@ -18,7 +18,7 @@ from .forge import _renderer_name, render_svgs, svg_fidelity
 from .vectordrawable import _android_sdk
 from .svg_icons import _svg_issues
 from .sequence import _find_ebsynth
-from .previews import LOTTIE_JS, _chrome, _lottie_js_cache, _lottie_js_ok
+from .previews import LOTTIE_JS, _chrome, _chrome_missing_reason, _codex_seatbelt, _lottie_js_cache, _lottie_js_ok
 from .fonts import GF_METADATA, _cache_dir
 
 def cmd_doctor(a):
@@ -52,6 +52,8 @@ def cmd_doctor(a):
         line = "chrome (ok)" if ok else f"none: chrome found at {exe} but failed: {why}{hint}"
     elif renderer:
         line = renderer + (" (no alpha: matted from two renders)" if renderer == "qlmanage" else "")
+    elif _codex_seatbelt():
+        line = f"none: {_chrome_missing_reason()}"
     else:
         line = "none (install Chrome/Chromium and set GPTKIT_CHROME, or pip install cairosvg)"
     print(f"svg render  : {line}")
