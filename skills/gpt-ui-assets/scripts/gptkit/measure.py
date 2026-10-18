@@ -99,6 +99,32 @@ def _dominant(rgb):
     return px[key == np.bincount(key).argmax()].mean(0)
 
 
+def _screen_palette(img):
+    """(background hex, accent hex or None) of a UI screen, from flat fills only so photos and gradients don't count:
+    the background is the dominant flat colour, the accent the most common hue among saturated flat pixels."""
+    rgb = np.asarray(img.convert("RGB"), np.float64)
+    H = rgb.shape[0]
+    rgb = rgb[int(0.06 * H):int(0.9 * H)]  # status bar and navigation stay out
+    g = rgb.mean(2)
+    ii, ii2 = (np.pad(x, ((1, 0), (1, 0))).cumsum(0).cumsum(1) for x in (g, g * g))
+    r = 3
+    box = lambda s: (s[2 * r + 1:, 2 * r + 1:] - s[:-2 * r - 1, 2 * r + 1:] - s[2 * r + 1:, :-2 * r - 1]
+                     + s[:-2 * r - 1, :-2 * r - 1]) / (2 * r + 1) ** 2
+    flat = np.zeros(g.shape, bool)
+    flat[r:-r, r:-r] = box(ii2) - box(ii) ** 2 < 20
+    px = rgb[::3, ::3][flat[::3, ::3]]
+    if not len(px):
+        return None, None
+    bg = _dominant(px)
+    lab = _lab_arr(px)
+    sat = np.hypot(lab[:, 1], lab[:, 2]) > 25
+    if sat.sum() < 0.003 * len(px):
+        return _to_hex(bg), None
+    hue = ((np.degrees(np.arctan2(lab[sat, 2], lab[sat, 1])) + 360) % 360 // 15).astype(int)
+    accent = np.median(px[sat][hue == np.bincount(hue).argmax()], 0)
+    return _to_hex(bg), _to_hex(accent)
+
+
 def _d2c_runs(flags, merge=1):
     """[start, end) runs of True, joining runs separated by gaps shorter than `merge`."""
     idx = np.flatnonzero(np.diff(np.concatenate([[0], np.asarray(flags, dtype=np.int8), [0]])))

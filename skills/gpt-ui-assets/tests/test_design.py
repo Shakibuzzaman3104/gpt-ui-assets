@@ -446,6 +446,25 @@ def test_prep_ref():
             assert code == 0 and sent[1:] == [(1024, 1536)], (out, sent)
 
 
+def test_style_ref_prompt_carries_measured_colours():
+    with tempfile.TemporaryDirectory() as td:
+        ref = Image.new("RGB", (1024, 1536), "#F6F4EF")
+        ImageDraw.Draw(ref).rounded_rectangle([60, 300, 960, 560], 40, fill="#2F5BEA")
+        ImageDraw.Draw(ref).rectangle([60, 700, 960, 760], fill="#1C1C1E")
+        path = Path(td) / "ref.png"
+        ref.save(path)
+        assert K._screen_palette(ref) == ("#F6F4EF", "#2F5BEA")
+        assert K._screen_palette(Image.new("RGB", (400, 800), "#FAFAFA")) == ("#FAFAFA", None)
+        prompts = []
+
+        def fake_edit(img, prompt, size="1024x1024", **k_):
+            prompts.append(prompt)
+            return _png((1024, 1536)), {"quality": "high", "size": size}
+        with patched(edit=fake_edit):
+            code, out = run(K.cmd_mockup, _mockup_args(td, style_ref=str(path), name="p"))
+        assert code == 0 and "Use the approved screen's exact colours: background #F6F4EF, accent #2F5BEA." in prompts[0], prompts
+
+
 def test_mockup_wrong_aspect_warns():
     calls = []
 

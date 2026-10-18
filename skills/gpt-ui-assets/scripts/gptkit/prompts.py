@@ -190,7 +190,9 @@ def _device_record(platform, device=None, orientation=None, posture=None, page=N
 
 PLATFORM_RULE = ("Target platform: {label}. Build the screen from this platform's native components wherever one fits: "
                  "{components}. Show the {system_ui}. Metrics: {metrics}. Typography: {type}. Icons: {icons}. "
-                 "Anything custom must still look and behave native to this platform.")
+                 "Anything custom must still look and behave native to this platform. Only top-level destinations show the "
+                 "tab or navigation bar; onboarding, sign-in and sign-up, full-screen media players, camera and modal flows "
+                 "(checkout, compose, edit forms) show a back or close control instead, unless the brief asks for the bar.")
 
 
 def _platform_rule(platform):
@@ -240,7 +242,9 @@ severe first:
   controls that cannot get a {touch} logical-unit touch target (a smaller visible pill or icon with room around it is fine).
 - overlap: a floating element (FAB, snackbar, sheet, badge, mini player) covering text, numbers, list rows or
   artwork; elements colliding, or hidden under the navigation bar or system bars. High when it hides content.
-- platform: {platform} guideline problems (navigation pattern, tab count, safe areas, standard controls), and system
+- platform: {platform} guideline problems (navigation pattern, tab count, safe areas, standard controls; a tab or
+  navigation bar on a screen that should not show one: onboarding, sign-in or sign-up, a full-screen player, camera,
+  checkout, compose or an edit form), and system
   UI that belongs to another platform (e.g. an iOS "9:41" status bar or Dynamic Island on Android, Android status
   icons or a gesture pill on iOS).
 - adaptivity: {device_rule}

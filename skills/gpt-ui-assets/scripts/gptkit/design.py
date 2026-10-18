@@ -343,6 +343,12 @@ def cmd_mockup(a):
     _plan(a.variants, a.variants if qa else 0, image_model=a.model, size=size, edits=bool(a.edit or a.style_ref))
     rule = _platform_rule(platform)
     house = _house_style(a.no_house_style)
+    colours = ""
+    if ref is not None:
+        from .measure import _screen_palette  # deferred: measure is only needed with a reference
+        bg, accent = _screen_palette(ref)
+        if bg:  # a reference image alone lets the accent drift; its measured colours hold it
+            colours = f" Use the approved screen's exact colours: background {bg}" + (f", accent {accent}" if accent else "") + "."
 
     def prompt_for(sz):
         asp = (record["aspect"] if record and sz == record["canvas"] else ASPECTS.get(sz, f"{sz} px"))
@@ -352,9 +358,10 @@ def cmd_mockup(a):
             return a.prompt
         surface = "web page viewport" if platform == "web" else ("app window" if device_arg == "desktop" or platform in ("macos", "windows", "linux") else "app screen")
         if anchor_path and record:
-            base = ADAPT_PROMPT.format(prompt=a.prompt, aspect=asp, device_rule=record["rule"])
+            base = ADAPT_PROMPT.format(prompt=a.prompt + colours, aspect=asp, device_rule=record["rule"])
         else:
-            base = (STYLE_REF_PROMPT if ref_png is not None else MOCKUP_WRAP).format(prompt=a.prompt, aspect=asp, surface=surface)
+            base = (STYLE_REF_PROMPT if ref_png is not None else MOCKUP_WRAP).format(prompt=a.prompt + colours, aspect=asp,
+                                                                                    surface=surface)
         return base + house + rule + _device_prompt(record)
     canvas = {"size": size}  # shared by the variants: drops to a classic size once if the endpoint rejects this one
     lock = threading.Lock()
