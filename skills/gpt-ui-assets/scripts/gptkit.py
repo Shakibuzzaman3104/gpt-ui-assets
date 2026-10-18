@@ -20,6 +20,7 @@ Config (environment variables win over the config file):
 import argparse
 import base64
 import concurrent.futures as cf
+import datetime
 import functools
 import http.server
 import io
@@ -33,8 +34,11 @@ import sys
 import tempfile
 import threading
 import time
+import warnings
 import xml.etree.ElementTree as ET
 from pathlib import Path
+
+warnings.filterwarnings("ignore", message="urllib3 v2 only supports OpenSSL")
 
 import numpy as np
 import requests
@@ -425,7 +429,31 @@ IMAGE_ROUTES = {
     "concept": ("gpt-image-2.5-flare", "gpt-image-2.5-sunburst", "gpt-image-2", "gpt-image-1.5"),
     "precise": ("gpt-image-2.5-sunburst", "gpt-image-2.5-flare", "gpt-image-2", "gpt-image-1.5"),
 }
+RETIREMENTS = {
+    "gpt-image-1": ("2026-10-23", "gpt-image-2.5-sunburst or gpt-image-2.5-flare"),
+    "gpt-image-1-mini": ("2026-12-01", "gpt-image-2.5-sunburst or gpt-image-2.5-flare"),
+    "gpt-image-1.5": ("2026-12-01", "gpt-image-2.5-sunburst or gpt-image-2.5-flare"),
+    "chatgpt-image-latest": ("2026-12-01", "gpt-image-2.5-sunburst or gpt-image-2.5-flare"),
+    "gpt-5.1": ("2027-04-01", "gpt-6-sol"),
+    "gpt-5.3-codex": ("2027-04-01", "gpt-6-sol"),
+    "gpt-5.4-nano": ("2027-04-01", "gpt-6-luna"),
+    "gpt-5-2025-08-07": ("2026-12-11", "gpt-6-sol"),
+    "gpt-5-mini-2025-08-07": ("2026-12-11", "gpt-6-luna"),
+    "gpt-5-nano-2025-08-07": ("2026-12-11", "gpt-6-luna"),
+    "gpt-5-pro-2025-10-06": ("2026-12-11", "gpt-6-sol"),
+}
 NO_TRANSPARENCY = ("gpt-image-2",)
+
+
+def _today():
+    """Current date, isolated so retirement messaging can be tested deterministically."""
+    return time.strftime("%Y-%m-%d")
+
+
+def _warn_retired_model(model):
+    retirement = RETIREMENTS.get(model)
+    if retirement and _today() > retirement[0]:
+        _note_once(("retired-model", model), f"  (model {model} retired on {retirement[0]}; replacement: {retirement[1]})")
 
 
 def image_chain(task, background="auto"):
@@ -450,8 +478,10 @@ def pick_image_model(model=None, task="concept", background="auto"):
     then the configured default (also used when the endpoint's model list cannot be read)."""
     c = _config()
     if model:
+        _warn_retired_model(model)
         return model
     if c["image_model_pinned"] or not c["key"]:
+        _warn_retired_model(c["image_model"])
         return c["image_model"]
     ids = _listed_models(c["base"], c["key"])
     if ids:
@@ -459,7 +489,9 @@ def pick_image_model(model=None, task="concept", background="auto"):
             if m in ids:
                 _note_once(("image-model", task, background, m), f"  (image model {m}: auto-picked for {task}"
                            f"{', transparent' if background == 'transparent' else ''}; pin one with --model or GPTKIT_IMAGE_MODEL)")
+                _warn_retired_model(m)
                 return m
+    _warn_retired_model(c["image_model"])
     return c["image_model"]
 
 
@@ -561,7 +593,9 @@ def ask(parts, schema=None, name="result", model=None):
             content.append({"type": "input_text", "text": p})
         else:
             content.append({"type": "input_image", "image_url": _data_url(p)})
-    body = {"model": model or _config()["text_model"], "store": False, "input": [{"role": "user", "content": content}]}
+    chosen_model = model or _config()["text_model"]
+    _warn_retired_model(chosen_model)
+    body = {"model": chosen_model, "store": False, "input": [{"role": "user", "content": content}]}
     if schema == "json":
         body["text"] = {"format": {"type": "json_object"}}
     elif schema:
@@ -14516,6 +14550,14 @@ def cmd_doctor(a):
     print(f"image model : {c['image_model']}" + (" (pinned)" if c["image_model_pinned"] else
           f" (default; auto-routed per task: concept {image_chain('concept')[0]}, precise {image_chain('precise')[0]}, first listed wins)"))
     print(f"text model  : {c['text_model']}")
+    today = _today()
+    for label, mid in (("image", c["image_model"]), ("text", c["text_model"])):
+        retirement = RETIREMENTS.get(mid)
+        if retirement:
+            days = (datetime.date.fromisoformat(retirement[0]) - datetime.date.fromisoformat(today)).days
+            if days <= 60:
+                status = "retired" if days < 0 else f"retires in {days} days"
+                print(f"  ! {label} model {mid} {status} (shutdown {retirement[0]}; replacement: {retirement[1]})")
     print(f"retries     : {c['retries']}")
     print(f"debug       : {'on' if c['debug'] else 'off'}")
     renderer, exe = _renderer_name(), _chrome()
@@ -14632,7 +14674,9 @@ def think(prompt, schema=None, name="result", model=None, effort="high", search=
     truncation, empty or non-JSON answer raises ApiError (see _responses_text)."""
     if effort not in EFFORTS:
         raise ValueError(f"think: effort must be one of {', '.join(EFFORTS)}, got {effort!r}")
-    body = {"model": model or RESEARCH_MODEL, "store": False, "reasoning": {"effort": effort},
+    chosen_model = model or RESEARCH_MODEL
+    _warn_retired_model(chosen_model)
+    body = {"model": chosen_model, "store": False, "reasoning": {"effort": effort},
             "input": [{"role": "user", "content": [{"type": "input_text", "text": prompt}]}]}
     if search:
         body["tools"] = [{"type": "web_search"}]

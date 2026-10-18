@@ -5,6 +5,7 @@ import json
 import math
 import os
 import subprocess
+import shutil
 import sys
 import tempfile
 import xml.etree.ElementTree as ET
@@ -101,9 +102,9 @@ def test_chrome_shot_full_height():
             a = np.asarray(im)[..., 3]
             assert im.size == (w, h) and int((a.min(1) == 255).sum()) == h, (w, h, im.size, int((a.min(1) == 255).sum()))
         # a failing binary: None, a reason naming the binary, and the warning printed once
-        with _patched(_chrome=lambda: "/bin/false", _warned_shot=False):
+        with _patched(_chrome=lambda: shutil.which("false"), _warned_shot=False):
             assert gk._chrome_shot("<body>", Path(td) / "s.png", 64, 64) is None
-            assert "/bin/false" in gk._SHOT_REASON
+            assert shutil.which("false") in gk._SHOT_REASON
 
 
 def test_review_sheet_how_string():

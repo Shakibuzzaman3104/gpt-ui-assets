@@ -591,6 +591,35 @@ def test_image_model_routing():
         K._config.cache_clear()
 
 
+def test_model_retirement_warnings():
+    saved_today, saved_get = K._today, K.requests.get
+    try:
+        K._today = lambda: "2026-10-20"
+        K._NOTED.clear()
+        with env(GPTKIT_API_KEY="sk-test", GPTKIT_CONFIG="/nonexistent/env", GPTKIT_IMAGE_MODEL="gpt-image-1",
+                 GPTKIT_TEXT_MODEL="gpt-5.1"):
+            ids = {"data": [{"id": "gpt-image-1"}]}
+            K.requests.get = lambda *a, **k: type("G", (), {"raise_for_status": lambda s: None, "json": lambda s: ids})()
+            with contextlib.redirect_stdout(io.StringIO()) as out:
+                K.cmd_doctor(argparse.Namespace())
+            assert "gpt-image-1 retires in 3 days" in out.getvalue()
+        K._NOTED.clear()
+        K._today = lambda: "2026-10-24"
+        with env(GPTKIT_API_KEY="sk-test", GPTKIT_CONFIG="/nonexistent/env", GPTKIT_IMAGE_MODEL="gpt-image-1"):
+            with contextlib.redirect_stderr(io.StringIO()) as err:
+                assert K.pick_image_model() == "gpt-image-1"
+            assert "replacement: gpt-image-2.5-sunburst or gpt-image-2.5-flare" in err.getvalue()
+        K._NOTED.clear()
+        K._today = lambda: "2027-04-02"  # gpt-5.1 shuts down 2027-04-01
+        with api([R(200, message("ok"))]):
+            with contextlib.redirect_stderr(io.StringIO()) as err:
+                K.ask(["q"], model="gpt-5.1")
+            assert "replacement: gpt-6-sol" in err.getvalue()
+    finally:
+        K._today, K.requests.get = saved_today, saved_get
+        K._config.cache_clear()
+
+
 if __name__ == "__main__":
     import time
     for k, fn in list(globals().items()):

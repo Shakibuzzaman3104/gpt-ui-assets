@@ -506,7 +506,7 @@ def test_opaque_render_detected():
     assert len(ed.calls) == 2, len(ed.calls)                                  # no retry: it would come back the same
     assert "2 of 2 frames still missing" in msg, msg
     assert (d / "raw" / "000.opaque.png").exists() and not (d / "raw" / "000.png").exists()
-    assert "keys missing" in _exits(g.cmd_sequence_propagate, _args(tmp, "propagate", every=6, ebsynth="/bin/true"))
+    assert "keys missing" in _exits(g.cmd_sequence_propagate, _args(tmp, "propagate", every=6, ebsynth=shutil.which("true")))
     shutil.rmtree(tmp)
 
 
@@ -773,7 +773,7 @@ def test_argv_table():
     assert got == 0, err                                  # the = form is how a negative x is passed
     for argv, text in ((["render", "--every", "5"], "must divide"), (["reroll", "--frames", "a,b"], "comma list"),
                        (["reroll", "--frames", "40"], "outside 0-11"),
-                       (["propagate", "--every", "5", "--ebsynth", "/bin/true"], "divide")):
+                       (["propagate", "--every", "5", "--ebsynth", shutil.which("true")], "divide")):
         got, err = _main_exit(seq + argv)
         assert got == 1 and text in err and "Traceback" not in err, (argv, got, err)
     shutil.rmtree(tmp)
