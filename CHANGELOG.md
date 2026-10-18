@@ -2,7 +2,7 @@
 
 All notable changes to gpt-ui-assets. Versions follow [semantic versioning](https://semver.org).
 
-## 5.0.0 (unreleased)
+## 5.0.0 (2026-10-18)
 
 ### Added
 - **Form factors.** `mockup --device phone|tablet|foldable|desktop` with `--orientation`, `--posture` and `--page`,
@@ -21,6 +21,15 @@ All notable changes to gpt-ui-assets. Versions follow [semantic versioning](http
 - **Automatic design QA.** `mockup` critiques every variant as soon as it is rendered (`--no-critique` skips it).
 - `GPTKIT_QUALITY=low|medium|high` for cheap drafts.
 
+### Fixed
+- Chrome is never launched inside the Codex CLI's macOS sandbox, where it aborts on start (SIGABRT in
+  TransformProcessType) and leaves a crash report; the kit falls back to another renderer and says why.
+- Generated screens invent a product name instead of borrowing a real brand.
+- A contrast issue whose measured ratio already meets its target drops to low and says "check by eye".
+- `mockup --set` writes and prints each device under its final name and keeps the folder's other screen records.
+- A `--style-ref` from another platform no longer turns a desktop or web screen phone-shaped.
+- The offline tests no longer write mocked calls into the user's cost ledger or reach a real Codex CLI.
+
 ### Changed
 - New phone screens render on a 9:19.5 canvas (1152x2496, current iPhone proportions) instead of 2:3. Every render is
   measured against its canvas and fitted locally (empty gaps trimmed or extended, nothing scaled) when the backend
@@ -31,6 +40,9 @@ All notable changes to gpt-ui-assets. Versions follow [semantic versioning](http
   point.
 - Playwright is optional (only `stage` needs it).
 - Web mockups calibrate to the device's logical width (previously 390 px for every web page).
+- The longest functions (`cmd_compare`, `svg_to_vd`, `cmd_fonts`, `_status_scan`, `cmd_appicon_build`, the argparse
+  tree) are split into named helpers, with no change in behaviour or `-h` output.
+- On the Codex CLI backend the `plan:` line counts plan quota instead of dollars.
 
 ## 4.0.0 (2026-10-18)
 

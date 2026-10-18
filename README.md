@@ -140,7 +140,8 @@ python3 ~/.claude/skills/gpt-ui-assets/scripts/gptkit.py setup      # shows whic
   list; `GPTKIT_IMAGE_MODEL` / `GPTKIT_TEXT_MODEL` pin one.
 - **Local Codex CLI** (no key; uses your ChatGPT plan's quota). `npm i -g @openai/codex && codex login`, then
   `gptkit.py setup --backend cli`. Design, critique and research work fully. Its image tool has no size or fidelity
-  control, so the kit fits the aspect locally and recommends the API for `forge`, `fix` and `sequence`.
+  control, so the kit fits the aspect locally and recommends the API for `forge`, `fix` and `sequence`. Paid commands
+  print a `plan:` line in plan quota instead of dollars.
 
 With `GPTKIT_BACKEND=auto` (the default), an API key wins and the Codex CLI is used when there is none. Check
 everything with:
@@ -215,6 +216,10 @@ The measurements behind every rule are in [`references/api-findings.md`](skills/
 - `mods/attachment-preview/` is the optional viewer mod.
 - `python3 gptkit.py status <dir>` shows where a project stands and the next command, with no API calls.
 - `CONTRIBUTING.md` has the rules for changing the kit and how to run the tests.
+
+## Changelog
+
+What changed in each release is in [`CHANGELOG.md`](CHANGELOG.md). Security reports: [`SECURITY.md`](SECURITY.md).
 
 ## License
 
