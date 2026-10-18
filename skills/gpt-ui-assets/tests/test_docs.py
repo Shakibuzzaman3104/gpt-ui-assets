@@ -15,6 +15,12 @@ ROOT = HERE.parent
 REPO_ROOT = ROOT.parent.parent  # skills/gpt-ui-assets -> skills -> repo root
 SKILL_MD = ROOT / "SKILL.md"
 README_MD = REPO_ROOT / "README.md"
+# SKILL.md is a router; the recipes live in the phase references it points to (api-findings.md is raw measurements)
+SKILL_DOCS = [SKILL_MD] + sorted(p for p in (ROOT / "references").glob("*.md") if p.name != "api-findings.md")
+
+
+def _skill_text():
+    return "\n".join(p.read_text() for p in SKILL_DOCS)
 KIT = ROOT / "scripts" / "gptkit.py"
 
 
@@ -80,12 +86,12 @@ def _recipes(text):
 
 
 def test_every_recipe_names_a_real_subcommand():
-    text = SKILL_MD.read_text()
+    text = _skill_text()
     seen = 0
     for cmd, line in _recipes(text):
         seen += 1
         base = cmd.split(" ")[0]
-        assert base in SUB.choices, f"SKILL.md recipe names unknown subcommand {base!r}: {line.strip()!r}"
+        assert base in SUB.choices, f"skill docs recipe names unknown subcommand {base!r}: {line.strip()!r}"
         if " " in cmd:
             sub_name = cmd.split(" ", 1)[1]
             assert cmd in CMD_FLAGS, f"SKILL.md recipe names unknown appicon stage {sub_name!r}: {line.strip()!r}"
@@ -93,7 +99,7 @@ def test_every_recipe_names_a_real_subcommand():
 
 
 def test_recipe_flags_match_their_own_command():
-    text = SKILL_MD.read_text()
+    text = _skill_text()
     checked = 0
     for cmd, line in _recipes(text):
         base = cmd.split(" ")[0]
@@ -124,11 +130,12 @@ def test_every_backticked_flag_exists_somewhere():
     # Chrome's own CLI flags (mentioned when documenting _chrome_flags/doctor), not gptkit's.
     chrome_flags = {"--no-sandbox", "--window-size", "--headless", "--user-data-dir",
                      "--use-mock-keychain", "--default-background-color", "--screenshot"}
+    css_custom_props = {"--hole"}  # the registered CSS property hybrid pages animate (references/hybrid.md)
     bad = []
-    for path in (SKILL_MD, README_MD):
+    for path in (*SKILL_DOCS, README_MD):
         for m in FLAG_RE.finditer(path.read_text()):
             flag = m.group(1)
-            if flag in chrome_flags or flag in ALL_FLAGS:
+            if flag in chrome_flags or flag in css_custom_props or flag in ALL_FLAGS:
                 continue
             bad.append((path.name, flag))
     assert not bad, f"backticked flags that no command's argparse accepts: {bad}"

@@ -67,10 +67,13 @@ python3 $K critique design/home/mockup_v1.png          # Read the critique sheet
 # ...iterate with --edit until the user approves; screen 2 onward uses --style-ref <approved screen>
 python3 $K manifest design/home/mockup_v1.png --out build/home   # Read manifest_overlay.png; fix assets.json by hand
 python3 $K spec build/home                              # calibrated scale, palette, type, native widget per component
-python3 $K forge build/home --candidates 3 &  python3 $K svg build/home &  wait   # Read review/forge_*.png, review/svg_*.png
+python3 $K forge build/home --candidates 3 &         # forge and svg in parallel (each image call takes 35-80 s)
+python3 $K svg build/home & wait                      # then Read review/forge_*.png and review/svg_*.png
 python3 $K vd build/home/svg/*.svg --out app/src/main/res/drawable
 python3 $K export build/home/assets/hero.png --dp 240 --res app/src/main/res --name hero
-python3 $K fonts build/home && python3 $K redline build/home && python3 $K tokens build/home --package com.acme.ui.theme --verify
+python3 $K fonts build/home
+python3 $K redline build/home
+python3 $K tokens build/home --package com.acme.ui.theme --verify
 # build the screen with spec's native widgets, screenshot it at the design's effective width, then:
 python3 $K compare build/home shot.png
 ```
