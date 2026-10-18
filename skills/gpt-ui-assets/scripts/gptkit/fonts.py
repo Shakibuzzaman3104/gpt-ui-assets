@@ -533,7 +533,296 @@ def _woff2(ttf):
     return out
 
 
-def cmd_fonts(a):
+def _fonts_collect_group(gkey, members, extras, forced, force_all, a, texts, k):
+    """Collect a group's font candidates and download its renderable TTFs."""
+    italic = gkey.endswith("|italic")
+    guess = members[0].get("family_guess", "")
+    wts = sorted({st.get("weight", 400) for st in members})
+    display_ok = any(st["size_px"] * k >= 20 for st in members)
+    cands, cat = _font_shortlist(guess, wts[len(wts) // 2], italic, a.candidates, display_ok)
+    cands += [f for f in extras if f not in cands]
+    if forced and forced not in cands and (forced["category"] == cat or force_all):
+        cands.append(forced)
+    print(f"group '{guess[:50]}' ({len(members)} styles, {cat}): {len(cands)} candidate families")
+    need = sorted({(f["family"], w) for f in cands for st in members
+                   for w in sorted((int(x.rstrip("i")) for x in f["fonts"] if x.endswith("i") == italic),
+                                   key=lambda x: abs(x - st.get("weight", 400)))[:a.weights]})
+    with cf.ThreadPoolExecutor(8) as ex:
+        paths = dict(zip(need, ex.map(lambda fw: _gf_ttf(fw[0], fw[1], italic), need)))
+    failed = [fw for fw in need if paths[fw] is None]
+    return {"italic": italic, "guess": guess, "cands": cands, "cat": cat, "need": need,
+            "paths": paths, "failed": failed,
+            "last_err": _GF_TTF_ERRORS.get((failed[-1][0], failed[-1][1], italic), "") if failed else ""}
+
+
+def _fonts_match_group(members, texts, cands, italic, paths, a):
+    """Render and score each style against the downloaded candidate fonts."""
+    with cf.ThreadPoolExecutor(8) as ex:
+        return dict(zip([m["role"] for m in members],
+                        ex.map(lambda st: _match_style(st, texts[st["role"]], cands, italic, a.weights, paths), members)))
+
+
+def _fonts_rank_group(members, texts, per):
+    """Rank candidate families using reliable, area-weighted style matches."""
+    fam_score = {}
+    reliable = [m for m in members if per[m["role"]] and per[m["role"]][0][2]["similarity"] >= 0.45]
+    for st in reliable:
+        best_by_fam = {}
+        for fam, w, fit in per[st["role"]]:
+            best_by_fam.setdefault(fam, fit["similarity"])
+        top = max(best_by_fam.values())
+        area = math.sqrt(texts[st["role"]]["box"][2] * texts[st["role"]]["box"][3])
+        for fam, sim in best_by_fam.items():
+            fam_score.setdefault(fam, []).append((sim / top, area))
+    n_ok = len(reliable)
+    ranking = sorted(((fam, sum(sc * ar for sc, ar in v) / sum(ar for _, ar in v)) for fam, v in fam_score.items()
+                      if len(v) == n_ok), key=lambda t: -t[1])
+    return reliable, ranking
+
+
+def _fonts_store_style(st, t, rs, winner, italic, cands, guess, rgb, show, results, sheet_rows):
+    """Store one measured typography style and add its visual review row."""
+    mine = [r for r in rs if r[0] == winner]
+    if not mine:
+        return
+    fam, w, fit = mine[0]
+    tie = None
+    spec_w = st.get("weight")
+    alt = next((r for r in mine if r[1] == spec_w), None)
+    steps = sorted({r[1] for r in mine})
+    if alt and alt[1] != w and abs(steps.index(alt[1]) - steps.index(w)) == 1 and alt[2]["similarity"] >= fit["similarity"] - 0.07:
+        tie = {"measured": w, "chosen": spec_w, "similarity": [fit["similarity"], alt[2]["similarity"]]}
+        fam, w, fit = alt
+    ok = rs[0][2]["similarity"] >= 0.45 and -0.15 < fit["tracking_em"] < 0.6
+    avail = [int(x.rstrip("i")) for f in cands if f["family"] == winner for x in f["fonts"] if x.endswith("i") == italic]
+    spec_w = min(avail, key=lambda x: abs(x - st.get("weight", w))) if avail else w
+    results[st["role"]] = {"role": st["role"], "family": winner, "weight": w if ok else spec_w, "italic": italic,
+                           "size_px": fit["size_px"] if ok else None,
+                           "tracking_em": fit["tracking_em"] if ok else st.get("letter_spacing_em", 0),
+                           "reliable": ok, "weight_tie": tie,
+                           "similarity": fit["similarity"], "word_mode": fit["word_mode"],
+                           "natural_line_height_em": fit["natural_line_height_em"], "ascent_em": fit["ascent_em"],
+                           "spec": {"size_px": st["size_px"], "weight": st.get("weight"),
+                                    "letter_spacing_em": st.get("letter_spacing_em"), "family_guess": guess},
+                           "alternatives": [[r[0], r[1], r[2]["similarity"]] for r in rs[:6]]}
+    if not ok:
+        results[st["role"]]["warning"] = (f"unreliable measurement (best fit {rs[0][2]['similarity']:.2f}); kept the spec's "
+                                           "size/weight/tracking; check its box in text_boxes.png")
+    elif rs[0][0] != winner and rs[0][2]["similarity"] > fit["similarity"] + 0.1:
+        results[st["role"]]["warning"] = (f"fits {winner} poorly ({fit['similarity']:.2f}); {rs[0][0]} {rs[0][1]} fits this "
+                                           f"style much better ({rs[0][2]['similarity']:.2f})")
+    if tie:
+        results[st["role"]]["note"] = (f"weights {tie['measured']} and {tie['chosen']} tie within 0.07 "
+                                        f"({tie['similarity'][0]:.3f} vs {tie['similarity'][1]:.3f}); kept the spec's {tie['chosen']}")
+    bg, ink = np.array(_hexi(t["bg"]), float), np.array(_hexi(t["ink"]), float)
+    x, y, w_, h_ = t["box"]
+    tiles = [("DESIGN (mockup pixels)", rgb.crop((x - 4, y - 4, x + w_ + 4, y + h_ + 4)))]
+    seen = set()
+    for fam_, wt, ft in [mine[0]] + [r for r in rs if r is not mine[0]]:
+        if (fam_, wt) in seen or len(tiles) > show:
+            continue
+        seen.add((fam_, wt))
+        col = (bg + ft["render"][..., None] * (ink - bg)).astype(np.uint8)
+        tile = Image.new("RGB", (col.shape[1] + 8, col.shape[0] + 8), tuple(int(v) for v in bg))
+        tile.paste(Image.fromarray(col), (4, 4))
+        star = "*" if fam_ == winner and wt == w else ""
+        tiles.append((f"{star}{fam_} {wt} sim {ft['similarity']:.3f}", tile))
+    sheet_rows.append((f"{st['role']} ({t['sample'][:18]})", tiles))
+
+
+def _fonts_write_family(fam, rs, out, meta):
+    """Download one selected family and write its Android font resources and licence."""
+    ttf_dir, res_font, lic_dir = out / "ttf", out / "android" / "res" / "font", out / "licenses"
+    lic = _gf_license(fam)
+    files, ps, fetch_failed = [], {}, []
+    for w, it in sorted({(r["weight"], r["italic"]) for r in rs}):
+        src = _gf_ttf(fam, w, it)
+        if not src:
+            fetch_failed.append(f"{fam} {w}{' italic' if it else ''}")
+            print(f"  ! could not download {fam} {w}{' italic' if it else ''} ({_GF_TTF_ERRORS.get((fam, w, it), '')}); skipped")
+            continue
+        psn, full = _ttf_names(src)
+        fname = (psn or fam.replace(" ", "") + f"-{w}") + ".ttf"
+        ttf_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copy(src, ttf_dir / fname)
+        wname = {100: "thin", 200: "extralight", 300: "light", 400: "regular", 500: "medium", 600: "semibold", 700: "bold",
+                 800: "extrabold", 900: "black"}.get(w, str(w))
+        android = _res_name(f"{fam}_{wname}{'_italic' if it else ''}", "f_")
+        res_font.mkdir(parents=True, exist_ok=True)
+        shutil.copy(src, res_font / f"{android}.ttf")
+        entry = {"weight": w, "italic": it, "ttf": str(Path("ttf") / fname), "android": android, "postscript": psn}
+        woff2 = _woff2(ttf_dir / fname)
+        if woff2:
+            entry["woff2"] = str(Path("ttf") / woff2.name)
+        files.append(entry)
+        ps[f"{w}{'i' if it else ''}"] = psn
+    if not files:
+        return None, fetch_failed
+    xml_name = _res_name(fam, "f_")
+    if xml_name != re.sub(r"[^a-z0-9]+", "_", fam.lower()).strip("_"):
+        print(f"  (Android resource name for {fam}: {xml_name})")
+    items = "".join(f'    <font\n        android:font="@font/{f["android"]}"\n        android:fontStyle="'
+                    f'{"italic" if f["italic"] else "normal"}"\n        android:fontWeight="{f["weight"]}"\n'
+                    f'        app:font="@font/{f["android"]}"\n        app:fontStyle="{"italic" if f["italic"] else "normal"}"\n'
+                    f'        app:fontWeight="{f["weight"]}" />\n' for f in files)
+    (res_font / f"{xml_name}.xml").write_text('<?xml version="1.0" encoding="utf-8"?>\n<font-family xmlns:android='
+                                               '"http://schemas.android.com/apk/res/android"\n    xmlns:app='
+                                               f'"http://schemas.android.com/apk/res-auto">\n{items}</font-family>\n')
+    if lic.get("text"):
+        lic_dir.mkdir(parents=True, exist_ok=True)
+        (lic_dir / (re.sub(r"\W+", "", fam) + f"-{lic['license']}.txt")).write_text(lic["text"])
+    else:
+        print(f"  ! license text for {fam} not fetched ({lic.get('error', 'not found on github.com/google/fonts')}); "
+              "add it before shipping (the OFL requires the licence and copyright notice to accompany the fonts)")
+    cat = next((f.get("category") for f in meta if f["family"] == fam), None)
+    wts = sorted({f["weight"] for f in files})
+    has_italic = any(f["italic"] for f in files)
+    axis = ("ital,wght@" + ";".join(f"{int(f['italic'])},{f['weight']}" for f in sorted(files, key=lambda f: (f["italic"], f["weight"])))
+            if has_italic else "wght@" + ";".join(map(str, wts)))
+    family = {"family": fam, "category": cat, "license": lic["license"], "source": lic.get("dir"), "files": files,
+              "postscript": ps, "android_family": f"@font/{xml_name}",
+              "css": f"https://fonts.googleapis.com/css2?family={fam.replace(' ', '+')}:{axis}&display=swap",
+              "css_fallback": _CSS_FALLBACK.get(cat, "sans-serif")}
+    return family, fetch_failed
+
+
+def _fonts_write_web(families, out):
+    """Write web font CSS, CDN link markup, the iOS plist, and Android resource checks."""
+    web = out / "web"
+    web.mkdir(parents=True, exist_ok=True)
+    stack = "".join(f"/* {f['family']}: font-family: \"{f['family']}\", {f['css_fallback']}; */\n" for f in families)
+    src_of = lambda x: (f"url(\"../{x['woff2']}\") format(\"woff2\"), " if x.get("woff2") else "") + \
+        f"url(\"../{x['ttf']}\") format(\"truetype\")"
+    (web / "fonts.css").write_text(stack + "".join(
+        f"@font-face {{\n  font-family: \"{f['family']}\";\n  font-style: {'italic' if x['italic'] else 'normal'};\n"
+        f"  font-weight: {x['weight']};\n  font-display: swap;\n  src: {src_of(x)};\n}}\n"
+        for f in families for x in f["files"]))
+    if families and not any(x.get("woff2") for f in families for x in f["files"]):
+        print(f"  (WOFF2 skipped: {_WOFF2_WHY}; web/fonts.css serves the TTFs)")
+    link_html = ""
+    if families:
+        href = "https://fonts.googleapis.com/css2?" + "&".join(
+            f["css"].split("?", 1)[1].replace("&display=swap", "") for f in families) + "&display=swap"
+        link_html = ('<link rel="preconnect" href="https://fonts.googleapis.com">\n<link rel="preconnect" href="https://fonts.gstatic.com" '
+                     f'crossorigin>\n<link href="{href}" rel="stylesheet">')
+        (web / "fonts-link.html").write_text(link_html + "\n")
+    ios = out / "ios"
+    ios.mkdir(parents=True, exist_ok=True)
+    import plistlib
+    (ios / "UIAppFonts.plist").write_bytes(plistlib.dumps({"UIAppFonts": [Path(x["ttf"]).name for f in families for x in f["files"]]}))
+    aapt2_msg = _aapt2_tree(out / "android" / "res", extra_res={"values/gptkit_fontfamily_attrs.xml": (
+        '<resources><declare-styleable name="FontFamilyFont"><attr name="font" format="reference"/>'
+        '<attr name="fontStyle"><enum name="normal" value="0"/><enum name="italic" value="1"/></attr>'
+        '<attr name="fontWeight" format="integer"/></declare-styleable></resources>')}) if families else None
+    if aapt2_msg and aapt2_msg.startswith("aapt2 compile+link ok"):
+        aapt2_msg += " (app: attributes against androidx.core's FontFamilyFont declaration)"
+    return link_html, aapt2_msg, ios
+
+
+def _fonts_save_manifest(out, families, report_groups, results, skipped, fetch_failed, link_html, aapt2_msg):
+    """Write the complete fonts.json manifest atomically."""
+    manifest = {"families": families, "groups": report_groups, "styles": list(results.values()), "unmatched": skipped,
+                "downloads_failed": fetch_failed, "link_html": link_html, "aapt2": aapt2_msg, "paths_relative_to": str(out)}
+    tmp = (out / "fonts.json").with_suffix(".json.part")
+    tmp.write_text(json.dumps(manifest, indent=2))
+    tmp.replace(out / "fonts.json")
+
+
+def _fonts_print_report(out, ios, families, results, aapt2_msg):
+    """Print the measured styles, selected files, and setup instructions."""
+    print("\nstyle                           family                 wt  size px (spec)   tracking em (spec)  sim")
+    for r in results.values():
+        sp = r.get("spec", {})
+        print(f"  {r['role'][:30]:30s} {r['family'][:20]:20s} {r['weight']:>4} {r['size_px'] or '-':>6} ({sp.get('size_px', '-')!s:>4})"
+              f"   {r['tracking_em']:>7} ({sp.get('letter_spacing_em', '-')!s:>6})   {r['similarity']:.3f}")
+    for r in results.values():
+        for key in ("warning", "note"):
+            if r.get(key):
+                print(f"  {'!' if key == 'warning' else '~'} {r['role']}: {r[key]}")
+    for f in families:
+        print(f"{f['family']}: {f['license']} ({f['source']}); files: " + ", ".join(Path(x["ttf"]).name for x in f["files"]))
+    if aapt2_msg:
+        print(f"  android/res/font: {aapt2_msg}")
+    print(f"-> {out}/fonts.json, fonts_review.png, ttf/, android/res/font/, ios/UIAppFonts.plist, web/fonts.css, web/fonts-link.html, licenses/")
+    print(f"iOS: add ttf/*.ttf to the app target (Build Phases > Copy Bundle Resources, or the SwiftPM target's resources), then\n"
+          f"     /usr/libexec/PlistBuddy -c \"Merge {ios / 'UIAppFonts.plist'}\" App/Info.plist   (use Font.custom(<PostScript name>))\n"
+          "Web: link web/fonts.css (self-hosted TTF), or paste web/fonts-link.html for the Google Fonts CDN. Re-run `tokens` to use these families.")
+
+
+def _fonts_score_one_group(gkey, members, a, state):
+    """Collect candidates, rank one typography group, and store its selected styles."""
+    group = _fonts_collect_group(gkey, members, state["extras"], state["forced"], state["force_all"],
+                                a, state["texts"], state["k"])
+    italic, guess = group["italic"], group["guess"]
+    cands, cat = group["cands"], group["cat"]
+    need, paths, failed = group["need"], group["paths"], group["failed"]
+    state["n_need"] += len(need)
+    state["n_failed"] += len(failed)
+    if failed:
+        state["last_err"] = group["last_err"]
+    if need and len(failed) == len(need):
+        print(f"  ! none of the {len(need)} candidate TTFs for this group could be downloaded ({state['last_err']}); group skipped")
+        state["skipped"] += [m["role"] for m in members]
+        return
+    if failed:
+        print(f"  ! {len(failed)}/{len(need)} candidate fonts could not be downloaded: "
+              + ", ".join(f"{f} {w}" for f, w in failed[:6]) + (" ..." if len(failed) > 6 else "") + f" ({state['last_err']})")
+    per = _fonts_match_group(members, state["texts"], cands, italic, paths, a)
+    reliable, ranking = _fonts_rank_group(members, state["texts"], per)
+    if not ranking:
+        best = max((per[m["role"]][0][2]["similarity"] for m in members if per[m["role"]]), default=0)
+        print(f"  ! no reliable match (best similarity {best:.2f} < 0.45): likely custom lettering or a family outside "
+              "the shortlist; ship it as an SVG/VectorDrawable, or pass --family/--extra. Styles: "
+              + ", ".join(m["role"] for m in members))
+        state["skipped"] += [m["role"] for m in members]
+        return
+    named = [f["family"] for f in _named_families(guess)]
+    best = ranking[0][1]
+    prior = next((f for f, sc in ranking if f in named and sc >= best - a.tie), None)
+    forced = state["forced"]
+    if forced and forced in cands and not any(f == forced["family"] for f, _ in ranking):
+        print(f"  ! --family {forced['family']}: could not be measured for this group (download failed or no reliable fit); "
+              "using the best measured family")
+    winner = forced["family"] if forced and any(f == forced["family"] for f, _ in ranking) else (prior or ranking[0][0])
+    why = "forced" if forced and winner == forced["family"] else ("spec's named family, within tie margin" if prior and prior != ranking[0][0]
+                                                                  else "best measured")
+    state["forced_used"] |= why == "forced"
+    state["report_groups"].append({"guess": guess, "category": cat, "italic": italic, "winner": winner, "decided_by": why,
+                                   "ranking": [[f, round(sc, 4)] for f, sc in ranking[:8]], "styles": [m["role"] for m in members],
+                                   "downloads_failed": [f"{f} {w}" for f, w in failed]})
+    print(f"  -> {winner} [{why}]   (top: " + ", ".join(f"{f} {sc:.3f}" for f, sc in ranking[:4]) + ")")
+    ties = [f for f, sc in ranking[1:6] if sc >= ranking[0][1] - 0.005]
+    if ties:
+        state["report_groups"][-1]["tied_with"] = ties
+        print(f"     measured tie with {', '.join(ties)}: the mockup can't separate them; choose by taste with --family")
+    for st in members:
+        _fonts_store_style(st, state["texts"][st["role"]], per[st["role"]], winner, italic, cands, guess,
+                           state["rgb"], a.show, state["results"], state["sheet_rows"])
+
+
+def _fonts_score_groups(a, spec, styles, extras, forced, texts, rgb, skipped):
+    """Group typography styles, score each group, and enforce download-result checks."""
+    groups = {}
+    for st in styles:
+        groups.setdefault(_font_group(st), []).append(st)
+    state = {"texts": texts, "rgb": rgb, "extras": extras, "forced": forced, "skipped": skipped,
+             "results": {}, "report_groups": [], "sheet_rows": [], "k": spec.get("px_to_dp", 1.0),
+             "n_need": 0, "n_failed": 0, "last_err": "", "forced_used": False}
+    cats = {gkey: _font_shortlist(members[0].get("family_guess", ""), 400, False, 0)[1]
+            for gkey, members in groups.items()}
+    state["force_all"] = bool(forced) and forced["category"] not in cats.values()
+    if state["force_all"] and groups:
+        print(f"  (--family {forced['family']} is {forced['category']}; no group has that category, so it is tried for every group)")
+    for gkey, members in groups.items():
+        _fonts_score_one_group(gkey, members, a, state)
+    if state["n_need"] and state["n_failed"] == state["n_need"]:
+        sys.exit(f"fonts: could not download any candidate TTF from fonts.googleapis.com/fonts.gstatic.com ({state['last_err']}); "
+                 "check network/proxy, then re-run (fonts.json left untouched)")
+    return state
+
+
+def _fonts_prepare(a):
+    """Load the design, font metadata, and selected typography styles."""
     d, spec, mock = _d2c_load_spec(a.dir)
     try:
         meta = _gf_meta()
@@ -553,138 +842,14 @@ def cmd_fonts(a):
     if any(ord(ch) > 0x024F for st in styles for ch in st.get("sample", "")):
         print("  ! samples contain non-Latin characters: the matcher renders Latin glyphs only (no shaping, ligatures or RTL); "
               "results for those samples are unreliable")
-    groups = {}
-    for st in styles:
-        groups.setdefault(_font_group(st), []).append(st)
-    results, report_groups, sheet_rows = {}, [], []
-    k = spec.get("px_to_dp", 1.0)
-    n_need = n_failed = 0
-    last_err = ""
-    forced_used = False
-    cats = {gkey: _font_shortlist(members[0].get("family_guess", ""), 400, False, 0)[1] for gkey, members in groups.items()}
-    force_all = bool(forced) and forced["category"] not in cats.values()
-    if force_all and groups:
-        print(f"  (--family {forced['family']} is {forced['category']}; no group has that category, so it is tried for every group)")
-    for gkey, members in groups.items():
-        italic = gkey.endswith("|italic")
-        guess = members[0].get("family_guess", "")
-        wts = sorted({st.get("weight", 400) for st in members})
-        display_ok = any(st["size_px"] * k >= 20 for st in members)
-        cands, cat = _font_shortlist(guess, wts[len(wts) // 2], italic, a.candidates, display_ok)
-        cands += [f for f in extras if f not in cands]
-        if forced and forced not in cands and (forced["category"] == cat or force_all):
-            cands.append(forced)
-        print(f"group '{guess[:50]}' ({len(members)} styles, {cat}): {len(cands)} candidate families")
-        need = sorted({(f["family"], w) for f in cands for st in members
-                       for w in sorted((int(x.rstrip("i")) for x in f["fonts"] if x.endswith("i") == italic),
-                                       key=lambda x: abs(x - st.get("weight", 400)))[:a.weights]})
-        with cf.ThreadPoolExecutor(8) as ex:
-            paths = dict(zip(need, ex.map(lambda fw: _gf_ttf(fw[0], fw[1], italic), need)))
-        failed = [fw for fw in need if paths[fw] is None]
-        n_need += len(need)
-        n_failed += len(failed)
-        if failed:
-            last_err = _GF_TTF_ERRORS.get((failed[-1][0], failed[-1][1], italic), "")
-        if need and len(failed) == len(need):
-            print(f"  ! none of the {len(need)} candidate TTFs for this group could be downloaded ({last_err}); group skipped")
-            skipped += [m["role"] for m in members]
-            continue
-        if failed:
-            print(f"  ! {len(failed)}/{len(need)} candidate fonts could not be downloaded: "
-                  + ", ".join(f"{f} {w}" for f, w in failed[:6]) + (" ..." if len(failed) > 6 else "") + f" ({last_err})")
-        with cf.ThreadPoolExecutor(8) as ex:
-            per = dict(zip([m["role"] for m in members],
-                           ex.map(lambda st: _match_style(st, texts[st["role"]], cands, italic, a.weights, paths), members)))
-        fam_score = {}
-        reliable = [m for m in members if per[m["role"]] and per[m["role"]][0][2]["similarity"] >= 0.45]
-        for st in reliable:
-            best_by_fam = {}
-            for fam, w, fit in per[st["role"]]:
-                best_by_fam.setdefault(fam, fit["similarity"])
-            top = max(best_by_fam.values())
-            area = math.sqrt(texts[st["role"]]["box"][2] * texts[st["role"]]["box"][3])
-            for fam, sim in best_by_fam.items():
-                fam_score.setdefault(fam, []).append((sim / top, area))
-        n_ok = len(reliable)
-        ranking = sorted(((fam, sum(sc * ar for sc, ar in v) / sum(ar for _, ar in v)) for fam, v in fam_score.items()
-                          if len(v) == n_ok), key=lambda t: -t[1])
-        if not ranking:
-            best = max((per[m["role"]][0][2]["similarity"] for m in members if per[m["role"]]), default=0)
-            print(f"  ! no reliable match (best similarity {best:.2f} < 0.45): likely custom lettering or a family outside "
-                  "the shortlist; ship it as an SVG/VectorDrawable, or pass --family/--extra. Styles: "
-                  + ", ".join(m["role"] for m in members))
-            skipped += [m["role"] for m in members]
-            continue
-        named = [f["family"] for f in _named_families(guess)]
-        best = ranking[0][1]
-        prior = next((f for f, sc in ranking if f in named and sc >= best - a.tie), None)
-        if forced and forced in cands and not any(f == forced["family"] for f, _ in ranking):
-            print(f"  ! --family {forced['family']}: could not be measured for this group (download failed or no reliable fit); "
-                  "using the best measured family")
-        winner = forced["family"] if forced and any(f == forced["family"] for f, _ in ranking) else (prior or ranking[0][0])
-        why = "forced" if forced and winner == forced["family"] else ("spec's named family, within tie margin" if prior and prior != ranking[0][0]
-                                                                      else "best measured")
-        forced_used |= why == "forced"
-        report_groups.append({"guess": guess, "category": cat, "italic": italic, "winner": winner, "decided_by": why,
-                              "ranking": [[f, round(sc, 4)] for f, sc in ranking[:8]], "styles": [m["role"] for m in members],
-                              "downloads_failed": [f"{f} {w}" for f, w in failed]})
-        print(f"  -> {winner} [{why}]   (top: " + ", ".join(f"{f} {sc:.3f}" for f, sc in ranking[:4]) + ")")
-        ties = [f for f, sc in ranking[1:6] if sc >= ranking[0][1] - 0.005]
-        if ties:
-            report_groups[-1]["tied_with"] = ties
-            print(f"     measured tie with {', '.join(ties)}: the mockup can't separate them; choose by taste with --family")
-        for st in members:
-            t = texts[st["role"]]
-            rs = per[st["role"]]
-            mine = [r for r in rs if r[0] == winner]
-            if not mine:
-                continue
-            fam, w, fit = mine[0]
-            tie = None
-            spec_w = st.get("weight")
-            alt = next((r for r in mine if r[1] == spec_w), None)
-            steps = sorted({r[1] for r in mine})
-            if alt and alt[1] != w and abs(steps.index(alt[1]) - steps.index(w)) == 1 and alt[2]["similarity"] >= fit["similarity"] - 0.07:
-                tie = {"measured": w, "chosen": spec_w, "similarity": [fit["similarity"], alt[2]["similarity"]]}
-                fam, w, fit = alt
-            ok = rs[0][2]["similarity"] >= 0.45 and -0.15 < fit["tracking_em"] < 0.6
-            avail = [int(x.rstrip("i")) for f in cands if f["family"] == winner for x in f["fonts"] if x.endswith("i") == italic]
-            spec_w = min(avail, key=lambda x: abs(x - st.get("weight", w))) if avail else w
-            results[st["role"]] = {"role": st["role"], "family": winner, "weight": w if ok else spec_w, "italic": italic,
-                                   "size_px": fit["size_px"] if ok else None,
-                                   "tracking_em": fit["tracking_em"] if ok else st.get("letter_spacing_em", 0),
-                                   "reliable": ok, "weight_tie": tie,
-                                   "similarity": fit["similarity"], "word_mode": fit["word_mode"],
-                                   "natural_line_height_em": fit["natural_line_height_em"], "ascent_em": fit["ascent_em"],
-                                   "spec": {"size_px": st["size_px"], "weight": st.get("weight"),
-                                            "letter_spacing_em": st.get("letter_spacing_em"), "family_guess": guess},
-                                   "alternatives": [[r[0], r[1], r[2]["similarity"]] for r in rs[:6]]}
-            if not ok:
-                results[st["role"]]["warning"] = (f"unreliable measurement (best fit {rs[0][2]['similarity']:.2f}); kept the spec's "
-                                                  "size/weight/tracking; check its box in text_boxes.png")
-            elif rs[0][0] != winner and rs[0][2]["similarity"] > fit["similarity"] + 0.1:
-                results[st["role"]]["warning"] = (f"fits {winner} poorly ({fit['similarity']:.2f}); {rs[0][0]} {rs[0][1]} fits this "
-                                                  f"style much better ({rs[0][2]['similarity']:.2f})")
-            if tie:
-                results[st["role"]]["note"] = (f"weights {tie['measured']} and {tie['chosen']} tie within 0.07 "
-                                               f"({tie['similarity'][0]:.3f} vs {tie['similarity'][1]:.3f}); kept the spec's {tie['chosen']}")
-            bg, ink = np.array(_hexi(t["bg"]), float), np.array(_hexi(t["ink"]), float)
-            x, y, w_, h_ = t["box"]
-            tiles = [("DESIGN (mockup pixels)", rgb.crop((x - 4, y - 4, x + w_ + 4, y + h_ + 4)))]
-            seen = set()
-            for fam_, wt, ft in [mine[0]] + [r for r in rs if r is not mine[0]]:
-                if (fam_, wt) in seen or len(tiles) > a.show:
-                    continue
-                seen.add((fam_, wt))
-                col = (bg + ft["render"][..., None] * (ink - bg)).astype(np.uint8)
-                tile = Image.new("RGB", (col.shape[1] + 8, col.shape[0] + 8), tuple(int(v) for v in bg))
-                tile.paste(Image.fromarray(col), (4, 4))
-                star = "*" if fam_ == winner and wt == w else ""
-                tiles.append((f"{star}{fam_} {wt} sim {ft['similarity']:.3f}", tile))
-            sheet_rows.append((f"{st['role']} ({t['sample'][:18]})", tiles))
-    if n_need and n_failed == n_need:
-        sys.exit(f"fonts: could not download any candidate TTF from fonts.googleapis.com/fonts.gstatic.com ({last_err}); "
-                 "check network/proxy, then re-run (fonts.json left untouched)")
+    return d, spec, mock, meta, forced, extras, out, rgb, texts, styles, skipped
+
+
+def cmd_fonts(a):
+    d, spec, mock, meta, forced, extras, out, rgb, texts, styles, skipped = _fonts_prepare(a)
+    state = _fonts_score_groups(a, spec, styles, extras, forced, texts, rgb, skipped)
+    results, report_groups, sheet_rows = state["results"], state["report_groups"], state["sheet_rows"]
+    skipped, forced_used = state["skipped"], state["forced_used"]
     if forced and not forced_used and results:
         print(f"  ! --family {forced['family']} was not used by any group")
     _font_sheet(sheet_rows, out / "fonts_review.png")
@@ -701,106 +866,13 @@ def cmd_fonts(a):
             stale += [res_font / f"{_res_name(f['family'], 'f_')}.xml"] + list(lic_dir.glob(re.sub(r"\W+", "", f["family"]) + "-*.txt"))
             for x in stale:
                 x.unlink(missing_ok=True)
-    fetch_failed = []
+    fetch_failed, families = [], []
     for fam in sorted({r["family"] for r in results.values()}):
         rs = [r for r in results.values() if r["family"] == fam]
-        lic = _gf_license(fam)
-        files, ps = [], {}
-        for w, it in sorted({(r["weight"], r["italic"]) for r in rs}):
-            src = _gf_ttf(fam, w, it)
-            if not src:
-                fetch_failed.append(f"{fam} {w}{' italic' if it else ''}")
-                print(f"  ! could not download {fam} {w}{' italic' if it else ''} ({_GF_TTF_ERRORS.get((fam, w, it), '')}); skipped")
-                continue
-            psn, full = _ttf_names(src)
-            fname = (psn or fam.replace(" ", "") + f"-{w}") + ".ttf"
-            ttf_dir.mkdir(parents=True, exist_ok=True)
-            shutil.copy(src, ttf_dir / fname)
-            wname = {100: "thin", 200: "extralight", 300: "light", 400: "regular", 500: "medium", 600: "semibold", 700: "bold",
-                     800: "extrabold", 900: "black"}.get(w, str(w))
-            android = _res_name(f"{fam}_{wname}{'_italic' if it else ''}", "f_")
-            res_font.mkdir(parents=True, exist_ok=True)
-            shutil.copy(src, res_font / f"{android}.ttf")
-            entry = {"weight": w, "italic": it, "ttf": str(Path("ttf") / fname), "android": android, "postscript": psn}
-            woff2 = _woff2(ttf_dir / fname)
-            if woff2:
-                entry["woff2"] = str(Path("ttf") / woff2.name)
-            files.append(entry)
-            ps[f"{w}{'i' if it else ''}"] = psn
-        if not files:
-            continue
-        xml_name = _res_name(fam, "f_")
-        if xml_name != re.sub(r"[^a-z0-9]+", "_", fam.lower()).strip("_"):
-            print(f"  (Android resource name for {fam}: {xml_name})")
-        items = "".join(f'    <font\n        android:font="@font/{f["android"]}"\n        android:fontStyle="'
-                        f'{"italic" if f["italic"] else "normal"}"\n        android:fontWeight="{f["weight"]}"\n'
-                        f'        app:font="@font/{f["android"]}"\n        app:fontStyle="{"italic" if f["italic"] else "normal"}"\n'
-                        f'        app:fontWeight="{f["weight"]}" />\n' for f in files)
-        (res_font / f"{xml_name}.xml").write_text('<?xml version="1.0" encoding="utf-8"?>\n<font-family xmlns:android='
-                                                  '"http://schemas.android.com/apk/res/android"\n    xmlns:app='
-                                                  f'"http://schemas.android.com/apk/res-auto">\n{items}</font-family>\n')
-        if lic.get("text"):
-            lic_dir.mkdir(parents=True, exist_ok=True)
-            (lic_dir / (re.sub(r"\W+", "", fam) + f"-{lic['license']}.txt")).write_text(lic["text"])
-        else:
-            print(f"  ! license text for {fam} not fetched ({lic.get('error', 'not found on github.com/google/fonts')}); "
-                  "add it before shipping (the OFL requires the licence and copyright notice to accompany the fonts)")
-        cat = next((f.get("category") for f in meta if f["family"] == fam), None)
-        wts = sorted({f["weight"] for f in files})
-        has_italic = any(f["italic"] for f in files)
-        axis = ("ital,wght@" + ";".join(f"{int(f['italic'])},{f['weight']}" for f in sorted(files, key=lambda f: (f["italic"], f["weight"])))
-                if has_italic else "wght@" + ";".join(map(str, wts)))
-        families.append({"family": fam, "category": cat, "license": lic["license"], "source": lic.get("dir"), "files": files,
-                         "postscript": ps, "android_family": f"@font/{xml_name}",
-                         "css": f"https://fonts.googleapis.com/css2?family={fam.replace(' ', '+')}:{axis}&display=swap",
-                         "css_fallback": _CSS_FALLBACK.get(cat, "sans-serif")})
-    web = out / "web"
-    web.mkdir(parents=True, exist_ok=True)
-    stack = "".join(f"/* {f['family']}: font-family: \"{f['family']}\", {f['css_fallback']}; */\n" for f in families)
-    src_of = lambda x: (f"url(\"../{x['woff2']}\") format(\"woff2\"), " if x.get("woff2") else "") + f"url(\"../{x['ttf']}\") format(\"truetype\")"
-    (web / "fonts.css").write_text(stack + "".join(
-        f"@font-face {{\n  font-family: \"{f['family']}\";\n  font-style: {'italic' if x['italic'] else 'normal'};\n"
-        f"  font-weight: {x['weight']};\n  font-display: swap;\n  src: {src_of(x)};\n}}\n"
-        for f in families for x in f["files"]))
-    if families and not any(x.get("woff2") for f in families for x in f["files"]):
-        print(f"  (WOFF2 skipped: {_WOFF2_WHY}; web/fonts.css serves the TTFs)")
-    link_html = ""
-    if families:
-        href = "https://fonts.googleapis.com/css2?" + "&".join(f["css"].split("?", 1)[1].replace("&display=swap", "") for f in families) + "&display=swap"
-        link_html = ('<link rel="preconnect" href="https://fonts.googleapis.com">\n<link rel="preconnect" href="https://fonts.gstatic.com" '
-                     f'crossorigin>\n<link href="{href}" rel="stylesheet">')
-        (web / "fonts-link.html").write_text(link_html + "\n")
-    ios = out / "ios"
-    ios.mkdir(parents=True, exist_ok=True)
-    import plistlib
-    (ios / "UIAppFonts.plist").write_bytes(plistlib.dumps({"UIAppFonts": [Path(x["ttf"]).name for f in families for x in f["files"]]}))
-    # the app: attributes come from androidx.core's declare-styleable FontFamilyFont at build time; a stand-alone link
-    # needs that declaration too, or every app:font is "attribute not found"
-    aapt2_msg = _aapt2_tree(out / "android" / "res", extra_res={"values/gptkit_fontfamily_attrs.xml": (
-        '<resources><declare-styleable name="FontFamilyFont"><attr name="font" format="reference"/>'
-        '<attr name="fontStyle"><enum name="normal" value="0"/><enum name="italic" value="1"/></attr>'
-        '<attr name="fontWeight" format="integer"/></declare-styleable></resources>')}) if families else None
-    if aapt2_msg and aapt2_msg.startswith("aapt2 compile+link ok"):
-        aapt2_msg += " (app: attributes against androidx.core's FontFamilyFont declaration)"
-    manifest = {"families": families, "groups": report_groups, "styles": list(results.values()), "unmatched": skipped,
-                "downloads_failed": fetch_failed, "link_html": link_html, "aapt2": aapt2_msg, "paths_relative_to": str(out)}
-    tmp = (out / "fonts.json").with_suffix(".json.part")
-    tmp.write_text(json.dumps(manifest, indent=2))
-    tmp.replace(out / "fonts.json")
-    print("\nstyle                           family                 wt  size px (spec)   tracking em (spec)  sim")
-    for r in results.values():
-        sp = r.get("spec", {})
-        print(f"  {r['role'][:30]:30s} {r['family'][:20]:20s} {r['weight']:>4} {r['size_px'] or '-':>6} ({sp.get('size_px', '-')!s:>4})"
-              f"   {r['tracking_em']:>7} ({sp.get('letter_spacing_em', '-')!s:>6})   {r['similarity']:.3f}")
-    for r in results.values():
-        for key in ("warning", "note"):
-            if r.get(key):
-                print(f"  {'!' if key == 'warning' else '~'} {r['role']}: {r[key]}")
-    for f in families:
-        print(f"{f['family']}: {f['license']} ({f['source']}); files: " + ", ".join(Path(x["ttf"]).name for x in f["files"]))
-    if aapt2_msg:
-        print(f"  android/res/font: {aapt2_msg}")
-    print(f"-> {out}/fonts.json, fonts_review.png, ttf/, android/res/font/, ios/UIAppFonts.plist, web/fonts.css, web/fonts-link.html, licenses/")
-    print(f"iOS: add ttf/*.ttf to the app target (Build Phases > Copy Bundle Resources, or the SwiftPM target's resources), then\n"
-          f"     /usr/libexec/PlistBuddy -c \"Merge {ios / 'UIAppFonts.plist'}\" App/Info.plist   (use Font.custom(<PostScript name>))\n"
-          "Web: link web/fonts.css (self-hosted TTF), or paste web/fonts-link.html for the Google Fonts CDN. Re-run `tokens` to use these families.")
+        family, failed = _fonts_write_family(fam, rs, out, meta)
+        fetch_failed.extend(failed)
+        if family:
+            families.append(family)
+    link_html, aapt2_msg, ios = _fonts_write_web(families, out)
+    _fonts_save_manifest(out, families, report_groups, results, skipped, fetch_failed, link_html, aapt2_msg)
+    _fonts_print_report(out, ios, families, results, aapt2_msg)

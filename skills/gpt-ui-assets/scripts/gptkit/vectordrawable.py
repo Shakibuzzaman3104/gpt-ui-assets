@@ -389,13 +389,9 @@ def _rewind_evenodd(d):
     return _d(out)
 
 
-def svg_to_vd(svg_text, width_dp=None, warnings=None):
-    """Convert an SVG to VectorDrawable XML. Unsupported features raise ValueError; lossy ones append to warnings.
-    Handles shapes, groups and transforms (skews baked into coordinates), <style> classes, <use>/<symbol>, clip-path,
-    linear/radial gradients (userSpaceOnUse and objectBoundingBox, gradientTransform), CSS colours.
-    Default size: the root width/height (px; pt/mm/cm/in converted), else the viewBox, at the viewBox's aspect."""
-    from .svg_icons import _SHAPES, _bake_transforms  # deferred: svg_icons imports this module
-    warns = warnings if warnings is not None else []
+def _svgvd_prepare(svg_text, width_dp, warns):
+    """Parse the SVG, determine its viewport, resolve lengths, and normalize transforms."""
+    from .svg_icons import _SHAPES, _bake_transforms
     root = ET.fromstring(svg_text)
     vx, vy, vw, vh = _viewbox(root)
     if width_dp:
@@ -410,33 +406,40 @@ def svg_to_vd(svg_text, width_dp=None, warnings=None):
     _inline_uses(root, ids)
     if not root.get("viewBox", "").strip() and (root.get("width") is None or root.get("height") is None):
         warns.append("no viewBox and no width/height: a 24x24 user-unit viewport is assumed (anything past 24 is clipped)")
-    pct_ref = {"x": vw, "cx": vw, "x1": vw, "x2": vw, "width": vw, "rx": vw, "y": vh, "cy": vh, "y1": vh, "y2": vh, "height": vh, "ry": vh,
-               "r": math.sqrt((vw * vw + vh * vh) / 2)}  # percentage lengths on shapes resolve against the viewBox (SVG 1.1 7.10)
+    pct_ref = {"x": vw, "cx": vw, "x1": vw, "x2": vw, "width": vw, "rx": vw, "y": vh, "cy": vh, "y1": vh, "y2": vh,
+               "height": vh, "ry": vh, "r": math.sqrt((vw * vw + vh * vh) / 2)}
     for el in root.iter():
         if el.tag.replace(SVG_NS, "") in _SHAPES:
-            for k, ref in pct_ref.items():
-                v = (el.get(k) or "").strip()
-                if v.endswith("%"):
-                    el.set(k, f"{_num(v) / 100 * ref:g}")
+            for key, ref in pct_ref.items():
+                value = (el.get(key) or "").strip()
+                if value.endswith("%"):
+                    el.set(key, f"{_num(value) / 100 * ref:g}")
     css = _css_rules(root)
     tag_of = lambda el: el.tag.replace(SVG_NS, "") if el.tag.startswith(SVG_NS) or "{" not in el.tag else None
-    # skews (and matrices with skew) are not expressible as <group>: bake every transform into coordinates first
     for el in root.iter():
-        if el.get("transform"):
-            try:
-                _transforms(el.get("transform"))
-            except ValueError as e:
-                if "skew" not in str(e) and "not expressible" not in str(e):
-                    raise
-                baked = _bake_transforms(ET.tostring(root, encoding="unicode"))
-                if baked is None:
-                    raise ValueError(f"{e}; could not bake it into path coordinates (non-uniform scale on a stroked shape?)")
-                root = ET.fromstring(baked)
-                ids = {el.get("id"): el for el in root.iter() if el.get("id")}
-                warns.append("skew transform baked into path coordinates")
-                break
+        if not el.get("transform"):
+            continue
+        try:
+            _transforms(el.get("transform"))
+        except ValueError as e:
+            if "skew" not in str(e) and "not expressible" not in str(e):
+                raise
+            baked = _bake_transforms(ET.tostring(root, encoding="unicode"))
+            if baked is None:
+                raise ValueError(f"{e}; could not bake it into path coordinates (non-uniform scale on a stroked shape?)")
+            root = ET.fromstring(baked)
+            ids = {el.get("id"): el for el in root.iter() if el.get("id")}
+            warns.append("skew transform baked into path coordinates")
+            break
+    return {"root": root, "vx": vx, "vy": vy, "vw": vw, "vh": vh, "wdp": wdp, "hdp": hdp, "ids": ids,
+            "css": css, "tag_of": tag_of, "warns": warns, "grads": {}, "used_grad": False}
+
+
+def _svgvd_resolve_gradients(ctx):
+    """Resolve SVG gradient inheritance, stop colours, geometry, and transforms."""
+    root, tag_of, ids, css = ctx["root"], ctx["tag_of"], ctx["ids"], ctx["css"]
+    vw, vh, warns, grads = ctx["vw"], ctx["vh"], ctx["warns"], ctx["grads"]
     diag = math.sqrt((vw * vw + vh * vh) / 2)
-    grads = {}
     for gel in root.iter():
         tag = tag_of(gel)
         if tag not in ("linearGradient", "radialGradient"):
@@ -445,27 +448,25 @@ def svg_to_vd(svg_text, width_dp=None, warnings=None):
         href = gel.get("href") or gel.get("{http://www.w3.org/1999/xlink}href")
         if not any(tag_of(s) == "stop" for s in gel) and href and href[1:] in ids:
             src = ids[href[1:]]
-        get = lambda k, dflt=None: gel.get(k) if gel.get(k) is not None else src.get(k, dflt)
+        get = lambda key, default=None: gel.get(key) if gel.get(key) is not None else src.get(key, default)
         gid = gel.get("id")
         obb = get("gradientUnits") != "userSpaceOnUse"
         stops, prev = [], 0.0
-        for s in src:
-            if tag_of(s) == "stop":
-                st = {**_css_props(s, css), **_style_dict(s)}
-                col = st.get("stop-color", s.get("stop-color", "#000000"))
-                op = _opacity(st.get("stop-opacity", s.get("stop-opacity")), 1.0)
-                off = s.get("offset", "0")
-                off = _num(off) / 100 if off.strip().endswith("%") else _num(off)
-                prev = min(1.0, max(0.0, off, prev))
-                stops.append((prev, _color(col, op)))
+        for stop in src:
+            if tag_of(stop) == "stop":
+                style = {**_css_props(stop, css), **_style_dict(stop)}
+                colour = style.get("stop-color", stop.get("stop-color", "#000000"))
+                opacity = _opacity(style.get("stop-opacity", stop.get("stop-opacity")), 1.0)
+                offset = stop.get("offset", "0")
+                offset = _num(offset) / 100 if offset.strip().endswith("%") else _num(offset)
+                prev = min(1.0, max(0.0, offset, prev))
+                stops.append((prev, _color(colour, opacity)))
         gt = _tf_affine(get("gradientTransform")) if get("gradientTransform") else _IDENTITY
         if tag == "linearGradient":
             rw, rh = (1.0, 1.0) if obb else (vw, vh)
             geo = {"startX": _pct(get("x1"), rw, "0%"), "startY": _pct(get("y1"), rh, "0%"),
                    "endX": _pct(get("x2"), rw, "100%"), "endY": _pct(get("y2"), rh, "0%")}
         else:
-            # objectBoundingBox: r% is against the unit box's normalised diagonal sqrt((1+1)/2) = 1 (SVG 1.1 7.10), so
-            # the default 50% is 0.5 bbox units; the bbox matrix scales it by sqrt(bw*bh) in geometry()
             rw, rh, rd = (1.0, 1.0, 1.0) if obb else (vw, vh, diag)
             geo = {"centerX": _pct(get("cx"), rw, "50%"), "centerY": _pct(get("cy"), rh, "50%"),
                    "gradientRadius": _pct(get("r"), rd, "50%")}
@@ -474,240 +475,275 @@ def svg_to_vd(svg_text, width_dp=None, warnings=None):
                (fy is not None and abs(_pct(fy, rh, 0) - geo["centerY"]) > 1e-6):
                 warns.append(f"gradient #{gid}: focal point fx/fy ignored (VectorDrawable radial gradients are concentric)")
         grads[gid] = (tag, geo, stops, {"reflect": "mirror", "repeat": "repeat"}.get(get("spreadMethod")), obb, gt, gid)
-    used_grad = False
 
-    def geometry(ref, d):
-        """Gradient geometry in the path's user space: objectBoundingBox mapped through the path's bbox, then gradientTransform."""
-        from .vectorize import _subpaths  # deferred: vectorize imports this module
-        tag, geo, _, _, obb, gt, gid = grads[ref]
-        m = gt
-        if obb:
-            bb = _path_bbox(d)
-            if not bb:
-                raise ValueError(f"gradient #{gid}: objectBoundingBox needs a path with area")
-            bw, bh = max(bb[2] - bb[0], 1e-9), max(bb[3] - bb[1], 1e-9)
-            m = _mmul((bw, 0.0, 0.0, bh, bb[0], bb[1]), gt)
-            if any(sg[0] == "C" for sp in _subpaths(d) for sg in sp["segs"]):
-                warns.append(f"gradient #{gid}: objectBoundingBox mapped through the path's control-point box (curves: approximate)")
-        if m == _IDENTITY:
-            return dict(geo)
-        a, b, c, d_ = m[:4]
-        sx, sy = math.hypot(a, b), math.hypot(c, d_)
-        similar = abs(sx - sy) < 1e-6 * max(sx, 1) and abs(a * c + b * d_) < 1e-6
-        if tag == "linearGradient":
-            p1, p2 = (geo["startX"], geo["startY"]), (geo["endX"], geo["endY"])
-            q1, q2 = _mapply(m, *p1), _mapply(m, *p2)
-            if not similar:  # iso-lines map to lines: keep the mapped direction perpendicular to them (exact)
-                iso = (-(p2[1] - p1[1]), p2[0] - p1[0])
-                iso = (a * iso[0] + c * iso[1], b * iso[0] + d_ * iso[1])
-                nrm = math.hypot(*iso) or 1.0
-                n_ = (iso[1] / nrm, -iso[0] / nrm)
-                t = (q2[0] - q1[0]) * n_[0] + (q2[1] - q1[1]) * n_[1]
-                q2 = (q1[0] + n_[0] * t, q1[1] + n_[1] * t)
-            return {"startX": q1[0], "startY": q1[1], "endX": q2[0], "endY": q2[1]}
-        cx, cy = _mapply(m, geo["centerX"], geo["centerY"])
+
+def _svgvd_geometry(ctx, ref, d):
+    """Map gradient geometry through the path bounds and gradient transform."""
+    from .vectorize import _subpaths
+    tag, geo, _, _, obb, gt, gid = ctx["grads"][ref]
+    matrix = gt
+    if obb:
+        box = _path_bbox(d)
+        if not box:
+            raise ValueError(f"gradient #{gid}: objectBoundingBox needs a path with area")
+        bw, bh = max(box[2] - box[0], 1e-9), max(box[3] - box[1], 1e-9)
+        matrix = _mmul((bw, 0.0, 0.0, bh, box[0], box[1]), gt)
+        if any(seg[0] == "C" for sub in _subpaths(d) for seg in sub["segs"]):
+            ctx["warns"].append(f"gradient #{gid}: objectBoundingBox mapped through the path's control-point box (curves: approximate)")
+    if matrix == _IDENTITY:
+        return dict(geo)
+    a, b, c, d_ = matrix[:4]
+    sx, sy = math.hypot(a, b), math.hypot(c, d_)
+    similar = abs(sx - sy) < 1e-6 * max(sx, 1) and abs(a * c + b * d_) < 1e-6
+    if tag == "linearGradient":
+        p1, p2 = (geo["startX"], geo["startY"]), (geo["endX"], geo["endY"])
+        q1, q2 = _mapply(matrix, *p1), _mapply(matrix, *p2)
         if not similar:
-            warns.append(f"gradient #{gid}: elliptical radial gradient approximated by a circle")
-        r = geo["gradientRadius"] * math.sqrt(abs(a * d_ - b * c)) if not similar else geo["gradientRadius"] * sx
-        return {"centerX": cx, "centerY": cy, "gradientRadius": r}
+            iso = (-(p2[1] - p1[1]), p2[0] - p1[0])
+            iso = (a * iso[0] + c * iso[1], b * iso[0] + d_ * iso[1])
+            nrm = math.hypot(*iso) or 1.0
+            normal = (iso[1] / nrm, -iso[0] / nrm)
+            t = (q2[0] - q1[0]) * normal[0] + (q2[1] - q1[1]) * normal[1]
+            q2 = (q1[0] + normal[0] * t, q1[1] + normal[1] * t)
+        return {"startX": q1[0], "startY": q1[1], "endX": q2[0], "endY": q2[1]}
+    cx, cy = _mapply(matrix, geo["centerX"], geo["centerY"])
+    if not similar:
+        ctx["warns"].append(f"gradient #{gid}: elliptical radial gradient approximated by a circle")
+    radius = geo["gradientRadius"] * math.sqrt(abs(a * d_ - b * c)) if not similar else geo["gradientRadius"] * sx
+    return {"centerX": cx, "centerY": cy, "gradientRadius": radius}
 
-    def paint(v):
-        """SVG paint -> ("none", None) | ("solid", colour) | ("grad", id)."""
-        if v in ("none", "transparent", ""):
-            return "none", None
-        m_ = re.match(r"""url\(\s*['"]?#([^)'"]+)['"]?\s*\)""", v)
-        if not m_:
-            return "solid", v
-        ref = m_.group(1)
-        if ref not in grads:
-            raise ValueError(f"gradient #{ref} not found")
-        stops = grads[ref][2]
-        if not stops:
-            return "none", None
-        if len(stops) == 1:
-            return "solid", stops[0][1]
-        return "grad", ref
 
-    def grad_xml(ref, attr, indent, d):
-        nonlocal used_grad
-        used_grad = True
-        tag, _, stops, tile, *_ = grads[ref]
-        geo = geometry(ref, d)
-        if tag == "radialGradient" and geo["gradientRadius"] <= 0:
-            raise ValueError(f"gradient #{ref}: radius 0")
-        head = f'android:type="{"linear" if tag == "linearGradient" else "radial"}" ' + \
-            " ".join(f'android:{k}="{_fmt(v)}"' for k, v in geo.items())
-        if tile:
-            head += f' android:tileMode="{tile}"'
-        items = "".join(f'\n{indent}      <item android:offset="{o:g}" android:color="{c}"/>' for o, c in stops)
-        return (f'\n{indent}  <aapt:attr name="android:{attr}">\n{indent}    <gradient {head}>{items}\n'
-                f'{indent}    </gradient>\n{indent}  </aapt:attr>')
+def _svgvd_paint(ctx, value):
+    """Resolve an SVG paint value to none, a solid colour, or a gradient reference."""
+    if value in ("none", "transparent", ""):
+        return "none", None
+    match = re.match(r"""url\(\s*['"]?#([^)'\"]+)['"]?\s*\)""", value)
+    if not match:
+        return "solid", value
+    ref = match.group(1)
+    if ref not in ctx["grads"]:
+        raise ValueError(f"gradient #{ref} not found")
+    stops = ctx["grads"][ref][2]
+    if not stops:
+        return "none", None
+    if len(stops) == 1:
+        return "solid", stops[0][1]
+    return "grad", ref
 
-    def path_xml(d, attrs, ind):
-        fk, fv = paint(attrs.get("fill", "#000000"))
-        sk, sv = paint(attrs.get("stroke", "none"))
-        if any(attrs.get(k) not in (None, "none") for k in ("marker-start", "marker-mid", "marker-end")):
-            warns.append("marker-start/mid/end dropped (VectorDrawable has no markers: draw arrowheads as paths)")
-        if fk == "none" and sk == "none":
-            return ""
-        op = attrs.get("opacity", 1.0)
-        cur = attrs.get("color")
-        out = [f'{ind}<path', f'{ind}    android:pathData="{path_str(parse_path(d))}"']
-        children = ""
-        if fk != "none":
-            if fk == "grad":
-                children += grad_xml(fv, "fillColor", ind, d)
-            else:
-                out.append(f'{ind}    android:fillColor="{_color(fv, 1.0, cur)}"')
-            fo = _opacity(attrs.get("fill-opacity"), 1.0) * op
-            if fo < 1:
-                out.append(f'{ind}    android:fillAlpha="{fo:g}"')
-            if attrs.get("fill-rule") == "evenodd":
-                out.append(f'{ind}    android:fillType="evenOdd"')
-        if sk != "none":
-            if sk == "grad":
-                children += grad_xml(sv, "strokeColor", ind, d)
-            else:
-                out.append(f'{ind}    android:strokeColor="{_color(sv, 1.0, cur)}"')
-            out.append(f'{ind}    android:strokeWidth="{_num(attrs.get("stroke-width"), 1.0):g}"')
-            so = _opacity(attrs.get("stroke-opacity"), 1.0) * op
-            if so < 1:
-                out.append(f'{ind}    android:strokeAlpha="{so:g}"')
-            if attrs.get("stroke-linecap") in ("round", "square"):
-                out.append(f'{ind}    android:strokeLineCap="{attrs["stroke-linecap"]}"')
-            if attrs.get("stroke-linejoin") in ("round", "bevel"):
-                out.append(f'{ind}    android:strokeLineJoin="{attrs["stroke-linejoin"]}"')
-            if attrs.get("stroke-miterlimit"):
-                out.append(f'{ind}    android:strokeMiterLimit="{_num(attrs["stroke-miterlimit"]):g}"')
-            if attrs.get("stroke-dasharray") not in (None, "none", "0"):
-                warns.append("stroke-dasharray dropped (VectorDrawable has no dashes; stroke drawn solid)")
-            if attrs.get("vector-effect") == "non-scaling-stroke":
-                warns.append("vector-effect=non-scaling-stroke ignored (the stroke scales with its group)")
-            if "stroke" in (attrs.get("paint-order") or "") and (attrs.get("paint-order") or "").split()[0] == "stroke":
-                warns.append("paint-order=stroke ignored (VectorDrawable always paints the stroke over the fill)")
-        return "\n".join(out) + (f">{children}\n{ind}</path>" if children else " />")
 
-    def wrap(body, tf, ind):
-        groups = _transforms(tf)
-        if "strokeWidth" in body and any(abs(g.get("scaleX", 1) - g.get("scaleY", 1)) > 1e-6 for g in groups):
-            warns.append("non-uniform scale on a stroked path: Android scales the stroke width approximately")
-        for g in reversed(groups):
-            attrs = " ".join(f'android:{k}="{v:g}"' for k, v in g.items() if v or k.startswith("scale"))
-            body = f"{ind}<group {attrs}>\n" + "\n".join("    " + ln for ln in body.split("\n")) + f"\n{ind}</group>"
-        return body
+def _svgvd_gradient_xml(ctx, ref, attr, indent, d):
+    """Build the VectorDrawable gradient child for a path fill or stroke."""
+    ctx["used_grad"] = True
+    tag, _, stops, tile, *_ = ctx["grads"][ref]
+    geo = _svgvd_geometry(ctx, ref, d)
+    if tag == "radialGradient" and geo["gradientRadius"] <= 0:
+        raise ValueError(f"gradient #{ref}: radius 0")
+    head = f'android:type="{"linear" if tag == "linearGradient" else "radial"}" ' + \
+        " ".join(f'android:{key}="{_fmt(value)}"' for key, value in geo.items())
+    if tile:
+        head += f' android:tileMode="{tile}"'
+    items = "".join(f'\n{indent}      <item android:offset="{offset:g}" android:color="{colour}"/>'
+                     for offset, colour in stops)
+    return (f'\n{indent}  <aapt:attr name="android:{attr}">\n{indent}    <gradient {head}>{items}\n'
+            f'{indent}    </gradient>\n{indent}  </aapt:attr>')
 
-    def clip_of(ref, el_paths, ind, body):
-        """<group> with a <clip-path> around body; None when the clip is a rect covering the whole viewBox."""
-        from .svg_icons import _SHAPES  # deferred: svg_icons imports this module
-        from .vectorize import _subpaths  # deferred: vectorize imports this module
-        cel = ids.get(ref)
-        if cel is None or tag_of(cel) != "clipPath":
-            raise ValueError(f"clip-path #{ref} not found")
-        obb = cel.get("clipPathUnits") == "objectBoundingBox"
-        base = _IDENTITY
-        if obb:
-            boxes = [b for b in (_path_bbox(d) for d in el_paths) if b]
-            if not boxes:
-                raise ValueError(f"clip-path #{ref}: objectBoundingBox needs content with area")
-            x0, y0 = min(b[0] for b in boxes), min(b[1] for b in boxes)
-            x1, y1 = max(b[2] for b in boxes), max(b[3] for b in boxes)
-            base = (x1 - x0, 0.0, 0.0, y1 - y0, x0, y0)
-            warns.append(f"clip-path #{ref}: objectBoundingBox mapped through the content's control-point box (approximate)")
-        parts = []
-        for ch in cel:
-            ctag = tag_of(ch)
-            if ctag not in _SHAPES:
-                if ctag and ctag not in ("title", "desc"):
-                    warns.append(f"clip-path #{ref}: <{ctag}> ignored")
+
+def _svgvd_path_xml(ctx, d, attrs, ind):
+    """Convert one SVG path and its fill and stroke paints to VectorDrawable XML."""
+    fk, fv = _svgvd_paint(ctx, attrs.get("fill", "#000000"))
+    sk, sv = _svgvd_paint(ctx, attrs.get("stroke", "none"))
+    if any(attrs.get(key) not in (None, "none") for key in ("marker-start", "marker-mid", "marker-end")):
+        ctx["warns"].append("marker-start/mid/end dropped (VectorDrawable has no markers: draw arrowheads as paths)")
+    if fk == "none" and sk == "none":
+        return ""
+    op, cur = attrs.get("opacity", 1.0), attrs.get("color")
+    out = [f'{ind}<path', f'{ind}    android:pathData="{path_str(parse_path(d))}"']
+    children = ""
+    if fk != "none":
+        if fk == "grad":
+            children += _svgvd_gradient_xml(ctx, fv, "fillColor", ind, d)
+        else:
+            out.append(f'{ind}    android:fillColor="{_color(fv, 1.0, cur)}"')
+        fo = _opacity(attrs.get("fill-opacity"), 1.0) * op
+        if fo < 1:
+            out.append(f'{ind}    android:fillAlpha="{fo:g}"')
+        if attrs.get("fill-rule") == "evenodd":
+            out.append(f'{ind}    android:fillType="evenOdd"')
+    if sk != "none":
+        if sk == "grad":
+            children += _svgvd_gradient_xml(ctx, sv, "strokeColor", ind, d)
+        else:
+            out.append(f'{ind}    android:strokeColor="{_color(sv, 1.0, cur)}"')
+        out.append(f'{ind}    android:strokeWidth="{_num(attrs.get("stroke-width"), 1.0):g}"')
+        so = _opacity(attrs.get("stroke-opacity"), 1.0) * op
+        if so < 1:
+            out.append(f'{ind}    android:strokeAlpha="{so:g}"')
+        if attrs.get("stroke-linecap") in ("round", "square"):
+            out.append(f'{ind}    android:strokeLineCap="{attrs["stroke-linecap"]}"')
+        if attrs.get("stroke-linejoin") in ("round", "bevel"):
+            out.append(f'{ind}    android:strokeLineJoin="{attrs["stroke-linejoin"]}"')
+        if attrs.get("stroke-miterlimit"):
+            out.append(f'{ind}    android:strokeMiterLimit="{_num(attrs["stroke-miterlimit"]):g}"')
+        if attrs.get("stroke-dasharray") not in (None, "none", "0"):
+            ctx["warns"].append("stroke-dasharray dropped (VectorDrawable has no dashes; stroke drawn solid)")
+        if attrs.get("vector-effect") == "non-scaling-stroke":
+            ctx["warns"].append("vector-effect=non-scaling-stroke ignored (the stroke scales with its group)")
+        if "stroke" in (attrs.get("paint-order") or "") and (attrs.get("paint-order") or "").split()[0] == "stroke":
+            ctx["warns"].append("paint-order=stroke ignored (VectorDrawable always paints the stroke over the fill)")
+    return "\n".join(out) + (f">{children}\n{ind}</path>" if children else " />")
+
+
+def _svgvd_wrap(ctx, body, tf, ind):
+    """Wrap converted content in VectorDrawable groups for SVG transforms."""
+    groups = _transforms(tf)
+    if "strokeWidth" in body and any(abs(g.get("scaleX", 1) - g.get("scaleY", 1)) > 1e-6 for g in groups):
+        ctx["warns"].append("non-uniform scale on a stroked path: Android scales the stroke width approximately")
+    for group in reversed(groups):
+        attrs = " ".join(f'android:{key}="{value:g}"' for key, value in group.items() if value or key.startswith("scale"))
+        body = f"{ind}<group {attrs}>\n" + "\n".join("    " + line for line in body.split("\n")) + f"\n{ind}</group>"
+    return body
+
+
+def _svgvd_clip_ref(ctx, el):
+    """Return the referenced clip-path identifier for an SVG element."""
+    value = _style_dict(el).get("clip-path") or _css_props(el, ctx["css"]).get("clip-path") or el.get("clip-path")
+    match = re.match(r"""url\(\s*['"]?#([^)'\"]+)['"]?\s*\)""", (value or "").strip())
+    return match.group(1) if match else None
+
+
+def _svgvd_clip_parts(ctx, ref, el_paths):
+    """Convert clipPath shapes to path data, retaining the full-viewBox shortcut."""
+    from .svg_icons import _SHAPES
+    from .vectorize import _subpaths
+    cel, tag_of, warns = ctx["ids"].get(ref), ctx["tag_of"], ctx["warns"]
+    if cel is None or tag_of(cel) != "clipPath":
+        raise ValueError(f"clip-path #{ref} not found")
+    base = _IDENTITY
+    if cel.get("clipPathUnits") == "objectBoundingBox":
+        boxes = [box for box in (_path_bbox(d) for d in el_paths) if box]
+        if not boxes:
+            raise ValueError(f"clip-path #{ref}: objectBoundingBox needs content with area")
+        x0, y0 = min(box[0] for box in boxes), min(box[1] for box in boxes)
+        x1, y1 = max(box[2] for box in boxes), max(box[3] for box in boxes)
+        base = (x1 - x0, 0.0, 0.0, y1 - y0, x0, y0)
+        warns.append(f"clip-path #{ref}: objectBoundingBox mapped through the content's control-point box (approximate)")
+    parts = []
+    for ch in cel:
+        ctag = tag_of(ch)
+        if ctag not in _SHAPES:
+            if ctag and ctag not in ("title", "desc"):
+                warns.append(f"clip-path #{ref}: <{ctag}> ignored")
+            continue
+        cattrs = _inherit(ch, _inherit(cel, {}, ctx["css"]), ctx["css"])
+        evenodd = cattrs.get("clip-rule") == "evenodd" or cattrs.get("fill-rule") == "evenodd"
+        if ch.get("clip-path") or cel.get("clip-path"):
+            warns.append(f"clip-path #{ref}: nested clip-path ignored")
+        matrix = _mmul(base, _tf_affine(ch.get("transform"))) if ch.get("transform") else base
+        d = _shape_path(ch)
+        if not d:
+            continue
+        if ctag == "rect" and matrix == _IDENTITY and not ch.get("rx") and not ch.get("ry") and len(list(cel)) == 1:
+            x, y = _num(ch.get("x")), _num(ch.get("y"))
+            w, h = _num(ch.get("width")), _num(ch.get("height"))
+            if x <= ctx["vx"] + 1e-6 and y <= ctx["vy"] + 1e-6 and x + w >= ctx["vx"] + ctx["vw"] - 1e-6 and \
+               y + h >= ctx["vy"] + ctx["vh"] - 1e-6:
+                return None
+        part = _abs_path(d, matrix) if matrix != _IDENTITY or ctag != "path" else path_str(parse_path(d))
+        if evenodd and len(_subpaths(part)) > 1:
+            part = _rewind_evenodd(part)
+            warns.append(f"clip-path #{ref}: evenodd clip-rule: subpaths rewound by nesting for the nonzero clip "
+                         "(exact unless subpaths cross)")
+        parts.append(part)
+    return parts
+
+
+def _svgvd_clip(ctx, ref, el_paths, ind, body):
+    """Wrap content in a VectorDrawable clip group, or return None for a full viewport clip."""
+    parts = _svgvd_clip_parts(ctx, ref, el_paths)
+    if parts is None:
+        return None
+    if not parts:
+        ctx["warns"].append(f"clip-path #{ref} has no shapes: everything it clips is invisible")
+        return ""
+    inner = "\n".join("    " + line for line in body.split("\n"))
+    return f'{ind}<group>\n{ind}    <clip-path android:pathData="{" ".join(parts)}"/>\n{inner}\n{ind}</group>'
+
+
+def _svgvd_walk(ctx, el, inherited, ind):
+    """Convert renderable SVG children recursively with inherited styles and clips."""
+    from .svg_icons import _SHAPES
+    lines, children = [], list(el)
+    if ctx["tag_of"](el) == "switch":
+        first = [ch for ch in children if ctx["tag_of"](ch) in _SHAPES + ("g", "a", "svg", "use", "text", "image")][:1]
+        if len(children) > len(first):
+            ctx["warns"].append("<switch>: only its first renderable child is converted")
+        children = first
+    for ch in children:
+        tag = ctx["tag_of"](ch)
+        if tag is None or tag in ("defs", "linearGradient", "radialGradient", "title", "desc", "metadata", "style",
+                                  "clipPath", "symbol", "marker", "script"):
+            continue
+        if tag in ("text", "image", "mask", "filter", "pattern", "foreignObject"):
+            raise ValueError(f"<{tag}> is not convertible")
+        attrs = _inherit(ch, inherited, ctx["css"])
+        if attrs.get("display") == "none" or _style_dict(ch).get("display") == "none":
+            continue
+        if _style_dict(ch).get("mask") or _css_props(ch, ctx["css"]).get("mask") or ch.get("mask") or ch.get("filter") or \
+           _style_dict(ch).get("filter"):
+            raise ValueError(f"<{tag}> uses mask/filter (not convertible)")
+        paths = []
+        if tag in ("g", "a", "switch"):
+            body = _svgvd_walk(ctx, ch, attrs, ind)
+            paths = [x.get("d") or _shape_path(x) for x in ch.iter() if ctx["tag_of"](x) in _SHAPES]
+        elif tag in _SHAPES:
+            if attrs.get("visibility") in ("hidden", "collapse"):
                 continue
-            cattrs = _inherit(ch, _inherit(cel, {}, css), css)
-            evenodd = cattrs.get("clip-rule") == "evenodd" or cattrs.get("fill-rule") == "evenodd"
-            if ch.get("clip-path") or cel.get("clip-path"):
-                warns.append(f"clip-path #{ref}: nested clip-path ignored")
-            m = _mmul(base, _tf_affine(ch.get("transform"))) if ch.get("transform") else base
             d = _shape_path(ch)
-            if not d:
-                continue
-            if ctag == "rect" and m == _IDENTITY and not ch.get("rx") and not ch.get("ry") and len(list(cel)) == 1:
-                x, y = _num(ch.get("x")), _num(ch.get("y"))
-                w, h = _num(ch.get("width")), _num(ch.get("height"))
-                if x <= vx + 1e-6 and y <= vy + 1e-6 and x + w >= vx + vw - 1e-6 and y + h >= vy + vh - 1e-6:
-                    return None
-            part = _abs_path(d, m) if m != _IDENTITY or ctag != "path" else path_str(parse_path(d))
-            if evenodd and len(_subpaths(part)) > 1:  # <clip-path> is always nonzero: rewind the holes instead
-                part = _rewind_evenodd(part)
-                warns.append(f"clip-path #{ref}: evenodd clip-rule: subpaths rewound by nesting for the nonzero clip "
-                             "(exact unless subpaths cross)")
-            parts.append(part)
-        if not parts:
-            warns.append(f"clip-path #{ref} has no shapes: everything it clips is invisible")
-            return ""
-        inner = "\n".join("    " + ln for ln in body.split("\n"))
-        return f'{ind}<group>\n{ind}    <clip-path android:pathData="{" ".join(parts)}"/>\n{inner}\n{ind}</group>'
+            paths = [d] if d else []
+            body = _svgvd_path_xml(ctx, d, attrs, ind) if d else ""
+        else:
+            ctx["warns"].append(f"<{tag}> ignored (not convertible: nested svg, foreignObject, markers, ...)"
+                                if tag in ("svg",) else f"<{tag}> ignored")
+            continue
+        clip = _svgvd_clip_ref(ctx, ch)
+        if body and clip:
+            clipped = _svgvd_clip(ctx, clip, [path for path in paths if path], ind, body)
+            body = body if clipped is None else clipped
+        if body:
+            lines.append(_svgvd_wrap(ctx, body, ch.get("transform"), ind) if ch.get("transform") else body)
+    return "\n".join(lines)
 
-    def clip_ref(el):
-        v = _style_dict(el).get("clip-path") or _css_props(el, css).get("clip-path") or el.get("clip-path")
-        m_ = re.match(r"""url\(\s*['"]?#([^)'"]+)['"]?\s*\)""", (v or "").strip())
-        return m_.group(1) if m_ else None
 
-    def walk(el, inherited, ind):
-        from .svg_icons import _SHAPES  # deferred: svg_icons imports this module
-        lines = []
-        children = list(el)
-        if tag_of(el) == "switch":
-            first = [ch for ch in children if tag_of(ch) in _SHAPES + ("g", "a", "svg", "use", "text", "image")][:1]
-            if len(children) > len(first):
-                warns.append("<switch>: only its first renderable child is converted")
-            children = first
-        for ch in children:
-            tag = tag_of(ch)
-            if tag is None or tag in ("defs", "linearGradient", "radialGradient", "title", "desc", "metadata", "style",
-                                      "clipPath", "symbol", "marker", "script"):
-                continue
-            if tag in ("text", "image", "mask", "filter", "pattern", "foreignObject"):
-                raise ValueError(f"<{tag}> is not convertible")
-            attrs = _inherit(ch, inherited, css)
-            if attrs.get("display") == "none" or _style_dict(ch).get("display") == "none":
-                continue
-            if _style_dict(ch).get("mask") or _css_props(ch, css).get("mask") or ch.get("mask") or ch.get("filter") or \
-               _style_dict(ch).get("filter"):
-                raise ValueError(f"<{tag}> uses mask/filter (not convertible)")
-            paths = []
-            if tag in ("g", "a", "switch"):
-                body = walk(ch, attrs, ind)
-                paths = [x.get("d") or _shape_path(x) for x in ch.iter() if tag_of(x) in _SHAPES]
-            elif tag in _SHAPES:
-                if attrs.get("visibility") in ("hidden", "collapse"):
-                    continue
-                d = _shape_path(ch)
-                paths = [d] if d else []
-                body = path_xml(d, attrs, ind) if d else ""
-            else:
-                warns.append(f"<{tag}> ignored (not convertible: nested svg, foreignObject, markers, ...)"
-                             if tag in ("svg",) else f"<{tag}> ignored")
-                continue
-            if body and clip_ref(ch):
-                clipped = clip_of(clip_ref(ch), [p_ for p_ in paths if p_], ind, body)
-                body = body if clipped is None else clipped
-            if body:
-                lines.append(wrap(body, ch.get("transform"), ind) if ch.get("transform") else body)
-        return "\n".join(lines)
-    body = walk(root, _inherit(root, {}, css), "    ")
-    if clip_ref(root):
-        clipped = clip_of(clip_ref(root), [x.get("d") or _shape_path(x) for x in root.iter() if tag_of(x) in _SHAPES], "    ", body)
+def _svgvd_assemble(ctx):
+    """Walk the SVG tree and assemble the final VectorDrawable document."""
+    from .svg_icons import _SHAPES
+    root = ctx["root"]
+    body = _svgvd_walk(ctx, root, _inherit(root, {}, ctx["css"]), "    ")
+    clip = _svgvd_clip_ref(ctx, root)
+    if clip:
+        paths = [x.get("d") or _shape_path(x) for x in root.iter() if ctx["tag_of"](x) in _SHAPES]
+        clipped = _svgvd_clip(ctx, clip, paths, "    ", body)
         body = body if clipped is None else clipped
     if root.get("transform"):
-        body = wrap(body, root.get("transform"), "    ")
-    if vx or vy:
-        body = wrap(body, f"translate({-vx:g} {-vy:g})", "    ")
+        body = _svgvd_wrap(ctx, body, root.get("transform"), "    ")
+    if ctx["vx"] or ctx["vy"]:
+        body = _svgvd_wrap(ctx, body, f"translate({-ctx['vx']:g} {-ctx['vy']:g})", "    ")
+    used_grad = ctx["used_grad"]
     ns = ' xmlns:aapt="http://schemas.android.com/aapt"' if used_grad else ""
-    api24 = [k for k, v in (("evenOdd fill", 'android:fillType="evenOdd"' in body), ("gradient", used_grad)) if v]
+    api24 = [key for key, value in (("evenOdd fill", 'android:fillType="evenOdd"' in body), ("gradient", used_grad)) if value]
     if api24:
-        warns.append(f"needs API 24+ or AppCompat srcCompat: {' / '.join(api24)}")
+        ctx["warns"].append(f"needs API 24+ or AppCompat srcCompat: {' / '.join(api24)}")
     return (f'<?xml version="1.0" encoding="utf-8"?>\n<vector xmlns:android="http://schemas.android.com/apk/res/android"{ns}\n'
-            f'    android:width="{wdp:g}dp"\n    android:height="{hdp:g}dp"\n'
-            f'    android:viewportWidth="{vw:g}"\n    android:viewportHeight="{vh:g}">\n' + body + "\n</vector>\n")
+            f'    android:width="{ctx["wdp"]:g}dp"\n    android:height="{ctx["hdp"]:g}dp"\n'
+            f'    android:viewportWidth="{ctx["vw"]:g}"\n    android:viewportHeight="{ctx["vh"]:g}">\n' + body + "\n</vector>\n")
 
+
+def svg_to_vd(svg_text, width_dp=None, warnings=None):
+    """Convert an SVG to VectorDrawable XML, appending warnings for lossy features."""
+    warns = warnings if warnings is not None else []
+    ctx = _svgvd_prepare(svg_text, width_dp, warns)
+    _svgvd_resolve_gradients(ctx)
+    return _svgvd_assemble(ctx)
 
 AND = "{http://schemas.android.com/apk/res/android}"
 

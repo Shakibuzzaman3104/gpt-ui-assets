@@ -240,7 +240,8 @@ COMPARE_SCHEMA = {"type": "object", "additionalProperties": False, "required": [
                                               "differences": {"type": "array", "items": {"type": "string"}}}}}}}
 
 
-def cmd_compare(a):
+def _compare_load_inputs(a):
+    """Validate comparison options and load, crop, and size the design and screenshot."""
     if a.crop_top < 0 or a.crop_bottom < 0:
         sys.exit("compare: --crop-top/--crop-bottom must be >= 0")
     if a.fail_below is not None and not 0 <= a.fail_below <= 100:
@@ -265,6 +266,13 @@ def cmd_compare(a):
     shot = shot.resize((W, round(shot.height * W / shot.width)), Image.LANCZOS)
     out = Path(a.out) if a.out else d / "compare"
     out.mkdir(parents=True, exist_ok=True)
+    return {"d": d, "spec": spec, "manifest": m, "mock_rgba": mock_rgba, "mock": mock, "shot": shot,
+            "W": W, "H": H, "k": k, "design_dp": design_dp, "shot_dp": shot_dp, "out": out}
+
+
+def _compare_align_screens(data):
+    """Align the screenshot vertically and compute whole-screen difference metrics."""
+    mock, shot, W, H = data["mock"], data["shot"], data["W"], data["H"]
     M, S = np.asarray(mock, dtype=np.float64), np.asarray(shot, dtype=np.float64)
     Mg, Sg = _gray(M), _gray(S)
     dy0, cost = _global_offset(Mg.astype(np.float32), Sg.astype(np.float32))
@@ -284,6 +292,16 @@ def cmd_compare(a):
                "coverage": round(float(valid.mean()), 3), "compared_rows": [int(y0), int(y1)]}
     overall["score"] = round(100 * overall["ssim"] * max(0.0, 1 - overall["mean_de00"] / 50), 1)
     overall["ssim_method"] = "SSIM (7px box window, luma)"
+    data.update({"M": M, "S": S, "A": A, "de": de, "valid": valid, "Mg": Mg, "Sg": Sg,
+                 "dy0": dy0, "top_extra": top_extra, "bottom_extra": bottom_extra, "y0": y0, "y1": y1,
+                 "overall": overall})
+    return data
+
+
+def _compare_typography(data, a):
+    """Load typography roles, token names, and font context for region diagnostics."""
+    d, spec, mock_rgba, m = data["d"], data["spec"], data["mock_rgba"], data["manifest"]
+    H, W, Sg, Mg = data["H"], data["W"], data["Sg"], data["Mg"]
     texts = _text_targets(d, spec, mock_rgba) if spec.get("typography") else {}
     role_of = {}
     for r_, t_ in texts.items():
@@ -307,206 +325,235 @@ def cmd_compare(a):
     styles = {st["role"]: st for st in spec.get("typography", [])}
     Sg32, Mg32 = Sg.astype(np.float32), Mg.astype(np.float32)
     R = max(24, int(0.04 * H))
-    found = []
-    font_check_off = False
-    size_hints = []  # (region, hint) pairs, dropped when every text is off by the same factor (wrong screenshot scale)
-    for r in _regions(spec, m, W, H):
-        b = r["bbox"]
-        x, y, w, h = b["x"], b["y"], b["w"], b["h"]
-        if w < 4 or h < 4:
+    data.update({"texts": texts, "role_of": role_of, "fonts_json": fonts_json, "fpath": fpath, "token_names": token_names,
+                 "platform": platform, "styles": styles, "Sg32": Sg32, "Mg32": Mg32, "R": R,
+                 "font_check_off": False, "size_hints": []})
+    return data
+
+
+def _compare_measure_region(r, ctx):
+    """Align a region and measure its pixels, fill colour, and child coverage."""
+    b = r["bbox"]
+    x, y, w, h = b["x"], b["y"], b["w"], b["h"]
+    valid = ctx["valid"]
+    inside = float(valid[y:y + h, x:x + w].mean()) if valid[y:y + h, x:x + w].size else 0.0
+    rep = {"name": r["name"], "asset": r.get("asset"), "bbox": b}
+    if inside < 0.5:
+        rep.update(status="outside screenshot", inside=round(inside, 2), hints=[], badness=0.0, match=None, shift_dp=[0.0, 0.0],
+                   scale=1.0, de00_mean=None, ssim=None)
+        return rep, None
+    hit = _find_region(ctx["Mg32"], ctx["Sg32"], b, ctx["dy0"], ctx["R"])
+    if hit and hit[0] < 0.5 and ctx["bottom_extra"] + ctx["top_extra"] > ctx["R"]:
+        far = _find_region(ctx["Mg32"], ctx["Sg32"], b, ctx["dy0"] + (ctx["bottom_extra"] + ctx["top_extra"]) // 2,
+                           (ctx["bottom_extra"] + ctx["top_extra"]) // 2 + ctx["R"])
+        hit = far if far and far[0] > hit[0] + 0.1 else hit
+    if hit:
+        sc, sx, sy, s, _ = hit
+        sw, sh = max(1, round(w * s)), max(1, round(h * s))
+        cur = ctx["S"][sy:sy + sh, sx:sx + sw]
+        cur = np.asarray(Image.fromarray(cur.astype(np.uint8)).resize((w, h), Image.LANCZOS), dtype=np.float64)
+        rep.update(match=round(sc, 3), shift_dp=[round((sx + (sw - w) / 2 - x) * ctx["k"], 1),
+                                                round((sy + (sh - h) / 2 - y - ctx["dy0"]) * ctx["k"], 1)],
+                   scale=round(s, 3), impl_bbox=[int(sx), int(sy - ctx["dy0"]), int(sw), int(sh)])
+    else:
+        cur = ctx["A"][y:y + h, x:x + w]
+        rep.update(match=None, shift_dp=[0.0, 0.0], scale=1.0)
+    own = np.ones((h, w), bool)
+    for cb in r["children"]:
+        own[max(0, cb["y"] - y):cb["y"] - y + cb["h"], max(0, cb["x"] - x):cb["x"] - x + cb["w"]] = False
+    if own.mean() < 0.15:
+        own[:] = True
+    ref = ctx["M"][y:y + h, x:x + w]
+    dmap = _tolerant_de(ref, cur)
+    rep["de00_mean"] = round(float(dmap[own].mean()), 2)
+    rep["ssim"] = round(float(_ssim_map(_gray(ref), _gray(cur))[own].mean()), 3)
+    fill_m, fill_i = _dominant(ref), _dominant(cur)
+    share = lambda img, c: float((np.linalg.norm(_lab_arr(img) - _lab_arr(c), axis=-1) < 6).mean())
+    rep["fill"] = [_to_hex(fill_m), _to_hex(fill_i), round(float(_de00(_lab_arr(fill_m), _lab_arr(fill_i))), 1),
+                   round(min(share(ref, fill_m), share(cur, fill_i)), 2)]
+    return rep, {"x": x, "y": y, "w": w, "h": h, "cur": cur, "ref": ref, "dmap": dmap,
+                 "own": own, "image": r.get("asset_kind") in ("background", "photo"), "hints": [], "text_boxes": []}
+
+
+def _compare_region_text(r, rep, part, ctx):
+    """Locate typography in a region and add size, colour, position, and font hints."""
+    x, y, w, h = part["x"], part["y"], part["w"], part["h"]
+    hints, text_boxes = part["hints"], part["text_boxes"]
+    for role, t in ctx["role_of"].get(r["name"], []):
+        st = ctx["styles"][role]
+        ib = rep.get("impl_bbox") or [x, y, w, h]
+        tx, ty, tw_, th_ = t["box"]
+        px_, py_ = int(0.6 * st["size_px"]) + 6, int(0.35 * st["size_px"]) + 4
+        found_ = []
+        for ox, oy in {(0, ctx["dy0"]), (ib[0] - x, ib[1] + ctx["dy0"] - y)}:
+            g_ = _locate_text(ctx["S"], [tx + ox - px_, ty + oy - py_, tw_ + 2 * px_, th_ + 2 * py_], t["sample"],
+                              st["size_px"], st.get("letter_spacing_em", 0), t["ink"])
+            if g_ and _de_hex(g_["ink"], t["ink"]) < 20 and 0.6 < g_["box"][3] / th_ < 1.6:
+                found_.append((abs(math.log(g_["box"][3] / th_)) + abs(math.log(g_["box"][2] / tw_)), g_))
+        got = min(found_, key=lambda f_: f_[0])[1] if found_ else None
+        text_boxes.append((tx - x, ty - y, tw_, th_))
+        if not got:
+            hints.append(f"text '{t['sample'][:24]}' not found in the implementation")
             continue
-        rep = {"name": r["name"], "asset": r.get("asset"), "bbox": b}
-        inside = float(valid[y:y + h, x:x + w].mean()) if valid[y:y + h, x:x + w].size else 0.0
-        if inside < 0.5:
-            rep.update(status="outside screenshot", inside=round(inside, 2), hints=[], badness=0.0, match=None, shift_dp=[0.0, 0.0],
-                       scale=1.0, de00_mean=None, ssim=None)
-            found.append(rep)
-            continue
-        hit = _find_region(Mg32, Sg32, b, dy0, R)
-        if hit and hit[0] < 0.5 and bottom_extra + top_extra > R:
-            far = _find_region(Mg32, Sg32, b, dy0 + (bottom_extra + top_extra) // 2, (bottom_extra + top_extra) // 2 + R)
-            hit = far if far and far[0] > hit[0] + 0.1 else hit
-        if hit:
-            sc, sx, sy, s, _ = hit
-            sw, sh = max(1, round(w * s)), max(1, round(h * s))
-            cur = S[sy:sy + sh, sx:sx + sw]
-            cur = np.asarray(Image.fromarray(cur.astype(np.uint8)).resize((w, h), Image.LANCZOS), dtype=np.float64)
-            rep.update(match=round(sc, 3), shift_dp=[round((sx + (sw - w) / 2 - x) * k, 1), round((sy + (sh - h) / 2 - y - dy0) * k, 1)],
-                       scale=round(s, 3), impl_bbox=[int(sx), int(sy - dy0), int(sw), int(sh)])
-        else:
-            cur = A[y:y + h, x:x + w]
-            rep.update(match=None, shift_dp=[0.0, 0.0], scale=1.0)
-        own = np.ones((h, w), bool)
-        for cb in r["children"]:
-            own[max(0, cb["y"] - y):cb["y"] - y + cb["h"], max(0, cb["x"] - x):cb["x"] - x + cb["w"]] = False
-        if own.mean() < 0.15:
-            own[:] = True
-        ref = M[y:y + h, x:x + w]
-        dmap = _tolerant_de(ref, cur)
-        rep["de00_mean"] = round(float(dmap[own].mean()), 2)
-        rep["ssim"] = round(float(_ssim_map(_gray(ref), _gray(cur))[own].mean()), 3)
-        fill_m, fill_i = _dominant(ref), _dominant(cur)
-        share = lambda img, c: float((np.linalg.norm(_lab_arr(img) - _lab_arr(c), axis=-1) < 6).mean())
-        rep["fill"] = [_to_hex(fill_m), _to_hex(fill_i), round(float(_de00(_lab_arr(fill_m), _lab_arr(fill_i))), 1),
-                       round(min(share(ref, fill_m), share(cur, fill_i)), 2)]
-        image = r.get("asset_kind") in ("background", "photo")
-        hints = []
-        text_boxes = []
-        for role, t in role_of.get(r["name"], []):
-            st = styles[role]
-            ib = rep.get("impl_bbox") or [x, y, w, h]
-            tx, ty, tw_, th_ = t["box"]
-            px_, py_ = int(0.6 * st["size_px"]) + 6, int(0.35 * st["size_px"]) + 4
-            found_ = []
-            for ox, oy in {(0, dy0), (ib[0] - x, ib[1] + dy0 - y)}:
-                g_ = _locate_text(S, [tx + ox - px_, ty + oy - py_, tw_ + 2 * px_, th_ + 2 * py_], t["sample"], st["size_px"],
-                                  st.get("letter_spacing_em", 0), t["ink"])
-                if g_ and _de_hex(g_["ink"], t["ink"]) < 20 and 0.6 < g_["box"][3] / th_ < 1.6:
-                    found_.append((abs(math.log(g_["box"][3] / th_)) + abs(math.log(g_["box"][2] / tw_)), g_))
-            got = min(found_, key=lambda f_: f_[0])[1] if found_ else None
-            text_boxes.append((tx - x, ty - y, tw_, th_))
-            if not got:
-                hints.append(f"text '{t['sample'][:24]}' not found in the implementation")
-                continue
-            gx, gy, gw, gh = got["box"]
-            text_boxes.append((gx - (ib[0] - x) - x, gy - dy0 - (ib[1] - y) - y, gw, gh))
-            hr, wr = gh / th_, gw / tw_
-            dei = round(float(_de00(_lab_arr(_hexi(t["ink"])), _lab_arr(_hexi(got["ink"])))), 1)
-            shape = round(_shape_similarity(t["alpha"], got["alpha"], t["sample"])[0], 3)
-            fspec, fbest = None, None
-            if fonts_json and th_ >= 16 and not font_check_off:
-                try:
-                    fspec, fbest = _impl_font_check(fonts_json, role, t["sample"], got["alpha"], st["size_px"], platform)
-                except (requests.RequestException, RuntimeError, ValueError, KeyError, OSError) as e:
-                    font_check_off = True
-                    print(f"  (font verdict skipped: Google Fonts metadata unavailable: {str(e)[:160]})")
-            sh = [round((gx - tx) * k, 1), round((got["baseline"] - dy0 - t["baseline"]) * k, 1)]
-            rep.setdefault("text", []).append({"role": role, "sample": t["sample"], "height_ratio": round(hr, 3),
-                                               "width_ratio": round(wr, 3), "ink": [t["ink"], got["ink"]], "ink_de00": dei,
-                                               "glyph_similarity_vs_design": shape, "spec_font_fit": fspec,
-                                               "best_font_fit": fbest, "shift_dp": sh})
-            lab = f"'{t['sample'][:20]}'"
-            token = f", token {token_names[role]}" if role in token_names else ""
-            if abs(hr - 1) >= 0.04 and abs(gh - th_) >= 2:
-                design_sp = st["size_px"] * k
-                hint = (f"{lab} {abs(hr - 1) * 100:.0f}% {'larger' if hr > 1 else 'smaller'}: renders like ~{design_sp * hr:.1f}sp "
-                        f"(design {design_sp:g}sp{token}; ink height {th_} -> {gh}px)")
-                if fspec and fbest and fbest[:2] == fspec[:2]:
-                    hint += f"; if it already uses {design_sp:g}sp the font runs {abs(hr - 1) * 100:.0f}% {'large' if hr > 1 else 'small'}: use {design_sp / hr:.1f}sp"
-                hints.append(hint)
-                size_hints.append((rep, hint))
-            elif abs(wr - 1) >= 0.05 and abs(gw - tw_) >= 3:
-                hints.append(f"{lab} {abs(wr - 1) * 100:.0f}% {'wider' if wr > 1 else 'narrower'} at the same height "
-                             "(letter-spacing or font family/weight differs)")
-            if fspec and fbest and fbest[2] > fspec[2] + (0.08 if fbest[0] != fspec[0] else 0.05):
-                what = f"{fbest[0]} {fbest[1]}" if fbest[0] != fspec[0] else f"weight {fbest[1]}"
-                hints.append(f"{lab} looks like {what} (glyph fit {fbest[2]:.2f}) rather than the specified {fspec[0]} {fspec[1]} "
-                             f"({fspec[2]:.2f})" + (" (fontFamily not set?)" if fbest[0] == "Roboto" and platform == "android" else ""))
-            if dei >= 3:
-                hints.append(f"{lab} colour off by dE {dei} ({t['ink']} -> {got['ink']})")
-            if abs(sh[0]) >= 2 or abs(sh[1]) >= 2:
-                hints.append(f"{lab} shifted {sh[0]:+.0f}dp x, {sh[1]:+.0f}dp y")
-        if rep.get("text"):
-            rep["shift_dp"] = rep["text"][0]["shift_dp"]
-            rep["scale"] = 1.0
-        blob_mask = (dmap > 12) & own
-        for bx_, by_, bw_, bh_ in text_boxes:
-            blob_mask[max(0, int(by_) - 3):int(by_ + bh_) + 3, max(0, int(bx_) - 3):int(bx_ + bw_) + 3] = False
-        if blob_mask.any():
-            bl = max(_blobs(blob_mask), key=lambda t: len(t[0])) if blob_mask.sum() < 60000 else None
-            if bl is not None and len(bl[0]) >= max(30, 0.01 * own.sum()):
-                ys_, xs_ = bl
-                bb = (int(xs_.min()), int(ys_.min()), int(xs_.max() - xs_.min() + 1), int(ys_.max() - ys_.min() + 1))
-                sub = lambda img: img[bb[1]:bb[1] + bb[3], bb[0]:bb[0] + bb[2]]
-                inkish = lambda img: float((np.linalg.norm(_lab_arr(sub(img)) - _lab_arr(_dominant(img)), axis=-1) > 15).mean())
-                dm, di = inkish(ref), inkish(cur)
-                what = ("differs inside the artwork (redrawn image)" if image else
-                        "missing in the implementation" if dm > 0.15 and di < 0.5 * dm else
-                        "extra in the implementation" if di > 0.15 and dm < 0.5 * di else "drawn differently")
-                rep["diff_blob"] = {"bbox": [x + bb[0], y + bb[1], bb[2], bb[3]], "px": int(len(ys_)), "what": what}
-                hints.append(f"element at x={x + bb[0]},y={y + bb[1]} ({bb[2]}x{bb[3]}px) {what}")
-        strong = (rep["match"] is not None and rep["match"] < 0.6) or \
-            rep.get("diff_blob", {}).get("what", "").startswith(("missing", "extra"))
-        if strong:  # a missing/replaced element: its "shift" and "scale" are matches against noise, keep the expected position
-            rep["shift_dp"], rep["scale"] = [0.0, 0.0], 1.0
-            rep.pop("impl_bbox", None)
-        sx_, sy_ = rep["shift_dp"]
-        if not strong and (abs(sx_) >= 2 or abs(sy_) >= 2):
-            hints.append(f"shifted {'%+.0fdp horizontally' % sx_ if abs(sx_) >= 2 else ''}"
-                         f"{' and ' if abs(sx_) >= 2 and abs(sy_) >= 2 else ''}{'%+.0fdp vertically' % sy_ if abs(sy_) >= 2 else ''}")
-        if not strong and "text" not in rep and not r["children"] and r.get("asset_kind") not in ("background", "photo"):
-            ob_m, ob_i = _object_box(ref), _object_box(cur)
-            if ob_m and ob_i:
-                ratio = rep["scale"] * math.sqrt((ob_i[2] * ob_i[3]) / (ob_m[2] * ob_m[3]))
-                rep["object"] = {"design_px": [round(v) for v in ob_m[2:]], "impl_px": [round(v * rep["scale"]) for v in ob_i[2:]],
-                                 "size_ratio": round(ratio, 3)}
-                rep["scale"] = round(ratio, 3)
-            if abs(rep["scale"] - 1) >= 0.06:
-                o = rep.get("object")
-                hints.append(f"element ~{abs(rep['scale'] - 1) * 100:.0f}% {'larger' if rep['scale'] > 1 else 'smaller'}"
-                             + (f" (visible {o['design_px'][0]}x{o['design_px'][1]} -> {o['impl_px'][0]}x{o['impl_px'][1]}px)" if o else ""))
-        if 3 <= rep["fill"][2] < 25 and rep["fill"][3] >= 0.3:
-            hints.append(f"fill colour off by dE {rep['fill'][2]} ({rep['fill'][0]} -> {rep['fill'][1]})")
-        if rep["match"] is not None and rep["match"] < 0.6 and not rep.get("diff_blob", {}).get("what", "").startswith(("missing", "extra")):
-            hints.append(f"content differs strongly (match {rep['match']}): missing, replaced or restyled element")
-        elif rep["ssim"] < 0.75 and not hints:
-            hints.append(f"structure differs (SSIM {rep['ssim']}): check shapes, icon/image content, font")
-        tx_ = rep.get("text", [])
-        badness = ((0.4 if image else 1) * (min(1, (1 - rep["ssim"]) / 0.5) + min(1, rep["de00_mean"] / 12))
-                   + min(1, math.hypot(sx_, sy_) / 8) + min(1, abs(math.log(rep["scale"])) / 0.1)
-                   + (min(1.5, rep["fill"][2] / 5) if 3 <= rep["fill"][2] < 25 and rep["fill"][3] >= 0.3 else 0)
-                   + sum(min(1.5, abs(math.log(t_["height_ratio"])) / 0.06) + min(1, t_["ink_de00"] / 10)
-                         + (min(1.5, max(0, t_["best_font_fit"][2] - t_["spec_font_fit"][2] - 0.05) / 0.05)
-                            * (1 if t_["best_font_fit"][0] != t_["spec_font_fit"][0] else 0.4)
-                            if t_["spec_font_fit"] and t_["best_font_fit"] else 0) for t_ in tx_)
-                   + ((0.3 if image else 0.5 if r.get("asset") else 1) * min(1, rep["diff_blob"]["px"] / 300)
-                      + (1.0 if rep["diff_blob"]["what"].startswith(("missing", "extra")) else 0) if "diff_blob" in rep else 0)
-                   + (1.0 if strong else 0))
-        rep["badness"] = round(badness, 3)
-        rep["hints"] = hints
-        found.append(rep)
+        gx, gy, gw, gh = got["box"]
+        text_boxes.append((gx - (ib[0] - x) - x, gy - ctx["dy0"] - (ib[1] - y) - y, gw, gh))
+        hr, wr = gh / th_, gw / tw_
+        dei = round(float(_de00(_lab_arr(_hexi(t["ink"])), _lab_arr(_hexi(got["ink"])))), 1)
+        shape = round(_shape_similarity(t["alpha"], got["alpha"], t["sample"])[0], 3)
+        fspec, fbest = None, None
+        if ctx["fonts_json"] and th_ >= 16 and not ctx["font_check_off"]:
+            try:
+                fspec, fbest = _impl_font_check(ctx["fonts_json"], role, t["sample"], got["alpha"], st["size_px"], ctx["platform"])
+            except (requests.RequestException, RuntimeError, ValueError, KeyError, OSError) as e:
+                ctx["font_check_off"] = True
+                print(f"  (font verdict skipped: Google Fonts metadata unavailable: {str(e)[:160]})")
+        sh = [round((gx - tx) * ctx["k"], 1), round((got["baseline"] - ctx["dy0"] - t["baseline"]) * ctx["k"], 1)]
+        rep.setdefault("text", []).append({"role": role, "sample": t["sample"], "height_ratio": round(hr, 3),
+                                           "width_ratio": round(wr, 3), "ink": [t["ink"], got["ink"]], "ink_de00": dei,
+                                           "glyph_similarity_vs_design": shape, "spec_font_fit": fspec,
+                                           "best_font_fit": fbest, "shift_dp": sh})
+        lab = f"'{t['sample'][:20]}'"
+        token = f", token {ctx['token_names'][role]}" if role in ctx["token_names"] else ""
+        if abs(hr - 1) >= 0.04 and abs(gh - th_) >= 2:
+            design_sp = st["size_px"] * ctx["k"]
+            hint = (f"{lab} {abs(hr - 1) * 100:.0f}% {'larger' if hr > 1 else 'smaller'}: renders like ~{design_sp * hr:.1f}sp "
+                    f"(design {design_sp:g}sp{token}; ink height {th_} -> {gh}px)")
+            if fspec and fbest and fbest[:2] == fspec[:2]:
+                hint += f"; if it already uses {design_sp:g}sp the font runs {abs(hr - 1) * 100:.0f}% {'large' if hr > 1 else 'small'}: use {design_sp / hr:.1f}sp"
+            hints.append(hint)
+            ctx["size_hints"].append((rep, hint))
+        elif abs(wr - 1) >= 0.05 and abs(gw - tw_) >= 3:
+            hints.append(f"{lab} {abs(wr - 1) * 100:.0f}% {'wider' if wr > 1 else 'narrower'} at the same height "
+                         "(letter-spacing or font family/weight differs)")
+        if fspec and fbest and fbest[2] > fspec[2] + (0.08 if fbest[0] != fspec[0] else 0.05):
+            what = f"{fbest[0]} {fbest[1]}" if fbest[0] != fspec[0] else f"weight {fbest[1]}"
+            hints.append(f"{lab} looks like {what} (glyph fit {fbest[2]:.2f}) rather than the specified {fspec[0]} {fspec[1]} "
+                         f"({fspec[2]:.2f})" + (" (fontFamily not set?)" if fbest[0] == "Roboto" and ctx["platform"] == "android" else ""))
+        if dei >= 3:
+            hints.append(f"{lab} colour off by dE {dei} ({t['ink']} -> {got['ink']})")
+        if abs(sh[0]) >= 2 or abs(sh[1]) >= 2:
+            hints.append(f"{lab} shifted {sh[0]:+.0f}dp x, {sh[1]:+.0f}dp y")
+
+
+def _compare_finish_region(r, rep, part):
+    """Classify difference blobs, add structural hints, and calculate region badness."""
+    x, y, cur, ref, dmap, own = (part[key] for key in ("x", "y", "cur", "ref", "dmap", "own"))
+    image, hints, text_boxes = part["image"], part["hints"], part["text_boxes"]
+    blob_mask = (dmap > 12) & own
+    for bx_, by_, bw_, bh_ in text_boxes:
+        blob_mask[max(0, int(by_) - 3):int(by_ + bh_) + 3, max(0, int(bx_) - 3):int(bx_ + bw_) + 3] = False
+    if blob_mask.any():
+        bl = max(_blobs(blob_mask), key=lambda t: len(t[0])) if blob_mask.sum() < 60000 else None
+        if bl is not None and len(bl[0]) >= max(30, 0.01 * own.sum()):
+            ys_, xs_ = bl
+            bb = (int(xs_.min()), int(ys_.min()), int(xs_.max() - xs_.min() + 1), int(ys_.max() - ys_.min() + 1))
+            sub = lambda img: img[bb[1]:bb[1] + bb[3], bb[0]:bb[0] + bb[2]]
+            inkish = lambda img: float((np.linalg.norm(_lab_arr(sub(img)) - _lab_arr(_dominant(img)), axis=-1) > 15).mean())
+            dm, di = inkish(ref), inkish(cur)
+            what = ("differs inside the artwork (redrawn image)" if image else
+                    "missing in the implementation" if dm > 0.15 and di < 0.5 * dm else
+                    "extra in the implementation" if di > 0.15 and dm < 0.5 * di else "drawn differently")
+            rep["diff_blob"] = {"bbox": [x + bb[0], y + bb[1], bb[2], bb[3]], "px": int(len(ys_)), "what": what}
+            hints.append(f"element at x={x + bb[0]},y={y + bb[1]} ({bb[2]}x{bb[3]}px) {what}")
+    strong = (rep["match"] is not None and rep["match"] < 0.6) or \
+        rep.get("diff_blob", {}).get("what", "").startswith(("missing", "extra"))
+    if strong:
+        rep["shift_dp"], rep["scale"] = [0.0, 0.0], 1.0
+        rep.pop("impl_bbox", None)
+    sx_, sy_ = rep["shift_dp"]
+    if not strong and (abs(sx_) >= 2 or abs(sy_) >= 2):
+        hints.append(f"shifted {'%+.0fdp horizontally' % sx_ if abs(sx_) >= 2 else ''}"
+                     f"{' and ' if abs(sx_) >= 2 and abs(sy_) >= 2 else ''}{'%+.0fdp vertically' % sy_ if abs(sy_) >= 2 else ''}")
+    if not strong and "text" not in rep and not r["children"] and r.get("asset_kind") not in ("background", "photo"):
+        ob_m, ob_i = _object_box(ref), _object_box(cur)
+        if ob_m and ob_i:
+            ratio = rep["scale"] * math.sqrt((ob_i[2] * ob_i[3]) / (ob_m[2] * ob_m[3]))
+            rep["object"] = {"design_px": [round(v) for v in ob_m[2:]], "impl_px": [round(v * rep["scale"]) for v in ob_i[2:]],
+                             "size_ratio": round(ratio, 3)}
+            rep["scale"] = round(ratio, 3)
+        if abs(rep["scale"] - 1) >= 0.06:
+            o = rep.get("object")
+            hints.append(f"element ~{abs(rep['scale'] - 1) * 100:.0f}% {'larger' if rep['scale'] > 1 else 'smaller'}"
+                         + (f" (visible {o['design_px'][0]}x{o['design_px'][1]} -> {o['impl_px'][0]}x{o['impl_px'][1]}px)" if o else ""))
+    if 3 <= rep["fill"][2] < 25 and rep["fill"][3] >= 0.3:
+        hints.append(f"fill colour off by dE {rep['fill'][2]} ({rep['fill'][0]} -> {rep['fill'][1]})")
+    if rep["match"] is not None and rep["match"] < 0.6 and not rep.get("diff_blob", {}).get("what", "").startswith(("missing", "extra")):
+        hints.append(f"content differs strongly (match {rep['match']}): missing, replaced or restyled element")
+    elif rep["ssim"] < 0.75 and not hints:
+        hints.append(f"structure differs (SSIM {rep['ssim']}): check shapes, icon/image content, font")
+    tx_ = rep.get("text", [])
+    badness = ((0.4 if image else 1) * (min(1, (1 - rep["ssim"]) / 0.5) + min(1, rep["de00_mean"] / 12))
+               + min(1, math.hypot(sx_, sy_) / 8) + min(1, abs(math.log(rep["scale"])) / 0.1)
+               + (min(1.5, rep["fill"][2] / 5) if 3 <= rep["fill"][2] < 25 and rep["fill"][3] >= 0.3 else 0)
+               + sum(min(1.5, abs(math.log(t_["height_ratio"])) / 0.06) + min(1, t_["ink_de00"] / 10)
+                     + (min(1.5, max(0, t_["best_font_fit"][2] - t_["spec_font_fit"][2] - 0.05) / 0.05)
+                        * (1 if t_["best_font_fit"][0] != t_["spec_font_fit"][0] else 0.4)
+                        if t_["spec_font_fit"] and t_["best_font_fit"] else 0) for t_ in tx_)
+               + ((0.3 if image else 0.5 if r.get("asset") else 1) * min(1, rep["diff_blob"]["px"] / 300)
+                  + (1.0 if rep["diff_blob"]["what"].startswith(("missing", "extra")) else 0) if "diff_blob" in rep else 0)
+               + (1.0 if strong else 0))
+    rep["badness"] = round(badness, 3)
+    rep["hints"] = hints
+    return rep
+
+
+def _compare_rank_regions(found, data):
+    """Suppress uniform text-scale hints, rank regions, and locate unlabelled differences."""
     ratios = [t_["height_ratio"] for r in found for t_ in r.get("text", [])]
     global_scale = None
     if len(ratios) >= 3:
         med = float(np.median(ratios))
         if abs(med - 1) > 0.05 and sum(abs(v - med) <= 0.05 for v in ratios) >= max(3, 0.75 * len(ratios)):
             global_scale = med
-            for rep, hint in size_hints:
+            for rep, hint in data["size_hints"]:
                 rep["hints"] = [h_ for h_ in rep["hints"] if h_ != hint]
-            overall["text_scale"] = round(med, 3)
+            data["overall"]["text_scale"] = round(med, 3)
     found.sort(key=lambda r: -r["badness"])
+    H, W = data["H"], data["W"]
     covered = np.zeros((H, W), bool)
     for r in found:
         b = r["bbox"]
         covered[b["y"]:b["y"] + b["h"], b["x"]:b["x"] + b["w"]] = True
-    g = 32
-    unl = []
+    g, unl = 32, []
     for yy in range(0, H - g + 1, g):
         for xx in range(0, W - g + 1, g):
-            cell = de[yy:yy + g, xx:xx + g]
-            if valid[yy:yy + g, xx:xx + g].all() and not covered[yy:yy + g, xx:xx + g].any() and cell.mean() > 8:
+            cell = data["de"][yy:yy + g, xx:xx + g]
+            if data["valid"][yy:yy + g, xx:xx + g].all() and not covered[yy:yy + g, xx:xx + g].any() and cell.mean() > 8:
                 unl.append({"bbox": [xx, yy, g, g], "de00_mean": round(float(cell.mean()), 1)})
     ranked = [r for r in found if r.get("status") != "outside screenshot"]
-    if a.vision and ranked:
-        top = ranked[:min(6, len(ranked))]
-        rows = []
-        for i, r in enumerate(top):
-            b = r["bbox"]
-            pad = 12
-            box = (max(0, b["x"] - pad), max(0, b["y"] - pad), min(W, b["x"] + b["w"] + pad), min(H, b["y"] + b["h"] + pad))
-            rows.append([(f"{i + 1}. design", mock.crop(box)), (f"{i + 1}. implemented", shot.crop(_impl_box(box, r, dy0, k)))])
-        vis = out / "vision_rows.png"
-        sheet(rows, vis, T=300)
-        try:
-            res = ask([COMPARE_PROMPT, Image.open(vis)], COMPARE_SCHEMA, "compare_rows")
-            for row in res["rows"]:
-                if isinstance(row, dict) and isinstance(row.get("index"), int) and 1 <= row["index"] <= len(top) \
-                        and isinstance(row.get("differences"), list):
-                    top[row["index"] - 1]["vision"] = [str(v) for v in row["differences"]]
-        except Exception as e:
-            print(f"  ! vision pass failed: {e}")
-    heat = (_heat_rgb(de / 20) * 0.75 + M * 0.25).astype(np.uint8)
-    hm = Image.fromarray(heat)
+    return found, global_scale, unl, ranked
+
+
+def _compare_vision_rows(a, data, ranked):
+    """Build and submit the optional vision comparison for the highest-ranked regions."""
+    if not a.vision or not ranked:
+        return
+    mock, shot, W, H = data["mock"], data["shot"], data["W"], data["H"]
+    top, rows = ranked[:min(6, len(ranked))], []
+    for i, r in enumerate(top):
+        b = r["bbox"]
+        pad = 12
+        box = (max(0, b["x"] - pad), max(0, b["y"] - pad), min(W, b["x"] + b["w"] + pad), min(H, b["y"] + b["h"] + pad))
+        rows.append([(f"{i + 1}. design", mock.crop(box)),
+                     (f"{i + 1}. implemented", shot.crop(_impl_box(box, r, data["dy0"], data["k"])))])
+    vis = data["out"] / "vision_rows.png"
+    sheet(rows, vis, T=300)
+    try:
+        res = ask([COMPARE_PROMPT, Image.open(vis)], COMPARE_SCHEMA, "compare_rows")
+        for row in res["rows"]:
+            if isinstance(row, dict) and isinstance(row.get("index"), int) and 1 <= row["index"] <= len(top) \
+                    and isinstance(row.get("differences"), list):
+                top[row["index"] - 1]["vision"] = [str(v) for v in row["differences"]]
+    except Exception as e:
+        print(f"  ! vision pass failed: {e}")
+
+
+def _compare_write_report(a, data, found, unl, ranked):
+    """Render heatmaps and region sheets, then write the JSON comparison report."""
+    W, H, out = data["W"], data["H"], data["out"]
+    de, M, A = data["de"], data["M"], data["A"]
+    mock, shot = data["mock"], data["shot"]
+    hm = Image.fromarray((_heat_rgb(de / 20) * 0.75 + M * 0.25).astype(np.uint8))
     dr = ImageDraw.Draw(hm)
     for i, r in enumerate(ranked[:a.top]):
         b = r["bbox"]
@@ -526,14 +573,25 @@ def cmd_compare(a):
         b = r["bbox"]
         pad = 10
         box = (max(0, b["x"] - pad), max(0, b["y"] - pad), min(W, b["x"] + b["w"] + pad), min(H, b["y"] + b["h"] + pad))
-        rows.append([(f"#{i + 1} {r['name'][:30]} design", mock.crop(box)), ("implemented", shot.crop(_impl_box(box, r, dy0, k))),
-                     ("dE heat", hm.crop(box))])
+        rows.append([(f"#{i + 1} {r['name'][:30]} design", mock.crop(box)),
+                     ("implemented", shot.crop(_impl_box(box, r, data["dy0"], data["k"]))), ("dE heat", hm.crop(box))])
     if rows:
         sheet(rows, out / "regions.png", T=260)
-    report = {"overall": overall, "regions": found, "unlabelled": unl, "mockup": str(a.mockup or d / (m or {}).get("mockup", "mockup.png")),
-              "screenshot": str(a.screenshot), "px_to_dp": k, "design_width_dp": design_dp, "screenshot_width_dp": shot_dp,
-              "fonts": str(fpath) if fonts_json else None, "fail_below": a.fail_below}
+    report = {"overall": data["overall"], "regions": found, "unlabelled": unl,
+              "mockup": str(a.mockup or data["d"] / (data["manifest"] or {}).get("mockup", "mockup.png")),
+              "screenshot": str(a.screenshot), "px_to_dp": data["k"], "design_width_dp": data["design_dp"],
+              "screenshot_width_dp": data["shot_dp"], "fonts": str(data["fpath"]) if data["fonts_json"] else None,
+              "fail_below": a.fail_below}
     (out / "report.json").write_text(json.dumps(report, indent=2))
+
+
+def _compare_print_report(a, data, found, unl, ranked, global_scale):
+    """Print comparison scores, alignment context, ranked fixes, and the fail-below gate."""
+    overall, H = data["overall"], data["H"]
+    top_extra, bottom_extra, k = data["top_extra"], data["bottom_extra"], data["k"]
+    y0, y1 = data["y0"], data["y1"]
+    design_dp, platform, fonts_json = data["design_dp"], data["platform"], data["fonts_json"]
+    out = data["out"]
     print(f"overall score {overall['score']}/100  (SSIM (7px box) {overall['ssim']}, mean dE00 {overall['mean_de00']}, "
           f"{overall['pct_pixels_de_gt_10']}% px dE>10)")
     if top_extra or bottom_extra:
@@ -563,3 +621,31 @@ def cmd_compare(a):
         print(f"gate: score {overall['score']} {'>=' if ok else '<'} --fail-below {a.fail_below:g}: {'pass' if ok else 'FAIL'}")
         if not ok:
             sys.exit(1)
+
+
+def cmd_compare(a):
+    data = _compare_typography(_compare_align_screens(_compare_load_inputs(a)), a)
+    d, spec, m, mock_rgba, mock, shot = (data[k] for k in ("d", "spec", "manifest", "mock_rgba", "mock", "shot"))
+    W, H, k, design_dp, shot_dp, out = (data[x] for x in ("W", "H", "k", "design_dp", "shot_dp", "out"))
+    M, S, A, de, valid, Mg, Sg = (data[x] for x in ("M", "S", "A", "de", "valid", "Mg", "Sg"))
+    dy0, top_extra, bottom_extra, y0, y1, overall = (data[x] for x in
+        ("dy0", "top_extra", "bottom_extra", "y0", "y1", "overall"))
+    texts, role_of, fonts_json = data["texts"], data["role_of"], data["fonts_json"]
+    token_names, platform, styles = data["token_names"], data["platform"], data["styles"]
+    Sg32, Mg32, R = data["Sg32"], data["Mg32"], data["R"]
+    found = []
+    font_check_off, size_hints = data["font_check_off"], data["size_hints"]
+    for r in _regions(spec, m, W, H):
+        rep, part = _compare_measure_region(r, data)
+        if part is None:
+            found.append(rep)
+            continue
+        _compare_region_text(r, rep, part, data)
+        x, y, w, h = part["x"], part["y"], part["w"], part["h"]
+        cur, ref, dmap, own = part["cur"], part["ref"], part["dmap"], part["own"]
+        image, hints, text_boxes = part["image"], part["hints"], part["text_boxes"]
+        found.append(_compare_finish_region(r, rep, part))
+    found, global_scale, unl, ranked = _compare_rank_regions(found, data)
+    _compare_vision_rows(a, data, ranked)
+    _compare_write_report(a, data, found, unl, ranked)
+    _compare_print_report(a, data, found, unl, ranked, global_scale)
