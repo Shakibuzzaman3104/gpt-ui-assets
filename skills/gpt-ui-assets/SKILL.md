@@ -32,13 +32,18 @@ K="<this skill's base directory>/scripts/gptkit.py"
 
 ## Before you start
 
-- **New machine or a failing call:** run `python3 $K doctor` and read `references/setup.md`. It covers the API key,
-  gateways and optional tools (Chrome, Playwright, aapt2, EbSynth).
+- **First run, new machine or a failing call:** run `python3 $K doctor` and read `references/setup.md`. When no backend
+  is ready, `python3 $K setup` shows both options. Ask the user which they want, in plain words: **an API key** (OpenAI or
+  any compatible endpoint; billed per call; best for pixel-exact asset work) or **the local Codex CLI** on their
+  ChatGPT plan (no key, plan quota; fine for design, critique and research, but its image tool has no size or fidelity
+  control). Then run `setup --backend api|cli`; for a key, have the user pipe it into `setup --api-key-stdin` themselves
+  rather than pasting it into the chat. The setup also covers gateways and optional tools (Chrome, Playwright, aapt2,
+  EbSynth).
 - **Resuming a project** (after a break, a context reset or in a new session): run `python3 $K status <dir>`. It lists
   each unit's finished, missing and stale steps, the problems the kit's reports recorded, and the exact next command.
   No API calls.
 - **Cost.** Image calls take 35–80 s each and cost money or quota. Paid commands print a `plan: ~N image calls … ≈ $X`
-  line before the first call. `forge`, `sequence render` and `research` take `--dry-run`. `GPTKIT_BUDGET_USD` stops any
+  line before the first call (on the Codex CLI it counts plan quota instead). `GPTKIT_QUALITY=low` makes cheap drafts. `forge`, `sequence render` and `research` take `--dry-run`. `GPTKIT_BUDGET_USD` stops any
   command whose estimate exceeds it. `python3 $K cost --by cmd` shows what has been spent. Run slow commands in the
   background, and run independent ones in parallel (e.g. `forge` and `svg`).
 - **Models** are routed per job automatically. Read `references/models.md` before pinning one, when a transparent
@@ -53,7 +58,7 @@ story.
 | Phase | When | Core commands | Read |
 |---|---|---|---|
 | 0. Research | An app idea needs a feature list, competitors or screens to design | `research "<idea>" --platform P --out research/x`, then `blueprint research/x` | `references/research.md` |
-| 1. Design | The user wants screens designed | `mockup "<brief>" --platform P --out design/home`, `critique`, `--edit`, `--style-ref` | `references/design.md` |
+| 1. Design | The user wants screens designed | `mockup "<brief>" --platform P [--device tablet\|foldable\|desktop] --out design/home`, `critique`, `--edit`, `--style-ref`, `--set tablet,desktop --anchor <approved>` | `references/design.md` |
 | 1b. Hybrid | The concept must look portfolio-grade or move | `material`, `state`, `stage --init`, `stage`, `stage --compose` | `references/hybrid.md` |
 | 2–4. Assets | The user approves a design ("go ahead") | `manifest`, `spec`, `iconspec`, `forge`, `svg`, `icons`, `pick`, `fix`, `trace`, `vd`, `export` | `references/assets.md` |
 | App icon | A launcher icon is needed | `appicon concepts`, `appicon build` | `references/appicon.md` |
@@ -82,8 +87,10 @@ python3 $K compare build/home shot.png
 
 ## Rules that hold in every phase
 
-1. **Know the platform first** (`android`, `ios` or `web`). Ask if it isn't clear. `--platform` drives native components,
-   system UI, metrics and icon family, and every later command inherits it from `design.json`.
+1. **Know the platform and form factor first** (`android`, `ios`, `web`, `macos`, `windows`, `linux`; phone, tablet,
+   foldable or desktop). Ask if it isn't clear. `--platform` and `--device` drive native components, system UI or
+   window chrome, canvas, metrics and icon family, and every later command inherits them from `design.json`. Once a
+   phone screen is approved, derive the other form factors with `--set ... --anchor <approved>`, not fresh prompts.
 2. **Read every review sheet yourself before the user sees the result.** These include `*_critique.png`,
    `manifest_overlay.png`, `review/forge_*.png`, `review/svg_*.png`, `icons/preview.png`, the `appicon` sheets,
    `frames_review.png`, `keys_review.png`, `layout_review.png`, `fonts_review.png` and `compare/heatmap.png`. The
@@ -94,7 +101,8 @@ python3 $K compare build/home shot.png
 4. **Design screen 2 onward with `--style-ref <approved screen>`.** Describing the style in words drifts.
 5. **House style and canvas are automatic.** Every new screen is a clean, decluttered, modern UI with artwork only
    where it adds meaning, and no ads unless the brief asks; the user's `GPTKIT_HOUSE_STYLE` replaces this and
-   `--no-house-style` drops it for one run. Phone screens render on a 9:19.5 (iPhone-proportion) canvas. Each render
+   `--no-house-style` drops it for one run. Phone screens render on a 9:19.5 (iPhone-proportion) canvas, and every
+   other device on its own canvas. Each render
    is checked against it and fitted locally (empty gaps trimmed or extended, nothing scaled) when it comes back off;
    `aspect=OFF` means it could not be fitted. Never hand over an `OFF` variant as final.
 6. **Measure, don't guess.** Vision hex guesses drift by up to ΔE 10, and GPT draws native components at ~0.7× scale.

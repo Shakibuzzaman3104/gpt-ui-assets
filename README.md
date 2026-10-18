@@ -1,7 +1,8 @@
 # gpt-ui-assets
 
-A [Claude Code](https://claude.com/claude-code) skill that designs **platform-native** app screens with GPT image
-models and turns an approved design into **production assets and a 1:1 build**.
+A [Claude Code](https://claude.com/claude-code) skill that designs **platform-native** screens for phones, tablets,
+foldables, desktop apps and the web with GPT image models, and turns an approved design into **production assets and
+a 1:1 build**. It runs on an OpenAI-compatible API key or on the **local Codex CLI** with your ChatGPT plan.
 
 Every icon, illustration and background is **redrawn from scratch at full resolution and matched 1:1**; nothing is
 cropped out of the screenshot. You also get:
@@ -46,7 +47,7 @@ This skill does what a designer would do instead:
 | Phase | Commands | What you get |
 |---|---|---|
 | Research | `research`, `blueprint` | In-depth, web-searched, cited market report (competitors, pain points, pricing, gaps) and a feature blueprint (RICE, user stories, screens with mockup briefs, roadmap) using `gpt-6-sol` at high/xhigh reasoning |
-| Design | `mockup --platform android\|ios\|web`, `--style-ref`, `critique` | Native-component screens; further screens in the approved design language; design QA with measured contrast |
+| Design | `mockup --platform android\|ios\|web\|macos\|windows\|linux --device phone\|tablet\|foldable\|desktop`, `--set`, `--style-ref`, `critique` | Native-component screens on each device's canvas and chrome, in a clean, decluttered house style; one approved screen carried to every form factor; further screens in the approved design language; automatic design QA with measured contrast and hinge, density and fold checks |
 | Inventory | `manifest`, `spec`, `iconspec` | Every asset with bbox, kind and format (native components and system UI excluded); tokens with the native widget per component |
 | Raster assets | `forge`, `pick`, `fix` | 1:1 redraws: parallel candidates, perceptual `fid` ranking, Lab colour match, copy/crop rejection |
 | Icons | `svg`, `icons`, `vd` | SVG icons scored against the design and retried when weak, on a 24-grid; new icons in the set's style; VectorDrawables validated by render round-trip + aapt2 |
@@ -61,6 +62,11 @@ This skill does what a designer would do instead:
 bar with the pill indicator and gesture handle vs a large title, inset-grouped list, floating Liquid Glass tab bar and
 Dynamic Island.
 <p align="center"><img src="docs/images/09-platform-native.webp" width="600" alt="Android vs iOS from one brief"></p>
+
+**Every form factor.** `--device tablet` gives list-detail and navigation rails or an iPad sidebar, `--device foldable`
+keeps every control off the hinge (and QA measures it), `--device desktop` draws real macOS, Windows or Linux window
+chrome at pointer density, and `--platform web --page landing` composes above the fold. `--set tablet,desktop --anchor
+<approved phone screen>` recomposes the same app for each form factor instead of stretching it.
 
 **New screens in the approved design language** (`--style-ref`): same wordmark, tab bar, type and illustration style,
 with a new layout.
@@ -102,8 +108,8 @@ A copied folder (`cp -r`) silently stays on the version you copied.
 
 Then install the Python dependencies (Python 3.9+):
 ```bash
-pip install -r ~/.claude/skills/gpt-ui-assets/scripts/requirements.txt   # requests, pillow, numpy, playwright
-pip install vtracer scipy fonttools                                     # optional extras
+pip install -r ~/.claude/skills/gpt-ui-assets/scripts/requirements.txt   # requests, pillow, numpy
+pip install vtracer scipy fonttools playwright                          # optional extras
 ```
 These optional tools are used when present:
 - **Headless Chrome/Chromium:** SVG rendering with alpha, lottie-web previews.
@@ -112,20 +118,43 @@ These optional tools are used when present:
 
 ## Configure
 
-The skill works with the OpenAI API or any **OpenAI-compatible** endpoint that exposes `/images/generations`,
-`/images/edits` and `/responses`. Set environment variables, or create `~/.config/gptkit/env`:
-
-```ini
-GPTKIT_API_KEY=sk-...
-# optional
-GPTKIT_BASE_URL=https://api.openai.com/v1
-GPTKIT_IMAGE_MODEL=gpt-image-2
-GPTKIT_TEXT_MODEL=gpt-6
+Pick a backend. The skill asks on first use, or run the setup yourself:
+```bash
+python3 ~/.claude/skills/gpt-ui-assets/scripts/gptkit.py setup      # shows which backends are ready
 ```
-`OPENAI_API_KEY` and `OPENAI_BASE_URL` are used as fallbacks. Keep the file private (`chmod 600`). Check the setup with:
+
+- **API key** (best for pixel-exact asset work). The OpenAI API or any **OpenAI-compatible** endpoint that exposes
+  `/images/generations`, `/images/edits` and `/responses`:
+  ```bash
+  pbpaste | python3 .../gptkit.py setup --backend api --api-key-stdin   # never echoes or logs the key
+  ```
+  or write `~/.config/gptkit/env` yourself (`chmod 600`):
+  ```ini
+  GPTKIT_API_KEY=sk-...
+  # optional
+  GPTKIT_BASE_URL=https://api.openai.com/v1
+  GPTKIT_QUALITY=high          # low | medium | high; low for cheap drafts
+  ```
+  `OPENAI_API_KEY` and `OPENAI_BASE_URL` are used as fallbacks. Models are routed per task from the endpoint's model
+  list; `GPTKIT_IMAGE_MODEL` / `GPTKIT_TEXT_MODEL` pin one.
+- **Local Codex CLI** (no key; uses your ChatGPT plan's quota). `npm i -g @openai/codex && codex login`, then
+  `gptkit.py setup --backend cli`. Design, critique and research work fully. Its image tool has no size or fidelity
+  control, so the kit fits the aspect locally and recommends the API for `forge`, `fix` and `sequence`.
+
+With `GPTKIT_BACKEND=auto` (the default), an API key wins and the Codex CLI is used when there is none. Check
+everything with:
 ```bash
 python3 ~/.claude/skills/gpt-ui-assets/scripts/gptkit.py doctor
 ```
+
+**House style.** Every new design is a clean, decluttered, modern UI with artwork only where it carries meaning, no
+ads and an invented product name unless your brief says otherwise. Put your own standing art direction in
+`GPTKIT_HOUSE_STYLE` (or `off`); `--no-house-style` skips it once.
+
+**Viewer.** The optional `attachment-preview` mod (in `mods/`) shows every picture the kit prints in a terminal pane:
+variant grids, up to four picks side by side, transparent assets on checker, light or dark backdrops, icon contact
+sheets, and the aspect and design QA of each picture. Install it with
+`/plugin install attachment-preview@gpt-ui-assets`.
 
 ## Use
 
@@ -134,13 +163,13 @@ Just talk to Claude:
 > Design an Android budgeting app home screen with GPT: this month's balance, spending by category, recent
 > transactions and an add-expense button, in warm coral and cream with a friendly piggy-bank mascot.
 
-> The second one. Now the budgets screen in the same style.
+> The second one. Now the budgets screen in the same style, and the home screen for tablets and the web.
 
 > Go ahead: give me all the assets, the app icon and the fonts, and build it in Compose.
 
 > Make the mascot bounce, and animate the flame as an animated vector.
 
-Claude designs with native components for your platform, critiques each variant before showing it, and on "go
+Claude designs with native components for your platform and device, critiques each variant before showing it, and on "go
 ahead" does the rest: inventories and forges the assets, reviews every result, exports to your platform, matches the
 fonts, generates theme code, builds the screen and diffs a screenshot of it against the design until it matches. You
 can also start from a design made in the ChatGPT app or anywhere else: give Claude the image.
@@ -171,7 +200,8 @@ The measurements behind every rule are in [`references/api-findings.md`](skills/
   Codex CLI backend that is plan quota, not money). `forge` with 2–3 candidates makes that
   many calls per raster asset. Icons take one vision call per 6 icons. Procedural animation, tracing, rigging, fonts,
   redline, tokens and compare make no image calls.
-- Some backends ignore `quality`, `size` and `n`. The kit trims, crops and resizes locally and runs candidates in parallel.
+- Some backends ignore `quality`, `size` and `n`. The kit measures every render against its canvas, fits it locally
+  (empty gaps trimmed or extended, nothing scaled) and runs candidates in parallel.
 - Image models don't draw to scale, so sizes are snapped to platform norms and type sizes come from measurement.
 - The fidelity thresholds were tuned mainly on dark UI designs. Check the review sheets on very light or busy backgrounds.
 
@@ -179,7 +209,9 @@ The measurements behind every rule are in [`references/api-findings.md`](skills/
 
 - `skills/gpt-ui-assets/SKILL.md` is a short router: the rules that hold in every phase and which reference to read.
   Each phase's details are in `skills/gpt-ui-assets/references/`, loaded only when Claude reaches that phase.
-- `skills/gpt-ui-assets/scripts/gptkit.py` is the CLI (`python3 gptkit.py <cmd> -h`).
+- `skills/gpt-ui-assets/scripts/gptkit.py` is the CLI (`python3 gptkit.py <cmd> -h`); the code is the
+  `scripts/gptkit/` package, one module per area.
+- `mods/attachment-preview/` is the optional viewer mod.
 - `python3 gptkit.py status <dir>` shows where a project stands and the next command, with no API calls.
 - `CONTRIBUTING.md` has the rules for changing the kit and how to run the tests.
 

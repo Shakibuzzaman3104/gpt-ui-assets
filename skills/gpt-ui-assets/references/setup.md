@@ -33,7 +33,7 @@ Config comes from env vars or `~/.config/gptkit/env` (`KEY=value` lines):
 Install with `npm i -g @openai/codex`, sign in with `codex login`, then run `python3 $K setup --backend cli`. The kit
 uses `codex exec` with an ephemeral read-only workspace and no API key. Text, vision, and web research use your ChatGPT
 login; image generation uses Codex's `image_gen` tool. The local image tool has no fidelity, exact-size, quality, or
-candidate-count controls. `$CODEX_HOME` can point at a non-default Codex home.
+candidate-count controls, so prefer the API for pixel-exact asset work (`forge`, `fix`, `sequence`). Parallel variants stay apart (each run's image is read from its own thread folder under `$CODEX_HOME/generated_images`). `$CODEX_HOME` can point at a non-default Codex home; `GPTKIT_CODEX` names the binary (`none` disables the backend). When the plan refuses a model, the kit switches to `gpt-6-luna` for the rest of the run. Calls are logged to the ledger at $0 (plan quota).
 
 ## Optional tools (each used when present)
 

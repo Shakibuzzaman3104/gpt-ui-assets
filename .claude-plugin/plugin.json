@@ -1,7 +1,7 @@
 {
   "name": "gpt-ui-assets",
-  "version": "4.0.0",
-  "description": "Design platform-native app UIs with GPT and turn them into production assets: every icon, illustration and background redrawn 1:1 (never cropped), SVG/VectorDrawable icons, app icons, frame/Lottie/AVD animation, fonts, theme code and a screenshot diff for a 1:1 build.",
+  "version": "5.0.0",
+  "description": "Design platform-native phone, tablet, foldable, desktop-app and web UIs with GPT (API key or the local Codex CLI) and turn them into production assets: every icon, illustration and background redrawn 1:1 (never cropped), SVG/VectorDrawable icons, app icons, frame/Lottie/AVD animation, fonts, theme code and a screenshot diff for a 1:1 build.",
   "author": {
     "name": "Shakibuzzaman",
     "url": "https://github.com/Shakibuzzaman3104"
@@ -14,15 +14,21 @@
     "animated-vector-drawable",
     "app-icon",
     "assets",
+    "codex",
     "design",
+    "desktop",
+    "foldable",
     "gpt-image",
     "icons",
     "jetpack-compose",
     "lottie",
     "material3",
+    "mockup",
     "openai",
     "swiftui",
+    "tablet",
     "ui",
-    "vectordrawable"
+    "vectordrawable",
+    "web-design"
   ]
 }
