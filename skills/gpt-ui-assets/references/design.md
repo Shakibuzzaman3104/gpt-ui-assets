@@ -50,6 +50,7 @@ python3 $K mockup "inbox" --platform android --set tablet,desktop --anchor desig
 The canvas and logical dimensions are stored in `design.json`, so critique and later measurement use the selected
 device width (including web's 1440 px desktop viewport). Foldable aspect fitting is disabled to preserve the hinge
 position. A set render writes `<name>_<device>.png` for each device and records the anchor and files in `set.json`.
+- **Directions:** `--directions` gives each variant its own palette, type, shape and signature from shortlisted style families and accent hues; one extra text call, saved in `design.json`. New screens only: not with `--edit`, `--style-ref`, `--anchor`/`--set` or `--raw`.
 - **House style:** every `mockup` and `--style-ref` prompt carries the house art direction: clean, decluttered, modern;
   one focal point and one accent (stat tiles and icon backgrounds share it, never a different tint each); section
   headers and labels in sentence case, never ALL-CAPS; artwork only where it carries meaning (hero, empty state, onboarding); real content,

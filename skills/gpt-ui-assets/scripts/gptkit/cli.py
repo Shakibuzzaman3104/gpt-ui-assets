@@ -102,6 +102,7 @@ def _design_parsers(sub):
                    "desktop: 2304x1440; --edit keeps the edited screen's canvas). Every render is checked against it and "
                    "fitted locally when it comes back off")
     p.add_argument("--variants", type=_pos_int, default=1, help="images generated in parallel")
+    p.add_argument("--directions", action="store_true", help="give each variant its own art direction (palette, type, shape, signature) drawn from a shortlist of style families and one accent hue per variant; one extra text call. New screens only: not with --edit, --style-ref, --anchor or --raw")
     p.add_argument("--no-critique", action="store_true", help="skip the automatic design QA of each variant")
     p.add_argument("--no-house-style", action="store_true",
                    help="leave out the house style (clean, decluttered, modern; set GPTKIT_HOUSE_STYLE to change it)")

@@ -26,6 +26,57 @@ def _house_style(skip=False):
     return "" if not text or text.strip().lower() in ("off", "none", "0", "false") else " " + text.strip()
 
 
+STYLE_FAMILIES = [
+    ("Clean canvas", "off-white or warm-grey page, white surfaces, one saturated accent that marks only the action"),
+    ("Soft daylight", "pale tinted backdrop, translucent frosted panels, gentle depth from blur, calm and airy"),
+    ("Night instrument", "near-black tinted surfaces stepping up in lightness, one vivid accent on the live value"),
+    ("Illustrated warmth", "one consistent illustration or character style, rounded shapes, friendly and forgiving"),
+    ("Metric mosaic", "modular tiles where oversized numbers and micro-charts are the decoration, precise and calm"),
+    ("Quiet greyscale", "neutral palette, photography and type carry everything, colour almost absent"),
+    ("Midnight glow", "dark void lit by one soft blurred colour field, glossy focal object, cinematic"),
+    ("Photo-led", "photography sets the colour; chrome stays neutral and tints itself to the subject"),
+    ("Printed page", "paper-like pages, a serif display voice, sparing ornament, literary and warm"),
+    ("Saturated wash", "white UI that dissolves into one bold gradient or colour field behind the hero"),
+    ("Bold graphic", "condensed display type, hard edges, flat poster colour blocks, loud and youthful"),
+    ("Tonal monochrome", "the whole UI built from tints and shades of one hue, with a darker shade for the action"),
+]
+ACCENT_HUES = ["cobalt blue", "teal", "emerald green", "lime", "amber", "tangerine", "coral red", "magenta", "violet",
+               "indigo", "sky blue", "mint", "crimson", "sunflower yellow"]
+DIRECTIONS_PROMPT = """You are the art director of a product team. Write {n} distinct visual directions for this {platform} app
+screen. None may be the generic AI app template (white cards on a light grey page, one blue pill button, a different
+pastel tint per tile, emoji-like icons, everything the same weight).
+Choose each direction's style family from this shortlist, a different family per direction, picking those that suit
+this product's domain, audience and mood:
+{families}
+Accent hues, in direction order: {hues}. Build each direction's accent on its hue (shade it to suit the product), unless the brief names colours: then the brief's colours are every direction's palette and accent, and the directions differ in type, shape, layout and signature instead.
+Keep everything the brief states (content, theme, colours, platform) in every direction: a colour or theme the brief
+names overrides the shortlist. Each direction must be credible for this product on its own, not a weaker foil.
+Write each field as a short, concrete instruction for a renderer:
+- palette: hex values for background, surface, primary text, secondary text and ONE accent (the accent marks only the
+  primary action, the active navigation item and the single most important value; about 10% of the screen at most);
+  secondary text meets 4.5:1 on its background.
+- type: typeface character, the hero element and its size, and a 4-5 step type scale in logical units.
+- shape: a radius scale of at most 3 values and which components use each; depth approach.
+- spacing: screen side margin, gap inside a group, gap between groups, card padding, all multiples of 4.
+- signature: ONE visual device that makes this product recognisable, layered on standard platform components.
+- avoid: the 3 clichés of this product category.
+Brief: {brief}"""
+DIRECTION_SCHEMA = {"type": "object", "additionalProperties": False,
+                    "required": ["name", "mood", "theme", "palette", "type", "shape", "spacing", "signature", "avoid"],
+                    "properties": {"name": {"type": "string"}, "mood": {"type": "string"},
+                                   "theme": {"type": "string", "enum": ["light", "dark"]}, "palette": {"type": "string"},
+                                   "type": {"type": "string"}, "shape": {"type": "string"}, "spacing": {"type": "string"},
+                                   "signature": {"type": "string"}, "avoid": {"type": "string"}}}
+DIRECTIONS_SCHEMA = {"type": "object", "additionalProperties": False, "required": ["directions"],
+                     "properties": {"directions": {"type": "array", "items": DIRECTION_SCHEMA}}}
+
+
+def _direction_text(d):
+    """One art direction as prompt words for the renderer."""
+    return (f"Art direction \"{d['name']}\" ({d['theme']} theme; {d['mood']}). Palette: {d['palette']} Type: {d['type']} "
+            f"Shape: {d['shape']} Spacing: {d['spacing']} Signature: {d['signature']} Avoid: {d['avoid']}")
+
+
 PLATFORMS = {
     "android": {
         "label": "native Android app (Material 3 / Material 3 Expressive, Jetpack Compose)",
