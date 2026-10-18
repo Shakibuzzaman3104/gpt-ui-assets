@@ -317,24 +317,18 @@ def cmd_mockup(a):
             child.variants = 1
             child.anchor = anchor_path
             child.style_ref = None
+            child.exact_name = child.name  # one render per device, written straight to <name>_<device>.png
             cmd_mockup(child)
-            made_path = out / f"{child.name}_v1.png"
-            final_path = out / f"{a.name}_{dname}.png"
-            if made_path.exists():
-                made_path.replace(final_path)
-                for suffix in ("_critique.png", "_critique.json"):
-                    aux = out / f"{child.name}_v1{suffix}"
-                    if aux.exists():
-                        aux.replace(out / f"{a.name}_{dname}{suffix}")
+            final_path = out / f"{child.name}.png"
             rec = _device_record(platform, dname, orientation if dname == "tablet" else None,
                                  posture if dname == "foldable" else None, page if platform == "web" else None)
             screens[final_path.name] = _screen_meta(platform, rec, dname, orientation, posture, page, rec["canvas"])
         mf = out / "design.json"
         existing = json.loads(mf.read_text()) if mf.exists() else {"platform": platform}
-        existing["screens"] = screens
+        existing.setdefault("screens", {}).update(screens)  # other screens in this folder keep their records
         existing["platform"] = platform
         mf.write_text(json.dumps(existing, indent=2))
-        (out / "set.json").write_text(json.dumps({"anchor": str(Path(anchor_path)), "devices": {
+        (out / "set.json").write_text(json.dumps({"anchor": str(Path(anchor_path).resolve()), "devices": {
             d: str(out / f"{a.name}_{d}.png") for d in set_devices}}, indent=2))
         return
     if edit_png and not a.size:
@@ -396,7 +390,7 @@ def cmd_mockup(a):
                 print(f"  ! variant {i + 1} copied the style reference (layout_diff {meta['layout_diff']}), retrying")
             if _aspect_err(im, sz) <= ASPECT_TOL and not copied:
                 break
-        p = out / f"{a.name}_v{i + 1}.png"
+        p = out / (f"{a.exact_name}.png" if getattr(a, "exact_name", None) else f"{a.name}_v{i + 1}.png")
         got = f"{im.width}x{im.height}"
         fell_back = f" on {sz}, the endpoint rejected {size}" if sz != size else ""
         if _aspect_err(im, sz) <= ASPECT_TOL:
@@ -404,7 +398,7 @@ def cmd_mockup(a):
         else:
             fitted, note = _fit_aspect(im, sz) if (not record or not record.get("hinge")) and _aspect_ok(img, sz) else (None, "foldable hinge geometry must not be fitted" if record and record.get("hinge") else "wrong orientation")
             if fitted is not None:
-                (out / f"{a.name}_v{i + 1}_raw.png").write_bytes(img)
+                (out / f"{p.stem}_raw.png").write_bytes(img)
                 img = _png_bytes(fitted)
                 meta["aspect"] = f"fitted {got} -> {fitted.width}x{fitted.height} ({note}; original in {p.stem}_raw.png)"
             else:
@@ -428,7 +422,7 @@ def cmd_mockup(a):
                     print(f"  ! variant {futs[f] + 1} failed: {e}")
                 continue
             made.append(p)
-            extra = f" layout_diff={meta['layout_diff']}" if ref is not None else ""
+            extra = f" layout_diff={meta['layout_diff']}" if meta.get("layout_diff") is not None else ""
             print(f"{p}  quality={meta.get('quality')} size={meta.get('size')} aspect={meta['aspect']}{extra}")
     finally:
         ex.shutdown(wait=False, cancel_futures=True)

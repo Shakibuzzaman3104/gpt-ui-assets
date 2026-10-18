@@ -137,7 +137,7 @@ for _os in ("macos", "windows", "linux"):
         "OS-native window title bar, toolbar and sidebar", PLATFORMS[_os]["components"], PLATFORMS[_os]["metrics"],
         _DESKTOP_RULES[_os], _DESKTOP_CHECKS)
 DEVICES[("android", "desktop", "default")] = _device("2304x1440", 1280, 800, 48, None,
-    "wide landscape canvas about 1.6:1", "Android desktop window chrome without phone status/navigation bars", "NavigationRail, list-detail panes, toolbar",
+    "wide landscape canvas about 1.6:1", "Android desktop-windowing caption bar: a slim header in the app's surface colour with the app icon and name at left and Material-style minimise, maximise and close icons at right (never Windows or macOS window controls); no phone status or navigation bars", "NavigationRail, list-detail panes, toolbar",
     "48 dp touch targets", "Form factor: Android app in a 1280x800 dp desktop window; omit phone status/navigation bars and use a rail, toolbar and multi-pane content.", _DESKTOP_CHECKS)
 for _dev, _page in (("desktop", "app"), ("desktop", "landing"), ("tablet", "app"), ("tablet", "landing"), ("phone", "app"), ("phone", "landing")):
     _canvas, _lw, _lh, _rule = {

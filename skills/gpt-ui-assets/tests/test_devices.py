@@ -125,15 +125,21 @@ def test_set_outputs_and_skips_cross_aspect_copy_check():
     with tempfile.TemporaryDirectory() as td:
         anchor = Path(td) / "approved.png"
         anchor.write_bytes(_png((1152, 2496)))
-        with patched(edit=edit):
-            code, out = run(K.cmd_mockup, args(td, out=str(Path(td) / "out"), platform="android", set="tablet,desktop",
-                anchor=str(anchor)))
         d = Path(td) / "out"
+        d.mkdir()
+        (d / "design.json").write_text(json.dumps({"platform": "android", "screens": {"home.png": {"device": "phone"}}}))
+        with patched(edit=edit):
+            code, out = run(K.cmd_mockup, args(td, out=str(d), platform="android", set="tablet,desktop",
+                anchor=str(anchor)))
         assert code == 0 and (d / "inbox_tablet.png").exists() and (d / "inbox_desktop.png").exists(), (code, out)
+        # each device is written (and printed, so viewers pick it up) under its final name; no stale _v1 files
+        assert f"{d / 'inbox_tablet.png'}  quality=" in out and not list(d.glob("*_v1*")), (out, sorted(d.iterdir()))
         manifest = json.loads((d / "set.json").read_text())
-        assert manifest["anchor"] == str(anchor) and set(manifest["devices"]) == {"tablet", "desktop"}
+        assert manifest["anchor"] == str(anchor.resolve()) and set(manifest["devices"]) == {"tablet", "desktop"}
+        screens = json.loads((d / "design.json").read_text())["screens"]
+        assert {"home.png", "inbox_tablet.png", "inbox_desktop.png"} <= set(screens), screens
         assert len(prompts) == 2 and all("same information architecture and data, not a scaled copy" in x[0] for x in prompts)
-        assert all("layout_diff=None" in out for _ in [0])
+        assert "layout_diff=None" not in out, out  # the cross-aspect copy check is skipped, and not printed
 
 
 def test_manifest_excludes_desktop_window_chrome():
