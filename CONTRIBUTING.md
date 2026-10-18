@@ -4,6 +4,17 @@ Rules for changing `skills/gpt-ui-assets/scripts/gptkit.py`. They were learned f
 shipped. Rules for *using* the kit live in the skill (`SKILL.md` and `references/`). Full measurements are in
 `skills/gpt-ui-assets/references/api-findings.md`.
 
+## Layout
+
+`scripts/gptkit.py` holds only the imports and a loader. The code is in `scripts/gptkit_parts/NN_area.py`, one file per
+area (`04_forge.py`, `08_sequence.py`, `23_cli.py` for argparse, …), executed in name order into `gptkit.py`'s own
+namespace. At runtime it is still one module: a part uses names from earlier parts as plain globals, `import gptkit`
+exposes everything, and the tests' `K.generate = fake` patching reaches every part. So:
+- edit the part, never paste code back into `gptkit.py`;
+- a name used at import time (a constant, a default argument, a decorator) must be defined in an earlier part;
+  names used inside functions can live anywhere;
+- a new subcommand needs its `cmd_*` function in its area's part and its parser in `23_cli.py`.
+
 Run the tests from `skills/gpt-ui-assets`: `for t in tests/test_*.py; do python3 $t || echo FAIL $t; done`. Every file
 runs on its own without pytest, offline, with the API mocked. Keep Python 3.9 compatibility (macOS system Python).
 

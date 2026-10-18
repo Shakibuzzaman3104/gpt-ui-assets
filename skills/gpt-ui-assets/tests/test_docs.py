@@ -24,9 +24,16 @@ def _skill_text():
 KIT = ROOT / "scripts" / "gptkit.py"
 
 
+def _kit_source():
+    """gptkit.py's imports followed by every part in load order: the module as it exists at runtime."""
+    kit = KIT.read_text()
+    head = kit[:kit.index("# The kit's code lives in gptkit_parts/")]
+    return head + "\n".join(p.read_text() for p in sorted((KIT.parent / "gptkit_parts").glob("[0-9][0-9]_*.py")))
+
+
 def _build_parser():
     """Re-build main()'s argparse tree without calling parse_args (no sys.argv side effects)."""
-    src = KIT.read_text()
+    src = _kit_source()
     i = src.index("def main():")
     j = src.index("a = ap.parse_args()")
     head, main_src = src[:i], src[i:j]
