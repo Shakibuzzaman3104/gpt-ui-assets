@@ -47,6 +47,8 @@ python3 $K tokens  build/home --package com.acme.app.ui.theme --prefix Acme [--a
   stub for Roborazzi or the Compose Preview Screenshot Testing plugin. `--dtcg` adds `tokens.tokens.json` (W3C Design Tokens,
   the Style Dictionary v4 subset: `color`, `typography`, `dimension.radius`, `dimension.spacing`, provenance in `$description`)
   for Style Dictionary, Tokens Studio and friends.
+  It warns about spacing off the 4 dp grid and more than four distinct non-pill corner radii.
+  `--snap-grid` rounds spacing to the grid: a deliberate departure from the mockup that `compare` will show.
   - Every palette hex (`#rgb`, `#rrggbbaa`, `rgb()`/`rgba()` accepted; alpha kept) is first snapped to the mockup's pixels;
     `palette_check.png` shows the guess, the snapped value and the ΔE00. Identifiers are unique across colours, styles, radii,
     spacing and font families; Swift keywords are backticked and SwiftUI colour names get a `Token` suffix.

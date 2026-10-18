@@ -14,7 +14,8 @@ MOCKUP_WRAP = ("High-fidelity production UI design render of a single {surface} 
 # GPTKIT_HOUSE_STYLE (env or config file) replaces it; "off" drops it; --no-house-style skips it for one run.
 HOUSE_STYLE = ("House style (unless the brief says otherwise): a clean, decluttered, modern UI. Generous whitespace, one "
                "clear focal point and hierarchy, only the elements this screen needs, one accent colour, no ornamental "
-               "noise. Add illustration or artwork only where it carries meaning or warmth (a hero, an empty state, "
+               "noise. Stat tiles and icon backgrounds share that one accent, never a different tint each; section headers "
+               "and labels in sentence case, never ALL-CAPS. Add illustration or artwork only where it carries meaning or warmth (a hero, an empty state, "
                "onboarding), in one consistent style. Show real product content only: no ads, ad banners, promos or "
                "placeholder marketing unless the brief asks for them. If the brief names no product, invent an original "
                "product name; never use a real company's or app's name, logo or brand mark.")
@@ -244,12 +245,20 @@ severe first:
   icons or a gesture pill on iOS).
 - adaptivity: {device_rule}
 - implementability: what code can't build cleanly (text baked into artwork, impossible overlaps, inconsistent radii,
-  content cut off).{ref_rule}
+  content cut off).
+- spacing: content within 16 logical units of the screen's side edges, or text or a control within 8 logical units
+  of its own container's edge; groups that are not separated by clearly more space than the items inside them
+  (ambiguous grouping); a section heading as close to the previous section as to its own content; a dense stack with
+  no room around it; repeated items with uneven gaps.
+- shape: more than three distinct corner radii without a role; a nested rounded element whose corner radius is equal to
+  or larger than its container's (non-concentric corners); a card inside a card; one surface with square corners among
+  rounded surfaces of the same kind (e.g. a square-cornered card next to rounded cards).{ref_rule}
 Report each root cause ONCE: group repeated instances (e.g. several labels with the same size problem) into one
 issue. Per issue: severity (high = broken, illegible or blocks the build; medium = visible defect; low = nit),
-category, a bbox around the problem (or its first instance) in this image's pixels, the problem in one sentence, and
-ONE edit instruction (<= 30 words) that fixes only that issue. No taste preferences. A clean design gets few or no
-issues."""
+category, a bbox around the problem (or its first instance) in this image's pixels, the problem in one sentence,
+ONE edit instruction (<= 30 words) that fixes only that issue, and scope: "screen" when the fix needs the whole screen
+re-laid out (screen margins, overall density, section rhythm), else "local". No taste preferences beyond the spacing
+and shape rules above. A clean design gets few or no issues."""
 
 CRITIQUE_REF_RULE = """
 - consistency: the SECOND image is an approved screen of the same app. Flag differences in app name, navigation
@@ -262,14 +271,16 @@ ADAPT_PROMPT = ("The attached image is the approved screen of this app and style
                 "information architecture and data, not a scaled copy. {prompt} Render a distinct responsive composition.")
 
 ISSUE_ITEM = {"type": "object", "additionalProperties": False,
-              "required": ["severity", "category", "bbox", "problem", "edit"],
+              "required": ["severity", "category", "bbox", "problem", "edit", "scope"],
                   "properties": {
                   "severity": {"type": "string", "enum": ["high", "medium", "low"]},
                   "category": {"type": "string", "enum": ["text", "alignment", "icons", "contrast", "accessibility",
-                                                          "overlap", "platform", "adaptivity", "implementability", "consistency"]},
+                                                          "overlap", "platform", "adaptivity", "implementability", "consistency",
+                                                          "spacing", "shape"]},
                   "bbox": {"type": "object", "additionalProperties": False, "required": ["x", "y", "w", "h"],
                            "properties": {k: {"type": "integer"} for k in "xywh"}},
-                  "problem": {"type": "string"}, "edit": {"type": "string"}}}
+                  "problem": {"type": "string"}, "edit": {"type": "string"},
+                  "scope": {"type": "string", "enum": ["local", "screen"]}}}
 
 CRITIQUE_SCHEMA = {"type": "object", "additionalProperties": False, "required": ["issues"],
                    "properties": {"issues": {"type": "array", "items": ISSUE_ITEM}}}

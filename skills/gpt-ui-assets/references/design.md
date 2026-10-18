@@ -51,7 +51,8 @@ The canvas and logical dimensions are stored in `design.json`, so critique and l
 device width (including web's 1440 px desktop viewport). Foldable aspect fitting is disabled to preserve the hinge
 position. A set render writes `<name>_<device>.png` for each device and records the anchor and files in `set.json`.
 - **House style:** every `mockup` and `--style-ref` prompt carries the house art direction: clean, decluttered, modern;
-  one focal point and one accent; artwork only where it carries meaning (hero, empty state, onboarding); real content,
+  one focal point and one accent (stat tiles and icon backgrounds share it, never a different tint each); section
+  headers and labels in sentence case, never ALL-CAPS; artwork only where it carries meaning (hero, empty state, onboarding); real content,
   no ads or promos unless the brief asks for them. `--edit` does not add it (an edit changes only what it names).
   Set `GPTKIT_HOUSE_STYLE` in `~/.config/gptkit/env` to replace it with the owner's own direction, `off` to drop it,
   or pass `--no-house-style` for one run. The brief always wins over the house style.
@@ -61,6 +62,9 @@ position. A set render writes `<name>_<device>.png` for each device and records 
     orange = medium, blue = low) before showing a variant.
     It checks text, alignment, icon consistency, contrast (measured locally: trust `[measured N:1]`), platform
     guidelines and implementability. With `--style-ref` it also catches a wrong app name, nav items, typeface or data.
+    It also checks spacing (content within 16 units of the screen's side edges, text/controls within 8 units of their
+    container's edge, ambiguous grouping, uneven gaps) and shape (more than three radii, non-concentric nested corners,
+    card inside a card). Issues marked screen-wide are not edited by `--apply`: re-run `mockup` with the fix in the brief.
   - `--apply` edits the fixes in and keeps the revision only if the issue weight drops. The verifier is lenient and the
     editor never sees the approved screen, so Read the revision. Give concrete follow-ups with `--edit`.
   - Vision QA is weak at spatial collisions: it can miss a FAB, snackbar or mini player covering content. **Check

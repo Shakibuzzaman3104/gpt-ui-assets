@@ -459,6 +459,19 @@ def _token_model(spec, palette, texts, fonts, redline=None):
             "px_to_dp": k}
 
 
+def _shape_audit(tm, grid=4):
+    off = []
+    for s in tm["spacing"]:
+        dp = s["dp"]
+        lower, upper = math.floor(dp / grid) * grid, math.ceil(dp / grid) * grid
+        if dp >= 2 and min(dp - lower, upper - dp) > 0.5:
+            off.append({"name": s["name"], "dp": dp, "nearest": [lower, upper]})
+    radii = sorted({round(r["dp"], 1) for r in tm["radii"] if round(r["dp"], 1) != 0
+                    and r.get("shape") not in ("pill", "circle", "full")
+                    and not re.search(r"pill|full|circle", r["name"], re.I)})
+    return {"grid_dp": grid, "off_grid": off, "radii_dp": radii, "radii_count": len(radii), "snapped": []}
+
+
 def _measured_spacing(name, items, k):
     """(dp, source) for a spacing name from redline's measured items, or None: 'gap/between/below' -> the gap below the
     linked item, 'edge/screen/margin' -> the item's distance from the screen edge, 'padding/inset' -> the smallest inset
@@ -1009,6 +1022,22 @@ def cmd_tokens(a):
     redline = _json_lists(_read_json(rl_path, "redline.json", ("items", "radii")), ("items", "radii"), rl_path,
                           f"redline {d}") if rl_path.exists() else None
     tm = _token_model(spec, palette, texts, fonts, redline)
+    snapped = []
+    if getattr(a, "snap_grid", False):
+        for s in tm["spacing"]:
+            if s["dp"] >= 2 and max(4, round(s["dp"] / 4) * 4) != s["dp"]:
+                old = s["dp"]
+                s["dp"] = max(4, round(old / 4) * 4)
+                s["source"] += f" -> snapped to 4 dp grid from {old:g} dp"
+                snapped.append(s["name"])
+    audit = _shape_audit(tm)
+    audit["snapped"] = snapped
+    if audit["off_grid"]:
+        off = ", ".join(f"{s['name']} {s['dp']:g} dp ({s['nearest'][0]:g}/{s['nearest'][1]:g})" for s in audit["off_grid"])
+        print(f"  ! spacing off the 4 dp grid: {off}; --snap-grid rounds them (compare will then show the departure from the mockup)")
+    if audit["radii_count"] > 4:
+        radii = ", ".join(f"{r:g}" for r in audit["radii_dp"])
+        print(f"  ! {audit['radii_count']} corner radii ({radii} dp): a shape scale usually has 3-4 plus pill")
     tm["width_dp"] = int(spec.get("effective_width_dp") or round(mock.width * tm["px_to_dp"]))
     files = []
     if "compose" in platforms:
@@ -1027,7 +1056,7 @@ def cmd_tokens(a):
                                                 "tracking", "color_hex", "size_source", "platform_style", "m3_slot", "m3_slot_source",
                                                 "hig_style")} for t in tm["types"]],
               "m3": {k_: tm.get(k_) for k_ in ("m3_roles_baseline", "m3_slots_baseline", "m3_slot_notes", "m3_shapes")},
-              "prefix": a.prefix,
+              "prefix": a.prefix, "audit": audit,
               "radii": [{k: r[k] for k in ("name", "dp", "source", "shape")} for r in tm["radii"]],
               "spacing": [{k: s[k] for k in ("name", "dp", "source")} for s in tm["spacing"]],
               "platforms": platforms, "px_to_dp": tm["px_to_dp"], "fonts": str(fonts_path) if fonts else None}
