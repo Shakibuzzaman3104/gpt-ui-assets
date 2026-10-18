@@ -531,7 +531,8 @@ def _clean_issues(res, key, img):
             print(f"  ! dropped an issue whose bbox {x.get('bbox')} is not inside the {img.width}x{img.height} image: "
                   f"[{x.get('severity')}] {x.get('problem', '')}")
             continue
-        out.append({"category": "", "problem": "", "edit": "", **x, "bbox": b})
+        scope = x.get("scope") if x.get("scope") in ("local", "screen") else "local"
+        out.append({"category": "", "problem": "", "edit": "", **x, "scope": scope, "bbox": b})
     return out
 
 
@@ -578,8 +579,9 @@ def _print_issues(issues):
         mc = f"  [measured {x['measured_contrast']}:1]" if "measured_contrast" in x else ""
         if "measured_passes" in x:
             mc = f"  [measured {x['measured_contrast']}:1, meets {x['measured_passes']:g}:1 here; check by eye]"
+        sw = "  [screen-wide: re-run mockup]" if x.get("scope") == "screen" else ""
         print(f"  {x.get('id', ''):>3}. {str(x.get('severity')):6s} {str(x.get('category', '')):16s} {x.get('problem', '')}"
-              f"{mc}\n      edit: {x.get('edit', '')}")
+              f"{sw}{mc}\n      edit: {x.get('edit', '')}")
 
 
 def cmd_critique(a):
@@ -603,10 +605,18 @@ def cmd_critique(a):
     _print_hinge_note(issues, record, cur.width, cur.height)
     _issue_overlay(cur, issues, out / f"{src.stem}_critique.png")
     min_w = SEVERITY[a.min_severity]
+    if a.apply:
+        screen = [x for x in issues if _sev(x) >= min_w and x.get("scope") == "screen"]
+        if screen:
+            ids = ", ".join(f"#{x['id']}" for x in screen)
+            print(f"  ! {len(screen)} screen-wide issue(s) ({ids}) need a re-layout an edit can't do: re-run `mockup` "
+                  f"with the fix in the brief")
     for rnd in range(a.rounds if a.apply else 0):
-        todo = [x for x in issues if _sev(x) >= min_w]
+        todo = [x for x in issues if _sev(x) >= min_w and x.get("scope") != "screen"]
+        screen = [x for x in issues if _sev(x) >= min_w and x.get("scope") == "screen"]
         if not todo:
-            print("nothing at or above --min-severity to apply")
+            print("nothing local at or above --min-severity to apply" if screen else
+                  "nothing at or above --min-severity to apply")
             break
         aspect = ASPECTS.get(_canvas_size(*cur.size), "same")
         fixes = "\n".join(f"{i + 1}. {x['edit']}" for i, x in enumerate(todo))
@@ -637,7 +647,7 @@ def cmd_critique(a):
                               "weight_before": before, "weight_after": after, "drift": drift, "kept": kept})
         if not kept:
             break
-        rest = [x for x in issues if _sev(x) < min_w]
+        rest = [x for x in issues if _sev(x) < min_w or x.get("scope") == "screen"]
         issues = [dict(x, id=i + 1) for i, x in enumerate(left + new_issues + rest)]
         cur_path, cur = p, new
     log["best"] = str(cur_path)

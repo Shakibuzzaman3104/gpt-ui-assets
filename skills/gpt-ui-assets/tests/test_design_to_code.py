@@ -905,6 +905,38 @@ def test_theme_and_m3_typography():
     shutil.rmtree(d)
 
 
+def test_shape_audit():
+    tm = {"spacing": [{"name": n, "dp": dp} for n, dp in (("card padding", 13.5), ("gap", 16), ("hairline", 1), ("near", 16.5))],
+          "radii": [{"name": "card", "dp": dp} for dp in (0, 4, 8, 12, 16, 20, 8.04)]
+                   + [{"name": "button", "dp": 28, "shape": "pill"}, {"name": "avatar", "dp": 30, "shape": "circle"},
+                      {"name": "full", "dp": 32}, {"name": "pill button", "dp": 40}, {"name": "circle avatar", "dp": 48}]}
+    audit = g._shape_audit(tm)
+    assert audit == {"grid_dp": 4, "off_grid": [{"name": "card padding", "dp": 13.5, "nearest": [12, 16]}],
+                     "radii_dp": [4, 8, 12, 16, 20], "radii_count": 5, "snapped": []}
+
+
+def test_spacing_snap_grid():
+    spec = design_spec()
+    spec["spacing"] = [{"between": n, "px": dp * 2} for n, dp in (("card padding", 13.5), ("gap", 16), ("hairline", 1), ("small", 2))]
+    spec["radii"] = [{"element": f"corner {dp}", "px": dp * 2} for dp in (4, 8, 12, 16, 20)]
+    d = make_design(_tmp(), spec)
+    out = run("tokens", d, "--platforms", "web", "--no-snap")
+    rep = json.loads((d / "tokens" / "tokens.json").read_text())
+    assert [s["dp"] for s in rep["spacing"]] == [13.5, 16, 1, 2]
+    assert all(s["source"] == "spec (GPT estimate)" for s in rep["spacing"])
+    assert not rep["audit"]["snapped"] and "card padding 13.5 dp (12/16)" in out
+    assert "  ! 5 corner radii (4, 8, 12, 16, 20 dp)" in out
+    out = run("tokens", d, "--platforms", "web", "--no-snap", "--snap-grid")
+    rep = json.loads((d / "tokens" / "tokens.json").read_text())
+    assert [s["dp"] for s in rep["spacing"]] == [12, 16, 1, 4]
+    assert rep["spacing"][0]["source"] == "spec (GPT estimate) -> snapped to 4 dp grid from 13.5 dp"
+    assert rep["audit"]["snapped"] == ["card padding", "small"] and not rep["audit"]["off_grid"]
+    assert rep["spacing"][1]["source"] == "spec (GPT estimate)"
+    assert "spacing off the 4 dp grid" not in out
+    assert "--space-card-padding: 12px" in (d / "tokens" / "web" / "tokens.css").read_text()
+    shutil.rmtree(d)
+
+
 def test_spacing_sources_and_baseline():
     d, _ = _fonts_fixture()
     run("tokens", d, "--platforms", "compose", "--out", d / "tok_nored")

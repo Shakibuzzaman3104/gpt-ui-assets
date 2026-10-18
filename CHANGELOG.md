@@ -2,6 +2,17 @@
 
 All notable changes to gpt-ui-assets. Versions follow [semantic versioning](https://semver.org).
 
+## Unreleased
+
+### Added
+- **Spacing and shape QA.** `critique` (and the automatic QA after `mockup`) now flags content too close to the
+  screen or container edge, ambiguous grouping, uneven gaps, more than three corner radii, non-concentric nested
+  corners and cards inside cards. On planted defects it caught 12 of 15, against 0 of 20 before.
+- Each critique issue has a `scope`. Screen-wide issues (margins, density, section rhythm) are not sent to
+  `--apply`, since an image edit can't re-flow a screen; the kit says to re-run `mockup` with the fix instead.
+- `tokens` warns about spacing off the 4 dp grid and about more than four corner radii; `--snap-grid` rounds the
+  spacing tokens (a deliberate departure from the mockup that `compare` will show).
+
 ## 5.0.0 (2026-10-18)
 
 ### Added

@@ -61,6 +61,9 @@ position. A set render writes `<name>_<device>.png` for each device and records 
     orange = medium, blue = low) before showing a variant.
     It checks text, alignment, icon consistency, contrast (measured locally: trust `[measured N:1]`), platform
     guidelines and implementability. With `--style-ref` it also catches a wrong app name, nav items, typeface or data.
+    It also checks spacing (content within 16 units of the screen's side edges, text/controls within 8 units of their
+    container's edge, ambiguous grouping, uneven gaps) and shape (more than three radii, non-concentric nested corners,
+    card inside a card). Issues marked screen-wide are not edited by `--apply`: re-run `mockup` with the fix in the brief.
   - `--apply` edits the fixes in and keeps the revision only if the issue weight drops. The verifier is lenient and the
     editor never sees the approved screen, so Read the revision. Give concrete follow-ups with `--edit`.
   - Vision QA is weak at spatial collisions: it can miss a FAB, snackbar or mini player covering content. **Check

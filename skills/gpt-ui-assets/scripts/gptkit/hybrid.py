@@ -802,6 +802,8 @@ def _design_to_code_parsers(sub):
                    help="comma-separated subset of compose, swiftui, web (aliases: android, ios)")
     p.add_argument("--fonts", help="fonts.json from `fonts` (default DIR/fonts/fonts.json when it exists)")
     p.add_argument("--no-snap", action="store_true", help="keep the spec's hex guesses")
+    p.add_argument("--snap-grid", action="store_true",
+                   help="round spacing tokens to the 4 dp grid (departs from the mockup's measured spacing; compare will show it)")
     p.add_argument("--dtcg", action="store_true", help="also write tokens.tokens.json (W3C Design Tokens, Style Dictionary v4 subset)")
     p.add_argument("--vision", action="store_true", help="locate text the spec components don't cover with one vision call")
     p.add_argument("--verify", action="store_true", help="lint the emitted code; kotlinc when on PATH, swiftc on macOS, "

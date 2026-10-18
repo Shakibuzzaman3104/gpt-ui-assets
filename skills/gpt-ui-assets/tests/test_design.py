@@ -182,6 +182,68 @@ def test_critique_apply_round_hostile_verify():
         assert "round 1: fixed 1/1, new 0, weight 3 -> 0" in out and "KEPT" in out, out
 
 
+def test_clean_issues_defaults_scope():
+    img = Image.new("RGB", (W, H), "white")
+    box = {"x": 10, "y": 10, "w": 20, "h": 20}
+    res = {"issues": [{"severity": "medium", "bbox": box, "problem": "missing"},
+                      {"severity": "medium", "bbox": box, "problem": "unknown", "scope": "page"},
+                      {"severity": "medium", "bbox": box, "problem": "screen", "scope": "screen"},
+                      {"severity": "medium", "bbox": box, "problem": "local", "scope": "local"}]}
+    got = K._clean_issues(res, "issues", img)
+    assert [x["scope"] for x in got] == ["local", "local", "screen", "local"], got
+
+
+def test_critique_apply_skips_screen_wide_issues():
+    issues = [{"severity": "medium", "category": "text", "bbox": {"x": 20, "y": 40, "w": 100, "h": 40},
+               "problem": "tight label", "edit": "LOCAL FIX", "scope": "local"},
+              {"severity": "medium", "category": "spacing", "bbox": {"x": 0, "y": 0, "w": 400, "h": 600},
+               "problem": "cramped margins", "edit": "SCREEN FIX", "scope": "screen"}]
+    prompts = []
+
+    def ask(parts, schema=None, name="", model=None):
+        if name == "design_qa":
+            return {"issues": [dict(x) for x in issues]}
+        return {"checks": [{"id": 1, "fixed": True}], "new_issues": []}
+
+    def fake_edit(ref, prompt, size="1024x1024", **k_):
+        prompts.append(prompt)
+        return K._png_bytes(Image.new("RGB", (W, H), "white")), {"quality": "high", "size": size}
+
+    with tempfile.TemporaryDirectory() as td:
+        mock = _mock_png(td)
+        with patched(ask=ask, edit=fake_edit):
+            code, out = run(K.cmd_critique, _critique_args(td, mock, apply=True))
+        assert code == 0, out
+        assert len(prompts) == 1 and "LOCAL FIX" in prompts[0] and "SCREEN FIX" not in prompts[0], prompts
+        assert "screen-wide" in out and "[screen-wide: re-run mockup]" in out, out
+        log = json.loads((Path(td) / "qa" / "mockup_critique.json").read_text())
+        assert [x["problem"] for x in log["rounds"][0]["issues"]] == ["tight label", "cramped margins"]
+        assert [x["scope"] for x in log["rounds"][0]["issues"]] == ["local", "screen"]
+
+
+def test_critique_apply_screen_only_never_edits():
+    issues = [{"severity": "medium", "category": "shape", "bbox": {"x": 0, "y": 0, "w": 400, "h": 600},
+               "problem": "too many radii", "edit": "RELAYOUT", "scope": "screen"}]
+    edits = []
+
+    def ask(parts, schema=None, name="", model=None):
+        assert name == "design_qa", name
+        return {"issues": [dict(x) for x in issues]}
+
+    def fake_edit(*a_, **k_):
+        edits.append(1)
+        raise AssertionError("screen-wide issues must not be edited")
+
+    with tempfile.TemporaryDirectory() as td:
+        mock = _mock_png(td)
+        with patched(ask=ask, edit=fake_edit):
+            code, out = run(K.cmd_critique, _critique_args(td, mock, apply=True))
+        assert code == 0 and edits == [], out
+        assert "screen-wide" in out and "nothing local at or above --min-severity to apply" in out, out
+        log = json.loads((Path(td) / "qa" / "mockup_critique.json").read_text())
+        assert log["rounds"][0]["issues"][0]["scope"] == "screen"
+
+
 def test_critique_missing_inputs():
     with tempfile.TemporaryDirectory() as td:
         calls = []
