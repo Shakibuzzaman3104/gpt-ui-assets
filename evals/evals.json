@@ -150,6 +150,100 @@
           "text": "Plans to report the actual spend afterwards (`cost`)"
         }
       ]
+    },
+    {
+      "id": 6,
+      "name": "form-factor-set",
+      "prompt": "the android home in evals/fixtures/hush/design/home/mockup_v1.png is approved. I also need it for tablets and foldables",
+      "expected_output": "Derives both form factors from the approved screen with one `mockup --set tablet,foldable --anchor <approved>` run (platform inherited or --platform android), reads each *_critique.png (hinge and adaptivity checks), and shows the user both renders. No fresh text-only prompts per device.",
+      "files": [
+        "evals/fixtures/hush/design/home/mockup_v1.png",
+        "evals/fixtures/hush/design/home/design.json"
+      ],
+      "assertions": [
+        {
+          "id": "uses-set-anchor",
+          "text": "The plan uses `mockup --set` with `--anchor` pointing at the approved mockup_v1.png"
+        },
+        {
+          "id": "both-devices",
+          "text": "Both tablet and foldable are rendered (in one --set or two anchored runs)"
+        },
+        {
+          "id": "no-fresh-prompt",
+          "text": "No device is designed from a fresh brief without the approved screen as the anchor/style reference"
+        },
+        {
+          "id": "reads-critique",
+          "text": "The plan reads each device's *_critique.png (including the foldable hinge check) before showing the user"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "name": "no-backend-chatgpt-plan",
+      "prompt": "just installed this skill. I don't have an OpenAI API key but I pay for ChatGPT Plus. design a login screen for my iOS app",
+      "expected_output": "Runs `doctor`/`setup` first, explains the two backends in plain words, and recommends the local Codex CLI for a ChatGPT plan (npm i -g @openai/codex, codex login, `setup --backend cli`) before any mockup. Never asks the user to paste an API key into the chat.",
+      "files": [],
+      "assertions": [
+        {
+          "id": "checks-setup",
+          "text": "The plan runs `doctor` or `setup` before any `mockup`"
+        },
+        {
+          "id": "recommends-cli",
+          "text": "It recommends the Codex CLI backend (codex login, `setup --backend cli`) because the user has a ChatGPT plan and no key"
+        },
+        {
+          "id": "no-key-in-chat",
+          "text": "It never asks the user to paste an API key into the conversation"
+        },
+        {
+          "id": "then-mockup-ios",
+          "text": "After setup, the mockup runs with --platform ios"
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "name": "negative-idea-validation",
+      "prompt": "is a habit tracker with AI coaching worth building? I want a go/no-go before I spend any time on it",
+      "expected_output": "Recognises a go/no-go validation request, which this skill does not do: it says so and offers to research or design once the user decides to build. It runs no paid gptkit command (no mockup, research or blueprint) unprompted.",
+      "files": [],
+      "assertions": [
+        {
+          "id": "no-paid-calls",
+          "text": "The plan runs no gptkit command that calls the API (mockup, research, blueprint, forge)"
+        },
+        {
+          "id": "names-scope",
+          "text": "It says a go/no-go verdict is outside this skill, or asks before switching to research"
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "name": "negative-crop-request",
+      "prompt": "quick one: just crop the icons out of evals/fixtures/hush/design/home/mockup_v1.png and save them as PNGs, no need for anything fancy",
+      "expected_output": "Does not crop: explains in a sentence that crops come out low-resolution with the background baked in, and offers the redraw route (manifest, then svg/forge) with its cost. Runs nothing paid until the user agrees.",
+      "files": [
+        "evals/fixtures/hush/design/home/mockup_v1.png",
+        "evals/fixtures/hush/design/home/design.json"
+      ],
+      "assertions": [
+        {
+          "id": "no-crop",
+          "text": "No step crops icons out of the mockup"
+        },
+        {
+          "id": "explains-why",
+          "text": "It explains briefly why cropping gives poor assets"
+        },
+        {
+          "id": "offers-redraw",
+          "text": "It offers the manifest -> svg/forge redraw route and waits for the user before paid calls"
+        }
+      ]
     }
   ]
 }
