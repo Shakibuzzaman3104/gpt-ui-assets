@@ -12172,6 +12172,11 @@ def _lint_tokens(files):
 
 
 _KT_STUBS = {
+    "AnimationCore.kt": "package androidx.compose.animation.core\ninterface Easing\nobject LinearEasing : Easing\n"
+                      "class CubicBezierEasing(val a: Float, val b: Float, val c: Float, val d: Float) : Easing\n"
+                      "class KeyframesSpec<T>\nclass KeyframeEntity<T>\nclass KeyframesSpecConfig<T> { var durationMillis: Int = 0; var delayMillis: Int = 0; "
+                      "infix fun T.at(timeMillis: Int): KeyframeEntity<T> = KeyframeEntity(); infix fun KeyframeEntity<T>.using(easing: Easing): KeyframeEntity<T> = this }\n"
+                      "fun <T> keyframes(init: KeyframesSpecConfig<T>.() -> Unit): KeyframesSpec<T> { KeyframesSpecConfig<T>().init(); return KeyframesSpec() }\n",
     "Color.kt": "package androidx.compose.ui.graphics\nclass Color(val value: Long) { companion object { val White = Color(0xFFFFFFFF); "
                 "val Black = Color(0xFF000000); val Transparent = Color(0) } }\ninterface Shape\n",
     "Unit.kt": "package androidx.compose.ui.unit\nclass TextUnit(val v: Float)\nclass Dp(val v: Float)\n"
@@ -12195,6 +12200,16 @@ _KT_STUBS = {
                 "class RoundedCornerShape(val r: Dp) : Shape\n",
     "Runtime.kt": "package androidx.compose.runtime\n@Target(AnnotationTarget.FUNCTION, AnnotationTarget.TYPE, AnnotationTarget.PROPERTY_GETTER)\n"
                   "annotation class Composable\n",
+    "ComposeTest.kt": "package androidx.compose.ui.test\nimport androidx.compose.runtime.Composable\n"
+                       "class MainTestClock { var autoAdvance: Boolean = true; fun advanceTimeBy(milliseconds: Long) {} }\n"
+                       "class SemanticsNodeInteraction\nclass ComposeContentTestRule { val mainClock = MainTestClock(); "
+                       "fun setContent(content: @Composable () -> Unit) { content() }; fun onRoot() = SemanticsNodeInteraction() }\n",
+    "ComposeTestRule.kt": "package androidx.compose.ui.test.junit4\nimport androidx.compose.ui.test.ComposeContentTestRule\n"
+                           "fun createComposeRule() = ComposeContentTestRule()\n",
+    "Roborazzi.kt": "package com.github.takahirom.roborazzi\nimport androidx.compose.ui.test.SemanticsNodeInteraction\n"
+                    "fun SemanticsNodeInteraction.captureRoboImage(filePath: String) {}\n",
+    "JUnit.kt": "package org.junit\n@Target(AnnotationTarget.PROPERTY_GETTER, AnnotationTarget.FIELD)\nannotation class Rule\n"
+                "@Target(AnnotationTarget.FUNCTION) annotation class Test\n",
     "Foundation.kt": "package androidx.compose.foundation\nimport androidx.compose.runtime.Composable\n@Composable fun isSystemInDarkTheme(): Boolean = false\n",
     "Preview.kt": "package androidx.compose.ui.tooling.preview\nannotation class Preview(val name: String = \"\", val widthDp: Int = -1, "
                   "val heightDp: Int = -1, val showBackground: Boolean = false, val backgroundColor: Long = 0)\n",
@@ -14067,6 +14082,9 @@ window.seek = ms => document.getAnimations().forEach(a => { a.currentTime = ms; 
 (async () => {
   await Promise.all([...document.images].map(i => i.decode().catch(() => {})));
   await document.fonts.ready;
+  // Optional measured asset geometry. geo.js may assign window.GEO = {...}; missing file is harmless.
+  try { const r = await fetch('geo.js'); if (r.ok) (0, eval)(await r.text()); } catch (_) {}
+  window.GEO = window.GEO || {};
   if (!params.has("capture") && !params.has("still")) entrance(0);
   document.body.dataset.ready = "1";
 })();
@@ -14308,11 +14326,276 @@ class _QuietHandler(http.server.SimpleHTTPRequestHandler):
     def log_message(self, *args):
         pass
 
+    def do_GET(self):
+        # The starter page optionally loads geo.js; a missing optional file is not a page error.
+        if self.path.split("?", 1)[0].endswith("/geo.js") and not os.path.isfile(self.translate_path(self.path)):
+            self.send_response(204)
+            self.end_headers()
+            return
+        super().do_GET()
+
+
+def _motion_easing(value, warnings=None):
+    """CSS easing to Compose expression. Returns (Kotlin expression, warning)."""
+    value = (value or "linear").strip().lower()
+    known = {"linear": "LinearEasing", "ease": "CubicBezierEasing(0.25f, 0.1f, 0.25f, 1f)",
+             "ease-in": "CubicBezierEasing(0.42f, 0f, 1f, 1f)",
+             "ease-out": "CubicBezierEasing(0f, 0f, 0.58f, 1f)",
+             "ease-in-out": "CubicBezierEasing(0.42f, 0f, 0.58f, 1f)"}
+    if value in known:
+        return known[value], None
+    m = re.fullmatch(r"cubic-bezier\(\s*([-+\d.e]+)\s*,\s*([-+\d.e]+)\s*,\s*([-+\d.e]+)\s*,\s*([-+\d.e]+)\s*\)", value)
+    if m:
+        vals = [float(x) for x in m.groups()]
+        if all(math.isfinite(x) for x in vals):
+            return "CubicBezierEasing(" + ", ".join(_kt_float(x) for x in vals) + ")", None
+    if value.startswith("steps("):
+        return "LinearEasing", f"unsupported easing {value}: using linear"
+    return "LinearEasing", f"unknown easing {value}: using linear"
+
+
+def _kt_float(value):
+    """Finite Kotlin Float literal with an explicit suffix."""
+    value = float(value)
+    if not math.isfinite(value):
+        raise ValueError("non-finite motion value")
+    s = f"{value:.6f}".rstrip("0").rstrip(".")
+    return (s if "." in s else s + ".0") + "f"
+
+
+def _transform_components(value):
+    """Parse supported CSS transforms into Compose property values; matrix skew is rejected."""
+    result = {"translationX": 0.0, "translationY": 0.0, "scaleX": 1.0, "scaleY": 1.0, "rotationZ": 0.0}
+    if not value or value.strip().lower() in ("none", "initial"):
+        return result
+    def length(s):
+        m = re.fullmatch(r"\s*([-+\d.e]+)(?:px)?\s*", s)
+        if not m:
+            raise ValueError(f"unsupported transform length {s!r}")
+        return float(m.group(1))
+    matrix = re.fullmatch(r"matrix\(([^)]+)\)", value.strip())
+    if matrix:
+        v = [float(x.strip()) for x in matrix.group(1).split(",")]
+        if len(v) != 6 or not all(math.isfinite(x) for x in v):
+            raise ValueError(f"invalid matrix transform {value!r}")
+        a, b, c, d, tx, ty = v
+        sx = math.hypot(a, b)
+        if sx == 0:
+            raise ValueError("matrix has zero x scale")
+        det = a * d - b * c
+        sy = det / sx
+        skew = (a * c + b * d) / (sx * sx)
+        if abs(skew) > 1e-5:
+            raise ValueError("matrix contains skew (unsupported)")
+        result.update(translationX=tx, translationY=ty, scaleX=sx, scaleY=sy,
+                      rotationZ=math.degrees(math.atan2(b, a)))
+        return result
+    for name, args in re.findall(r"([a-zA-Z]+)\(([^)]*)\)", value):
+        vals = [x.strip() for x in re.split(r"\s*,\s*|\s+", args.strip()) if x.strip()]
+        if name in ("translate", "translateX", "translateY"):
+            if name == "translateX": result["translationX"] = length(vals[0])
+            elif name == "translateY": result["translationY"] = length(vals[0])
+            else:
+                result["translationX"] = length(vals[0]); result["translationY"] = length(vals[1]) if len(vals) > 1 else 0.0
+        elif name in ("scale", "scaleX", "scaleY"):
+            if name == "scaleX": result["scaleX"] = float(vals[0])
+            elif name == "scaleY": result["scaleY"] = float(vals[0])
+            else:
+                result["scaleX"] = float(vals[0]); result["scaleY"] = float(vals[1]) if len(vals) > 1 else float(vals[0])
+        elif name == "rotate":
+            m = re.fullmatch(r"\s*([-+\d.e]+)(deg|rad|turn)?\s*", vals[0])
+            if not m: raise ValueError(f"unsupported rotation {vals[0]!r}")
+            n, unit = float(m.group(1)), m.group(2) or "deg"
+            result["rotationZ"] = math.degrees(n) if unit == "rad" else n * 360 if unit == "turn" else n
+        else:
+            raise ValueError(f"unsupported transform function {name}")
+    if not re.fullmatch(r"\s*(?:[a-zA-Z]+\([^)]*\)\s*)+", value):
+        raise ValueError(f"unsupported transform {value!r}")
+    if not all(math.isfinite(x) for x in result.values()): raise ValueError("non-finite transform")
+    return result
+
+
+def _motion_property_values(prop, value):
+    if prop == "transform":
+        return _transform_components(str(value))
+    if prop == "opacity":
+        return {"opacity": float(value)}
+    if prop.startswith("--"):
+        m = re.fullmatch(r"\s*([-+\d.e]+)(?:px)?\s*", str(value))
+        if not m: raise ValueError(f"unsupported custom property value {value!r}")
+        return {re.sub(r"[^A-Za-z0-9]+", " ", prop).strip().title().replace(" ", ""): float(m.group(1))}
+    return {}
+
+
+def _emit_motion_kt(doc, prefix, package, author=None):
+    """Emit a compact Compose keyframe object from the neutral extracted timeline."""
+    class A: pass
+    a = A(); a.author = author
+    lines = [_kt_header(a, package), "import androidx.compose.animation.core.CubicBezierEasing",
+             "import androidx.compose.animation.core.LinearEasing", "import androidx.compose.animation.core.keyframes",
+             "import androidx.compose.animation.core.KeyframesSpec", "\n", f"object {prefix}Motion {{"]
+    emitted, warnings = [], []
+    property_counts = {}
+    elems = {}
+    for i, anim in enumerate(doc.get("animations", []), 1):
+        target = anim.get("target", {})
+        label = target.get("id") or target.get("dataName") or target.get("selector") or f"element{i}"
+        elem = _ident(label, "camel")
+        elems.setdefault(label, elem)
+        timing = anim.get("timing", {})
+        dur = max(0, int(round(float(timing.get("duration", 0)))))
+        delay = int(round(float(timing.get("delay", 0))))
+        if timing.get("iterations", 1) not in (1, 1.0):
+            warnings.append(f"{label}: iterations={timing.get('iterations')} is preserved in motion.json but not repeated by Compose keyframes")
+        if timing.get("direction", "normal") != "normal":
+            warnings.append(f"{label}: direction={timing.get('direction')} is preserved in motion.json but not applied by Compose keyframes")
+        name = _ident(f"animation {i} {label}", "camel")
+        lines.append(f"    const val {name}DelayMillis = {delay}")
+        lines.append(f"    const val {name}DurationMillis = {dur}")
+        for frame in anim.get("keyframes", []):
+            for prop, raw in frame.get("properties", {}).items():
+                if prop not in ("transform", "opacity") and not prop.startswith("--"):
+                    warnings.append(f"unsupported property {prop} on {label}")
+        effect_easing = (timing.get("easing") or "linear").strip().lower()
+        if effect_easing != "linear" and len(anim.get("keyframes", [])) > 2:
+            warnings.append(f"{label}: the effect easing {effect_easing} spans the whole animation in CSS; it is applied "
+                            "per keyframe segment in Compose, so the timing differs: move it onto the keyframes")
+        mapped = {}
+        for frame in anim.get("keyframes", []):
+            offset = frame.get("offset")
+            if offset is None:
+                offset = frame.get("computedOffset")
+            if offset is None: continue
+            for prop, raw in frame.get("properties", {}).items():
+                try: props = _motion_property_values(prop, raw)
+                except ValueError as e:
+                    warnings.append(f"{label} {prop}: {e}"); continue
+                frame_easing = frame.get("easing") or "linear"
+                # WAAPI reports the computed keyframe default as linear; inherit the effect easing in that case.
+                easing, warn = _motion_easing(anim.get("timing", {}).get("easing")
+                                              if frame_easing == "linear" else frame_easing)
+                if warn: warnings.append(f"{label}: {warn}")
+                for key, val in props.items(): mapped.setdefault(key, []).append((int(round(float(offset) * dur)), val, easing))
+        for prop, frames in mapped.items():
+            if len({round(v, 6) for _, v, _ in frames}) < 2:
+                continue  # constant: transform() decomposes into all five channels, most of which do not move
+            base = elems[label] + prop[:1].upper() + prop[1:]
+            property_counts[base] = property_counts.get(base, 0) + 1
+            fn = base if property_counts[base] == 1 else f"{base}{property_counts[base]}"
+            lines.append(f"    val {fn}: KeyframesSpec<Float> get() = keyframes {{")
+            lines.append(f"        durationMillis = {dur}")
+            lines.append(f"        delayMillis = {delay}")
+            for ms, val, easing in frames:
+                lines.append(f"        {_kt_float(val)} at {max(0, ms)} using {easing}")
+            lines.append("    }")
+            emitted.append((label, prop))
+    lines.append("}")
+    return "\n".join(lines) + "\n", emitted, warnings, elems
+
+
+def _emit_geo_kt(geo, prefix, package, author=None):
+    class A: pass
+    a = A(); a.author = author
+    lines = [_kt_header(a, package)]
+    def value(name, val, indent, used=None):
+        used = used if used is not None else []
+        ident = _uniq(used + [_ident(name, "pascal")])[-1]
+        used.append(ident)
+        if isinstance(val, bool): return [" " * indent + f"const val {ident} = {str(val).lower()}"]
+        if isinstance(val, (int, float)):
+            return [" " * indent + f"const val {ident} = {_kt_float(val)}"]
+        if isinstance(val, list) and all(isinstance(x, (int, float)) and not isinstance(x, bool) for x in val):
+            return [" " * indent + f"val {ident} = listOf(" + ", ".join(_kt_float(x) for x in val) + ")"]
+        if isinstance(val, dict):
+            rows = [" " * indent + f"object {ident} {{"]
+            child_used = []
+            for k, v in val.items(): rows += value(k, v, indent + 4, child_used)
+            return rows + [" " * indent + "}"]
+        return []
+    lines.append(f"object {prefix}Geo {{")
+    used = [f"{prefix}Geo"]
+    for k, v in (geo or {}).items(): lines += value(k, v, 4, used)
+    lines.append("}")
+    return "\n".join(lines) + "\n"
+
+
+def _lint_stage_compose(files):
+    findings = []
+    decl = re.compile(r"^\s*(?:const\s+)?(?:val|var|fun|object|class)\s+(\w+)")
+    for f in map(Path, files):
+        text = re.sub(r"/\*.*?\*/", lambda m: "\n" * m.group(0).count("\n"), f.read_text(), flags=re.S)
+        text = re.sub(r"//[^\n]*", "", text)
+        if text.count("{") != text.count("}"):
+            findings.append(f"{f.name}: unbalanced braces")
+        names = {}
+        scopes = ["<top>"]
+        for n, line in enumerate(text.splitlines(), 1):
+            m = decl.match(line)
+            if m:
+                key = (tuple(scopes), m.group(1))
+                if key in names: findings.append(f"{f.name}:{n}: duplicate identifier {m.group(1)}")
+                names[key] = n
+                if line.lstrip().startswith("object "):
+                    scopes.append(m.group(1))
+            if line.strip() == "}" and len(scopes) > 1:
+                scopes.pop()
+            if re.search(r"(?<![A-Za-z])(?:NaN|Infinity)(?![A-Za-z])", line): findings.append(f"{f.name}:{n}: non-finite literal")
+            for lit in re.findall(r"(?<![\w.])[-+]?\d+(?:\.\d+)?(?![\w.])", line):
+                if re.search(re.escape(lit) + r"\s*(?:at\s+\d+|\n|$)", line) and "Millis =" not in line:
+                    findings.append(f"{f.name}:{n}: float literal {lit} requires f suffix")
+    return findings
+
+
+def _stage_compose_files(doc, out, a, page):
+    out.mkdir(parents=True, exist_ok=True)
+    kt, properties, warnings, _ = _emit_motion_kt(doc, a.prefix, a.package, a.author)
+    motion = out / f"{a.prefix}Motion.kt"; motion.write_text(kt)
+    files = [motion]
+    if isinstance(doc.get("geo"), dict):
+        geo = out / f"{a.prefix}Geo.kt"; geo.write_text(_emit_geo_kt(doc["geo"], a.prefix, a.package, a.author)); files.append(geo)
+    # capture where the motion changes: every keyframe of every animation, delay included (absolute ms on the
+    # page's timeline), capped so the template stays a handful of screenshots rather than one per video frame
+    times = sorted({int(round(float(x.get("timing", {}).get("delay", 0) or 0)
+                              + float(k.get("offset") if k.get("offset") is not None else k.get("computedOffset") or 0)
+                              * float(x.get("timing", {}).get("duration", 0) or 0)))
+                    for x in doc.get("animations", []) for k in x.get("keyframes", [])} | {0})
+    if len(times) > 24:
+        times = [times[round(i * (len(times) - 1) / 23)] for i in range(24)]
+    class A: pass
+    h = A(); h.author = a.author
+    test = [_kt_header(h, a.package), "import androidx.compose.ui.test.junit4.createComposeRule",
+            "import com.github.takahirom.roborazzi.captureRoboImage",
+            "import org.junit.Rule", "import org.junit.Test", "import androidx.compose.runtime.Composable", "",
+            f"class {a.prefix}MotionScreenshotTest {{", "    @get:Rule val composeTestRule = createComposeRule()", "",
+            f"    @Composable private fun {a.prefix}Screen() {{ /* TODO: port the approved screen to Compose */ }}", "",
+            "    @Test fun captureTimeline() {", "        composeTestRule.mainClock.autoAdvance = false", f"        composeTestRule.setContent {{ {a.prefix}Screen() }}"]
+    prev = 0
+    for ms in times:  # advanceTimeBy takes a delta, the names carry the absolute time
+        if ms > prev:
+            test.append(f"        composeTestRule.mainClock.advanceTimeBy({ms - prev})")
+        test.append(f'        composeTestRule.onRoot().captureRoboImage("{a.prefix.lower()}_{ms}.png")')
+        prev = ms
+    test += ["    }", "}"]
+    tf = out / f"{a.prefix}MotionScreenshotTest.kt"; tf.write_text("\n".join(test) + "\n"); files.append(tf)
+    (out / "motion.json").write_text(json.dumps(doc, indent=2))
+    lint = _lint_stage_compose(files)
+    print(f"  Compose lint: {'FAILED: ' + '; '.join(lint[:5]) if lint else 'passed'}")
+    verdict = _kotlinc_check(files, a.package, [])
+    print(f"  Compose compiler: {verdict}")
+    return properties, warnings, files
+
 
 def cmd_stage(a):
     """Render a code-built page: stills at --dpr, and with --motion a scrubbed clip (demo()/seek(ms) page contract),
     encoded to MP4 with ffmpeg (animated WebP without it) plus a labelled keyframe sheet."""
     page = Path(a.page).resolve()
+    if a.compose:
+        if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*", a.prefix or ""):
+            sys.exit(f"gptkit stage: --prefix {a.prefix!r} is not a Kotlin identifier prefix")
+        pkg_re = r"[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*"
+        kt_keywords = _JAVA_KEYWORDS | {"as", "fun", "in", "is", "object", "typealias", "typeof", "val", "var", "when"}
+        if not re.fullmatch(pkg_re, a.package or "") or any(x in kt_keywords for x in (a.package or "").split(".")):
+            sys.exit(f"gptkit stage: --package {a.package!r} is not a valid Kotlin package")
     if a.init:
         if page.exists():
             sys.exit(f"gptkit stage: {page} already exists; --init only writes a new page")
@@ -14338,7 +14621,8 @@ def cmd_stage(a):
         stills.append((name, query))
     root = page.parent
     srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), functools.partial(_QuietHandler, directory=str(root)))
-    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    server_thread = threading.Thread(target=srv.serve_forever, daemon=True)
+    server_thread.start()
     base = f"http://127.0.0.1:{srv.server_address[1]}/{page.name}"
     errors, report = [], {"page": str(page), "size": [w, h], "dpr": a.dpr, "stills": {}}
     try:
@@ -14360,6 +14644,57 @@ def cmd_stage(a):
                     raise RuntimeError(f"stage: {page.name}{'?' + query if query else ''} never set body[data-ready='1'] "
                                        f"within {a.timeout}s (see the page contract: `gptkit stage PAGE --init`)")
                 return pg
+
+            if a.compose:
+                pg = open_page(1, "capture")
+                if not pg.evaluate("typeof window.demo === 'function'"):
+                    raise RuntimeError("stage: --compose needs window.demo() on the page (?capture); see `gptkit stage PAGE --init`")
+                pg.evaluate("window.demo()")
+                doc = pg.evaluate("""() => {
+                  const animations = [...document.getAnimations()].map((a, i) => {
+                    const e = a.effect, t = e && e.target, r = t && t.getBoundingClientRect();
+                    let selector = null;
+                    if (t && !t.id && !t.dataset.name) {
+                      const parts = []; let n = t;
+                      while (n && n.nodeType === 1 && parts.length < 4) {
+                        let p = n.tagName.toLowerCase();
+                        if (n.classList.length) p += '.' + [...n.classList].slice(0, 2).join('.');
+                        const siblings = n.parentElement ? [...n.parentElement.children].filter(x => x.tagName === n.tagName) : [];
+                        if (siblings.length > 1) p += `:nth-of-type(${siblings.indexOf(n) + 1})`;
+                        parts.unshift(p); n = n.parentElement;
+                      }
+                      selector = parts.join(' > ');
+                    }
+                    const frames = e ? e.getKeyframes().map(k => {
+                      const properties = {};
+                      for (const [key, value] of Object.entries(k))
+                        if (!['offset','computedOffset','easing','composite'].includes(key)) properties[key] = value;
+                      // offset is null when the page did not set one; computedOffset is where Chrome places it
+                      return {offset: k.offset ?? k.computedOffset, easing: k.easing || 'linear', properties};
+                    }) : [];
+                    const timing = e ? e.getTiming() : {};
+                    return {index: i + 1, target: {id: t && t.id || null, dataName: t && t.dataset.name || null,
+                      selector, warning: t && !t.id ? 'animation target has no id' : null,
+                      rect: r ? {x:r.x,y:r.y,width:r.width,height:r.height} : null},
+                      keyframes: frames, timing: {delay: timing.delay || 0, duration: typeof timing.duration === 'number' ? timing.duration : 0,
+                        iterations: Number.isFinite(timing.iterations) ? timing.iterations : 'Infinity',
+                        direction: timing.direction, fill: timing.fill, easing: timing.easing || 'linear'}};
+                  });
+                  return {schema: 'gptkit-motion-v1', viewport: {width: innerWidth, height: innerHeight},
+                    geo: window.GEO && Object.keys(window.GEO).length ? window.GEO : null, animations};
+                }""")
+                warnings = []
+                for anim in doc["animations"]:
+                    if anim["target"].get("warning"):
+                        warnings.append(f"animation {anim['index']} target has no id: {anim['target'].get('dataName') or anim['target'].get('selector')}")
+                props, compose_warnings, files = _stage_compose_files(doc, Path(a.compose), a, page)
+                warnings.extend(compose_warnings)
+                pg.close()
+                b.close()
+                print(f"stage compose: {len(doc['animations'])} animation(s) on {len({x['target'].get('id') or x['target'].get('dataName') or x['target'].get('selector') for x in doc['animations']})} element(s); "
+                      f"properties {', '.join(sorted({p for _, p in props})) or 'none'}; wrote {', '.join(f.name for f in files)} and motion.json")
+                for warning in sorted(set(warnings)): print(f"! {warning}")
+                return
 
             for name, query in stills:
                 pg = open_page(a.dpr, query)
@@ -14414,6 +14749,8 @@ def cmd_stage(a):
             b.close()
     finally:
         srv.shutdown()
+        srv.server_close()
+        server_thread.join(timeout=2)
     report["errors"] = errors
     (out / "stage.json").write_text(json.dumps(report, indent=2))
     for e in errors:
@@ -14447,7 +14784,7 @@ def _hybrid_parsers(sub):
     p.add_argument("--search", type=_pos_int, default=8, help="max registration shift in px")
     p.add_argument("--min-change", type=float, default=4, help="mean grey change inside the region below which nothing changed")
     p.add_argument("--model", default=None); p.set_defaults(fn=cmd_state)
-    p = sub.add_parser("stage", help="render a code-built page: stills, scrubbed motion (MP4/WebP) and a keyframe sheet")
+    p = sub.add_parser("stage", help="render a code-built page: stills, scrubbed motion, or Compose motion files")
     p.add_argument("page", help="the HTML page (its folder is served over a local http server)")
     p.add_argument("--out", default="shots", help="output dir (default shots)")
     p.add_argument("--size", default="412x915", help="viewport WIDTHxHEIGHT in CSS px (412x915 phone; 1600x1200 a presentation shot)")
@@ -14460,6 +14797,10 @@ def _hybrid_parsers(sub):
     p.add_argument("--settle", type=int, default=300, help="ms to wait after ready before a still")
     p.add_argument("--timeout", type=_pos_int, default=30, help="seconds to wait for body[data-ready]")
     p.add_argument("--init", action="store_true", help="write a starter page with the page contract, then stop")
+    p.add_argument("--compose", metavar="OUTDIR", help="extract the Web Animation timeline and emit Compose Kotlin")
+    p.add_argument("--package", default="com.acme.app.ui.hybrid", help="Kotlin package for generated Compose files")
+    p.add_argument("--prefix", default="Hybrid", help="Kotlin identifier prefix")
+    p.add_argument("--author", help="adds an @author/@since header to generated Kotlin files")
     p.set_defaults(fn=cmd_stage)
 
 

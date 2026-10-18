@@ -140,6 +140,86 @@ def test_stage_renders_stills_and_motion():
         assert (out / "motion_sheet.png").exists()
 
 
+def test_compose_converters_and_emitters():
+    assert K._transform_components("translate(12px, -4px) scale(2, .5) rotate(90deg)") == {
+        "translationX": 12.0, "translationY": -4.0, "scaleX": 2.0, "scaleY": .5, "rotationZ": 90.0}
+    m = K._transform_components("matrix(0, 2, -3, 0, 8, 9)")
+    assert m["translationX"] == 8 and m["translationY"] == 9
+    assert m["scaleX"] == 2 and m["scaleY"] == 3 and m["rotationZ"] == 90
+    try:
+        K._transform_components("matrix(1, 0, 1, 1, 0, 0)")
+    except ValueError as e:
+        assert "skew" in str(e)
+    else:
+        raise AssertionError("matrix skew must be rejected")
+    assert K._motion_easing("linear")[0] == "LinearEasing"
+    assert "0.42f, 0f, 1f, 1f" in K._motion_easing("ease-in")[0]
+    assert "CubicBezierEasing(0.1f, 0.2f, 0.3f, 0.4f)" == K._motion_easing("cubic-bezier(.1,.2,.3,.4)")[0]
+    assert K._motion_easing("steps(4)") == ("LinearEasing", "unsupported easing steps(4): using linear")
+    assert K._motion_property_values("--hole", "12px") == {"Hole": 12.0}
+    doc = {"animations": [{"target": {"id": "pill"}, "timing": {"duration": 600, "delay": 40,
+            "easing": "ease-out"}, "keyframes": [
+            {"offset": 0, "easing": "ease-in", "properties": {"transform": "translate(0px, 2px) scale(.5)", "opacity": 0, "--hole": "0px"}},
+            {"offset": 1, "easing": "linear", "properties": {"transform": "translate(20px, 0px) scale(1)", "opacity": 1, "--hole": "18px"}}]}]}
+    kt, props, warns, _ = K._emit_motion_kt(doc, "Hybrid", "com.acme.app.ui.hybrid")
+    assert "keyframes {" in kt and "durationMillis = 600" in kt and "delayMillis = 40" in kt and "DelayMillis = 40" in kt
+    assert "TranslationX" in kt and "Opacity" in kt and "Hole" in kt
+    assert {p for _, p in props} == {"translationX", "translationY", "scaleX", "scaleY", "opacity", "Hole"}  # rotation stays 0
+    assert not warns
+    geo = K._emit_geo_kt({"radius": 12, "centers": [1, 2], "hero": {"x": 4.5}}, "Hybrid", "a.b")
+    assert "12.0f" in geo and "listOf(1.0f, 2.0f)" in geo and "object Hero" in geo
+    original_read_text = Path.read_text
+    Path.read_text = lambda self, *args, **kwargs: "object X {\n  val x = 1f\n  val x = NaN\n" \
+        if self.name == "bad.kt" else original_read_text(self, *args, **kwargs)
+    try:
+        lint = K._lint_stage_compose([Path("bad.kt")])
+    finally:
+        Path.read_text = original_read_text
+    assert any("unbalanced braces" in x for x in lint)
+    assert any("duplicate identifier x" in x for x in lint)
+    assert any("non-finite" in x for x in lint)
+
+
+def test_stage_compose_integration():
+    try:
+        import playwright.sync_api  # noqa: F401
+    except ImportError:
+        print("  skip stage compose: Playwright is not installed for this Python")
+        return
+    if not K._chrome():
+        print("  skip stage compose: installed Chrome was not found")
+        return
+    with tempfile.TemporaryDirectory() as d:
+        page = Path(d) / "screen.html"
+        _run(["stage", str(page), "--init"])
+        page.write_text('''<!doctype html><meta name="viewport" content="width=412, initial-scale=1"><style>
+          @property --hole { syntax: '<length>'; inherits: false; initial-value: 0px }
+          #pill { position:absolute; left:30px; top:40px; width:80px; height:40px; --hole:0px }
+        </style><div id="pill"></div><script>
+          window.GEO = {asset:{center:[12, 18]}, radius:7};
+          document.body.dataset.ready = '1';
+          window.demo = () => { document.getElementById('pill').animate([
+            {transform:'translate(0px, 0px) scale(.5)', opacity:0, '--hole':'0px'},
+            {transform:'translate(20px, 8px) scale(1)', opacity:1, '--hole':'16px'}
+          ], {duration:500, delay:50, easing:'ease-out', fill:'forwards'}).pause(); };
+          window.seek = ms => document.getAnimations().forEach(a => a.currentTime = ms);
+        </script>''')
+        out = Path(d) / "compose"
+        _run(["stage", str(page), "--compose", str(out)])
+        motion = json.loads((out / "motion.json").read_text())
+        assert motion["schema"] == "gptkit-motion-v1" and len(motion["animations"]) == 1
+        assert motion["animations"][0]["target"]["id"] == "pill"
+        assert motion["animations"][0]["target"]["rect"]["width"] == 80
+        assert motion["geo"]["radius"] == 7
+        kt = (out / "HybridMotion.kt").read_text()
+        assert all(f"val pill{p}:" in kt for p in ("TranslationX", "TranslationY", "ScaleX", "Opacity", "Hole")), kt
+        assert "pillRotationZ" not in kt                                   # rotate never changes: not emitted
+        assert "20.0f at 500 using CubicBezierEasing(0f, 0f, 0.58f, 1f)" in kt and "delayMillis = 50" in kt
+        test_kt = (out / "HybridMotionScreenshotTest.kt").read_text()
+        assert "advanceTimeBy(50)" in test_kt and "advanceTimeBy(500)" in test_kt and 'hybrid_550.png' in test_kt, test_kt
+        assert (out / "HybridGeo.kt").exists() and (out / "HybridMotionScreenshotTest.kt").exists()
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for t in tests:
