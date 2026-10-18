@@ -1,0 +1,155 @@
+{
+  "skill_name": "gpt-ui-assets",
+  "mode_note": "Behaviour evals. Run in plan-only mode: the agent may run `gptkit.py <cmd> -h`, `doctor`, `status` and read files, but no command that calls the image/text API. It writes plan.md: the exact commands in order, what it reads or checks after each, and what it shows the user. Fixtures live in evals/fixtures/.",
+  "evals": [
+    {
+      "id": 1,
+      "name": "go-ahead-assets",
+      "prompt": "ok I love mockup_v1 in evals/fixtures/hush/design/home, it's an android app. go ahead and give me all the assets used in the UI so I can drop them into app/src/main/res",
+      "expected_output": "Inventory first (manifest), the agent reviews manifest_overlay.png and fixes assets.json, then spec, then forge and svg in parallel, reads the review sheets, then vd/export into res/. Nothing cropped from the mockup.",
+      "files": [
+        "evals/fixtures/hush/design/home/mockup_v1.png",
+        "evals/fixtures/hush/design/home/design.json"
+      ],
+      "assertions": [
+        {
+          "id": "manifest-first",
+          "text": "The plan runs `manifest` on the approved mockup before any forge/svg command"
+        },
+        {
+          "id": "reviews-overlay",
+          "text": "The plan reads manifest_overlay.png and says it will fix assets.json (remove native/system UI, set formats) before generating"
+        },
+        {
+          "id": "spec-before-forge",
+          "text": "`spec` runs before `forge`/`svg`"
+        },
+        {
+          "id": "forge-svg-parallel",
+          "text": "`forge` and `svg` run in parallel or in the background"
+        },
+        {
+          "id": "reads-review-sheets",
+          "text": "The plan reads review/forge_*.png and review/svg_*.png before handing over"
+        },
+        {
+          "id": "exports-android",
+          "text": "Icons go through `vd` and raster art through `export --res <res dir>` (the res/ dir, not res/drawable)"
+        },
+        {
+          "id": "no-crop",
+          "text": "No step crops assets out of the mockup or prompts an asset text-only"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "name": "second-screen-style-ref",
+      "prompt": "now design the Profile screen for the same app (evals/fixtures/hush/design/home/mockup_v1.png is the approved home) — avatar, 3 stat tiles, weekly sleep chart, settings list. profile tab active",
+      "expected_output": "mockup with --style-ref pointing at the approved home screen, critique (with --style-ref) before showing, Read the critique sheet, show variants.",
+      "files": [
+        "evals/fixtures/hush/design/home/mockup_v1.png",
+        "evals/fixtures/hush/design/home/design.json"
+      ],
+      "assertions": [
+        {
+          "id": "style-ref",
+          "text": "The mockup command passes --style-ref with the approved home mockup"
+        },
+        {
+          "id": "active-tab",
+          "text": "The brief states which tab is active (Profile)"
+        },
+        {
+          "id": "critique-before-show",
+          "text": "`critique` runs on the new variant before it is shown to the user, and the critique sheet is read"
+        },
+        {
+          "id": "critique-style-ref",
+          "text": "`critique` is given --style-ref too"
+        },
+        {
+          "id": "platform",
+          "text": "The platform is android (passed or inherited from design.json), not asked again needlessly"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "name": "smoke-sequence",
+      "prompt": "the campfire in Cozy Moments (evals/fixtures/hush-midway/build/home/assets/cozy_campfire.png) should have a wisp of smoke and a few embers drifting up out of it, a calm 3 second loop, painted in the icon's own style",
+      "expected_output": "sequence route (not a frames sheet): layout with physics from the fire's top, review layout_review.png before rendering, render per the plan (keys + EbSynth or every frame), build with --ref, check the QA line; the emitted puff/ember is drawn in the icon's own style.",
+      "files": [
+        "evals/fixtures/hush-midway/build/home/assets/cozy_campfire.png"
+      ],
+      "assertions": [
+        {
+          "id": "sequence-route",
+          "text": "Uses `sequence` (layout → render → build), not a `frames` sheet, because smoke travels"
+        },
+        {
+          "id": "layout-review-first",
+          "text": "Reads layout_review.png (or the plan) before any paid `render`"
+        },
+        {
+          "id": "loop-math",
+          "text": "--loop 3 is a whole number of --chuff intervals (or the plan states the loop/chuff relation)"
+        },
+        {
+          "id": "own-style-puff",
+          "text": "The puff sprite is drawn in the icon's own style (GPT with a crop of the art as reference), not a reused cloud icon"
+        },
+        {
+          "id": "qa-line",
+          "text": "Checks the QA line (backwards 0, seam vs median, follows/shimmer) after build"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "name": "resume-project",
+      "prompt": "picking this back up from yesterday — evals/fixtures/hush-midway is where we were. what's left to do?",
+      "expected_output": "Runs `status` on the project (no API calls), reports done/missing/stale steps and the next command, instead of re-reading everything or re-running paid steps.",
+      "files": [
+        "evals/fixtures/hush-midway"
+      ],
+      "assertions": [
+        {
+          "id": "uses-status",
+          "text": "Runs `gptkit.py status` on the project directory"
+        },
+        {
+          "id": "no-paid-rerun",
+          "text": "Does not plan to re-run a paid step that is already done and not stale"
+        },
+        {
+          "id": "names-next",
+          "text": "Names the concrete next command(s) with real paths"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "name": "budgeted-forge",
+      "prompt": "I'm on a tight budget this month. forge the illustrations for evals/fixtures/hush-midway/build/home but don't spend more than about a dollar",
+      "expected_output": "Uses --dry-run and/or GPTKIT_BUDGET_USD=1 to see and bound the estimate before forging; may lower --candidates; reports spend with `cost`.",
+      "files": [
+        "evals/fixtures/hush-midway/build/home"
+      ],
+      "assertions": [
+        {
+          "id": "estimate-first",
+          "text": "Gets the estimate before paying (forge --dry-run or the plan line)"
+        },
+        {
+          "id": "budget-guard",
+          "text": "Sets GPTKIT_BUDGET_USD (about 1) or reduces --candidates to fit the budget"
+        },
+        {
+          "id": "reports-cost",
+          "text": "Plans to report the actual spend afterwards (`cost`)"
+        }
+      ]
+    }
+  ]
+}
