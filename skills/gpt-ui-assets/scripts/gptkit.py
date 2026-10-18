@@ -33,6 +33,7 @@ import sys
 import tempfile
 import threading
 import time
+from datetime import datetime, timedelta, timezone
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -43,6 +44,102 @@ from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont, ImageStat
 SVG_NS = "{http://www.w3.org/2000/svg}"
 ET.register_namespace("", "http://www.w3.org/2000/svg")
 ET.register_namespace("xlink", "http://www.w3.org/1999/xlink")
+
+PRICES_CHECKED = "2026-10-18"
+PRICES = {
+    "gpt-image-2.5-flare": {"text_in": 5, "image_in": 8, "image_out": 30},
+    "gpt-image-2.5-sunburst": {"text_in": 5, "image_in": 8, "image_out": 30},
+    "gpt-image-2": {"text_in": 5, "image_in": 8, "image_out": 30},
+    "gpt-image-1.5": {"text_in": 5, "image_in": 8, "image_out": 32, "text_out": 10},
+    "gpt-6-sol": {"in": 2, "out": 10}, "gpt-6.1-sol": {"in": 2, "out": 10},
+    "gpt-6-luna": {"in": 0.1, "out": 0.5}, "web_search": {"per_call": 0.01},
+}
+_LEDGER_LOCK = threading.Lock()
+_LEDGER_WARNED = False
+_LEDGER_CMD, _LEDGER_DIR = "", None
+
+
+def _ledger_record(endpoint, model, body, *, image=False, quality=None, size=None):
+    """Append parsed successful usage; a failed local ledger must never fail a paid command."""
+    global _LEDGER_WARNED
+    path = os.environ.get("GPTKIT_LEDGER")
+    if path == "off":
+        return
+    path = Path(path).expanduser() if path else Path.home() / ".cache/gptkit/ledger.jsonl"
+    usage = body.get("usage") if isinstance(body, dict) else None
+    estimated = not isinstance(usage, dict)
+    unknown = model not in PRICES
+    prices = PRICES.get(model, PRICES["gpt-image-2" if image else "gpt-6-sol"])
+    cost = 0.0
+    if image:
+        if estimated:
+            quality = quality or "high"
+            output = {"low": 196, "medium": 439, "high": 1756}.get(quality, 1756)
+            try:
+                w, h = [int(x) for x in (size or "1024x1024").split("x")]
+                output *= w * h / (1024 * 1024)
+            except (ValueError, AttributeError):
+                pass
+            cost = output * prices.get("image_out", 30) / 1_000_000
+        else:
+            details = usage.get("input_tokens_details") or {}
+            cost += (details.get("text_tokens") or 0) * prices.get("text_in", 5) / 1_000_000
+            cost += (details.get("image_tokens") or 0) * prices.get("image_in", 8) / 1_000_000
+            cost += (usage.get("output_tokens") or 0) * prices.get("image_out", 30) / 1_000_000
+    else:
+        if estimated:
+            cost = (1000 * prices.get("in", 2) + 1000 * prices.get("out", 10)) / 1_000_000
+        else:
+            cost = ((usage.get("input_tokens") or 0) * prices.get("in", 2) +
+                    (usage.get("output_tokens") or 0) * prices.get("out", 10)) / 1_000_000
+        if model in ("gpt-image-1.5",):
+            cost = ((usage or {}).get("input_tokens", 0) * prices.get("text_in", 5) +
+                    (usage or {}).get("output_tokens", 0) * prices.get("text_out", 10)) / 1_000_000
+    outputs = body.get("output") or [] if isinstance(body, dict) else []
+    web_calls = sum(1 for item in outputs if isinstance(item, dict) and item.get("type") == "web_search_call")
+    if not image:
+        cost += web_calls * PRICES["web_search"]["per_call"]
+    entry = {"ts": datetime.now(timezone.utc).isoformat(), "cmd": _LEDGER_CMD or "unknown",
+             "dir": str(Path(_LEDGER_DIR).expanduser().resolve()) if _LEDGER_DIR else None,
+             "endpoint": endpoint, "model": model, "quality": quality if image else None,
+             "size": size if image else None, "usage": usage, "web_search_calls": web_calls,
+             "est_usd": round(cost, 8), "estimated": bool(estimated or unknown)}
+    try:
+        with _LEDGER_LOCK:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open("a", encoding="utf8") as f:
+                f.write(json.dumps(entry, separators=(",", ":")) + "\n")
+    except OSError as e:
+        with _LEDGER_LOCK:
+            warn = not _LEDGER_WARNED
+            _LEDGER_WARNED = True
+        if warn:
+            print(f"gptkit: couldn't write ledger {path}: {e}", file=sys.stderr)
+
+
+def _plan(image_calls=0, text_calls=0, model=None, *, image_model=None, tokens_in=20000, tokens_out=5000,
+          web_calls=0, dry_run=False, what=None):
+    """Print and enforce a conservative list-price estimate before a command starts paid work."""
+    text_model = model or _config()["text_model"]
+    image_model = image_model or _config()["image_model"]
+    tp = PRICES.get(text_model, PRICES["gpt-6-sol"])
+    ip = PRICES.get(image_model, PRICES["gpt-image-2"])
+    image_estimate = 1756 * ip.get("image_out", 30) / 1e6
+    estimate = image_calls * image_estimate + text_calls * (tokens_in * tp.get("in", 2) + tokens_out * tp.get("out", 10)) / 1e6
+    estimate += web_calls * PRICES["web_search"]["per_call"]
+    detail = f"~{image_calls} image calls ({image_model}) + {text_calls} text calls ≈ ${estimate:.2f} list price"
+    budget = os.environ.get("GPTKIT_BUDGET_USD")
+    if budget is not None:
+        try:
+            limit = float(budget)
+        except ValueError:
+            sys.exit("gptkit: GPTKIT_BUDGET_USD must be a number")
+        if estimate > limit:
+            sys.exit(f"plan: estimate ${estimate:.2f} exceeds GPTKIT_BUDGET_USD=${limit:.2f}; raise GPTKIT_BUDGET_USD or reduce --candidates/--variants")
+    print("plan: " + detail, file=sys.stderr)
+    if dry_run:
+        return estimate
+    return estimate
 
 
 # ---------------------------------------------------------------- shared helpers (plan contract C1; owner g1-api-core)
@@ -471,7 +568,11 @@ def generate(prompt, size="1024x1024", background="auto", model=None, task="conc
     if c["moderation"]:
         body["moderation"] = c["moderation"]
     try:
-        return _image_result(_with_fallback(lambda b: _call("/images/generations", json_body=b), body))
+        resp = _with_fallback(lambda b: _call("/images/generations", json_body=b), body)
+        result = _image_result(resp)
+        _ledger_record("/images/generations", body["model"], resp, image=True, quality=result[1].get("quality") or body["quality"],
+                       size=result[1].get("size") or size)
+        return result
     except ApiError as e:
         e.prompt = e.prompt or prompt[:200]
         raise
@@ -489,7 +590,11 @@ def edit(ref_png: bytes, prompt, size="1024x1024", background="auto", model=None
         data["moderation"] = c["moderation"]
     files = [("image", ("ref.png", ref_png, "image/png"))]
     try:
-        return _image_result(_with_fallback(lambda d: _call("/images/edits", data=d, files=files), data))
+        resp = _with_fallback(lambda d: _call("/images/edits", data=d, files=files), data)
+        result = _image_result(resp)
+        _ledger_record("/images/edits", data["model"], resp, image=True, quality=result[1].get("quality") or data["quality"],
+                       size=result[1].get("size") or size)
+        return result
     except ApiError as e:
         e.prompt = e.prompt or prompt[:200]
         raise
@@ -514,7 +619,9 @@ def _responses(body, timeout=900):
                 b["text"] = {**b["text"], "format": {**fmt, "strict": False}}
                 return _call("/responses", json_body=b, timeout=timeout)
             raise
-    return _with_fallback(send, body, RESPONSES_OPTIONAL)
+    resp = _with_fallback(send, body, RESPONSES_OPTIONAL)
+    _ledger_record("/responses", body.get("model") or _config()["text_model"], resp)
+    return resp
 
 
 def _responses_text(resp, schema=None):
@@ -1359,6 +1466,7 @@ def cmd_mockup(a):
     platform = a.platform or (_design_meta(a.edit or a.style_ref).get("platform") if (a.edit or a.style_ref) else None)
     if not platform:
         print("  (no --platform: designing platform-neutral; pass --platform android|ios|web for native components)")
+    _plan(a.variants, 0, image_model=a.model)
     rule = _platform_rule(platform)
     prompt = a.prompt if a.raw else MOCKUP_WRAP.format(prompt=a.prompt, aspect=aspect) + rule
     edit_prompt = f"{a.prompt} Keep the {aspect} canvas and everything not mentioned exactly as it is."
@@ -1991,6 +2099,10 @@ def cmd_forge(a):
     by_name = {x["name"]: x for x in todo}
     results = {x["name"]: list(keep.get(x["name"], [])) for x in todo}
     jobs = [(x, c) for x in todo for c in range(a.candidates) if c + 1 not in {k["cand"] for k in results[x["name"]]}]
+    _plan(len(jobs), 0, image_model=a.model)
+    if a.dry_run:
+        print("would render: " + (", ".join(f"{x['name']} c{c + 1}" for x, c in jobs) or "nothing"))
+        return
     pending = {x["name"]: sum(1 for j, _ in jobs if j is x) for x in todo}
     reused = sum(len(v) for v in results.values())
     print(f"forging {len(todo)} assets x {a.candidates} candidates = {len(jobs)} image calls, {a.jobs} parallel"
@@ -5199,6 +5311,7 @@ def cmd_frames(a):
     for k in {"sheet", "static"} - set(jobs):
         if (k == "sheet" or a.static) and not (out / f"{k}_raw.png").exists():
             sys.exit(f"frames: --reuse needs {out / (k + '_raw.png')} from a previous run")
+    _plan(len(jobs), 0, image_model=a.model)
     sq_src, sq_off = _square(src)
     ex = cf.ThreadPoolExecutor(2)
     futs = {ex.submit(edit, _png_bytes(sq_src if k == "static" else src), p, sz, "transparent", a.model): k
@@ -5585,6 +5698,10 @@ def cmd_sequence_render(a):
         sys.exit(f"sequence render: --every {a.every} must divide the {meta['frames']} frames so the keys repeat with the "
                  "loop (propagate needs that)")
     todo = [i for i in range(0, meta["frames"], a.every) if a.force or _seq_raw_state(d, meta, i) != "ok"]
+    _plan(len(todo), 0, image_model=a.model)
+    if a.dry_run:
+        print("would render frames: " + (", ".join(str(i) for i in todo) or "none"))
+        return
     print(f"rendering {len(todo)} of {meta['frames']} frames, {a.jobs} at a time (resumable: finished frames are kept)")
     printed = set()
 
@@ -8473,6 +8590,7 @@ def cmd_appicon_concepts(a):
     text = f'The only text is "{a.text}", large and legible.' if a.text else "No text, letters or numbers anywhere."
     dirs = [s.strip() for s in a.directions.split("|")] if a.directions else ICON_DIRECTIONS
     colors = a.colors or (", ".join(_palette(ref)) if ref is not None else "")
+    _plan(a.variants, 0, image_model=a.model)
 
     def one(i):
         direction = dirs[i % len(dirs)]
@@ -14129,6 +14247,7 @@ def cmd_material(a):
     if a.ref:
         _, ref = _image_bytes_checked(a.ref, "--ref")
         prompt = ("Use the reference only for its material, lighting and rendering quality, not its layout or content. " + prompt)
+    _plan(a.candidates, 0, image_model=a.model)
 
     def one(i):
         try:
@@ -14716,9 +14835,13 @@ def _md_cites(cites):
 
 
 def cmd_research(a):
+    n = DEPTHS[a.depth]
+    _plan(0, n + 2, model=a.model, tokens_in=15000, tokens_out=5000, web_calls=n)
+    if a.dry_run:
+        print(f"would make 1 planning call, {n} web-searched questions, and 1 synthesis call")
+        return
     out = Path(a.out)
     (out / "findings").mkdir(parents=True, exist_ok=True)
-    n = DEPTHS[a.depth]
     ctx = (f"Product idea: {a.idea}\nTarget platform(s): {a.platform or 'unspecified'}\nRegion/market: {a.region}\n"
            + (f"Extra context: {a.context}\n" if a.context else ""))
     print(f"planning {n} research questions ({a.model}, effort {a.effort})...")
@@ -14864,10 +14987,93 @@ def _color_arg(s):
     return s
 
 
+def cmd_cost(a):
+    """Summarise the local JSONL ledger by call, model or time bucket."""
+    ledger = a.ledger or os.environ.get("GPTKIT_LEDGER", str(Path.home() / ".cache/gptkit/ledger.jsonl"))
+    if ledger == "off":
+        print("no ledger entries: ledger disabled")
+        return
+    path = Path(ledger).expanduser()
+    if not path.exists():
+        print(f"no ledger entries: {path}")
+        return
+    since = None
+    if a.since:
+        try:
+            if re.fullmatch(r"\d+[dh]", a.since):
+                n, unit = int(a.since[:-1]), a.since[-1]
+                since = datetime.now(timezone.utc) - (timedelta(days=n) if unit == "d" else timedelta(hours=n))
+            else:
+                since = datetime.strptime(a.since, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+        except ValueError:
+            sys.exit("gptkit cost: --since must be 7d, 24h or YYYY-MM-DD")
+    rows, malformed = [], 0
+    for line in path.read_text(encoding="utf8").splitlines():
+        try:
+            row = json.loads(line)
+            if not isinstance(row, dict) or not isinstance(row.get("ts"), str):
+                raise ValueError("not a ledger object")
+            if row.get("usage") is not None and not isinstance(row.get("usage"), dict):
+                raise ValueError("invalid usage")
+            if not isinstance(row.get("est_usd", 0), (int, float)):
+                raise ValueError("invalid estimate")
+            ts = datetime.fromisoformat(row["ts"].replace("Z", "+00:00"))
+            if since is None or ts >= since:
+                rows.append(row)
+        except (ValueError, KeyError, TypeError, AttributeError):
+            malformed += 1
+    if not rows and not malformed:
+        print(f"no ledger entries: {path}")
+        return
+    groups = {}
+    for row in rows:
+        key = {"cmd": row.get("cmd") or "unknown", "model": row.get("model") or "unknown",
+               "day": row.get("ts", "")[:10], "dir": row.get("dir") or "(none)"}[a.by]
+        g = groups.setdefault(key, {"calls": 0, "image_calls": 0, "text_calls": 0, "tokens_in": 0,
+                                    "tokens_out": 0, "est_usd": 0.0})
+        image = str(row.get("endpoint", "")).startswith("/images/")
+        usage = row.get("usage") or {}
+        details = usage.get("input_tokens_details") or {}
+        tokens_in = usage.get("input_tokens") or details.get("text_tokens") or 0
+        tokens_out = usage.get("output_tokens") or 0
+        if not isinstance(tokens_in, (int, float)):
+            tokens_in = 0
+        if not isinstance(tokens_out, (int, float)):
+            tokens_out = 0
+        g["calls"] += 1
+        g["image_calls" if image else "text_calls"] += 1
+        g["tokens_in"] += tokens_in
+        g["tokens_out"] += tokens_out
+        g["est_usd"] += row.get("est_usd", 0) or 0
+    total = {k: sum(g[k] for g in groups.values()) for k in next(iter(groups.values()))} if groups else {
+        "calls": 0, "image_calls": 0, "text_calls": 0, "tokens_in": 0, "tokens_out": 0, "est_usd": 0.0}
+    note = "list-price equivalent; through a subscription gateway (e.g. sub2api) this is quota, not money billed" \
+        if "api.openai.com" not in _config()["base"] else None
+    if a.json:
+        print(json.dumps({"groups": groups, "total": total, "malformed": malformed, "note": note}, indent=2))
+    else:
+        print(f"{a.by:24} calls image text tokens in/out est USD")
+        for key, g in sorted(groups.items()):
+            print(f"{key:24} {g['calls']:5} {g['image_calls']:5} {g['text_calls']:4} "
+                  f"{g['tokens_in']:9}/{g['tokens_out']:<9} ${g['est_usd']:.4f}")
+        print(f"{'TOTAL':24} {total['calls']:5} {total['image_calls']:5} {total['text_calls']:4} "
+              f"{total['tokens_in']:9}/{total['tokens_out']:<9} ${total['est_usd']:.4f}")
+        if malformed:
+            print(f"skipped {malformed} malformed ledger lines")
+        if note:
+            print(note)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
     efforts = ["high", "xhigh", "max"]
+    p = sub.add_parser("cost", help="summarise API usage and estimated list-price cost")
+    p.add_argument("--since", help="7d, 24h or YYYY-MM-DD")
+    p.add_argument("--by", choices=["cmd", "model", "day", "dir"], default="cmd")
+    p.add_argument("--json", action="store_true")
+    p.add_argument("--ledger", help="ledger JSONL path (default GPTKIT_LEDGER or ~/.cache/gptkit/ledger.jsonl)")
+    p.set_defaults(fn=cmd_cost)
     p = sub.add_parser("research", help="in-depth market research with web search (gpt-6-sol, high effort) -> report.md")
     p.add_argument("idea", help='e.g. "Android budgeting app for young couples"')
     p.add_argument("--out", required=True, help="output dir: report.md, report.json, plan.json, findings/, sources.json")
@@ -14879,6 +15085,7 @@ def main():
     p.add_argument("--effort", choices=efforts, default="high", help="reasoning effort for the plan and each question")
     p.add_argument("--synth-effort", choices=efforts, default="xhigh", help="effort for the final synthesis")
     p.add_argument("--jobs", type=_pos_int, default=4, help="parallel research questions"); p.set_defaults(fn=cmd_research)
+    p.add_argument("--dry-run", action="store_true", help="show the planned research calls and estimated cost only")
     p = sub.add_parser("blueprint", help="feature blueprint (features, RICE, stories, screens with mockup briefs) from research")
     p.add_argument("dir", help="research dir with report.json (or an empty dir with --idea)")
     p.add_argument("--idea", help="product idea when DIR has no report.json (first-principles blueprint)")
@@ -14925,6 +15132,7 @@ def main():
     p.add_argument("--only", help="comma-separated asset names (default: every png-format asset without a final file)")
     p.add_argument("--candidates", type=_pos_int, default=2, help="redraws per asset, best one wins (default 2)")
     p.add_argument("--jobs", type=_pos_int, default=6, help="parallel image calls (default 6)")
+    p.add_argument("--dry-run", action="store_true", help="show pending candidate calls and estimated cost only")
     p.add_argument("--force", action="store_true", help="redo assets that already have a final file")
     p.add_argument("--include-svg", action="store_true", help="also raster-forge svg-format assets")
     p.add_argument("--same-prompt", action="store_true", help="no per-candidate colour/shape emphasis")
@@ -15031,6 +15239,7 @@ def main():
     p.add_argument("--candidates", type=_pos_int, default=2, help="reroll: renders per frame to choose from")
     p.add_argument("--preview-bg", type=_color_arg, help="build: backdrop of preview.gif and contact.png (default #a0aabe, remembered)")
     p.add_argument("--model", default=None, help="render/reroll: image model (default $GPTKIT_IMAGE_MODEL)")
+    p.add_argument("--dry-run", action="store_true", help="render: list pending frames and estimated cost only")
     p.set_defaults(fn=cmd_sequence)
     p = sub.add_parser("vectorize", help="vector layers (morphs, transforms, glows) -> Lottie + AnimatedVectorDrawable")
     p.add_argument("dir", help="design dir (assets.json) or any dir for the outputs with --svg / --rebuild")
@@ -15102,6 +15311,11 @@ def main():
     p.set_defaults(fn=cmd_score)
     _add_trace_rig_parsers(sub)
     a = ap.parse_args()
+    global _LEDGER_CMD, _LEDGER_DIR
+    _LEDGER_CMD = ("sequence " + a.stage) if a.cmd == "sequence" else (
+        "appicon " + a.icmd if a.cmd == "appicon" else a.cmd)
+    dir_arg = getattr(a, "dir", None) or getattr(a, "out", None)
+    _LEDGER_DIR = str(Path(dir_arg).expanduser().resolve()) if dir_arg else None
     try:
         a.fn(a)
     except KeyboardInterrupt:
