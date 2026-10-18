@@ -165,8 +165,21 @@ def test_unforged_assets_and_design_link():
         assert any(c["name"].startswith("manifest (") for c in d["checks"]) and d["next"] == [], d
 
 
+def test_empty_output_dir_is_not_done():
+    with TempDir() as td:
+        d = Path(td)
+        put(d / "assets.json", '{"assets": []}')
+        (d / "review").mkdir()
+        (d / "assets").mkdir()
+        checks = {c["name"]: c["status"] for c in unit(json.loads(call(d, "--json")), "build")["checks"]}
+        assert "review/" not in checks and checks["assets/"] == "missing", checks
+        put(d / "review" / "forge_x.png", "fake png")
+        checks = {c["name"]: c["status"] for c in unit(json.loads(call(d, "--json")), "build")["checks"]}
+        assert checks["review/"] == "done", checks
+
+
 def run():
-    for fn in (test_manifest_to_spec_next, test_stale_spec, test_forge_attention,
+    for fn in (test_empty_output_dir_is_not_done, test_manifest_to_spec_next, test_stale_spec, test_forge_attention,
                test_corrupt_forge_report, test_sequence_missing_frames, test_empty_dir, test_json_shape,
                test_real_offline_kit_output, test_unforged_assets_and_design_link):
         fn()

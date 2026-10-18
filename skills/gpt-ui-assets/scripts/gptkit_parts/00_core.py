@@ -90,11 +90,15 @@ def _plan(image_calls=0, text_calls=0, model=None, *, image_model=None, task="co
         image_model = pick_image_model(image_model, task, background)
     ip = PRICES.get(image_model, PRICES["gpt-image-2"])
     tp = PRICES.get(text_model, PRICES["gpt-6-sol"])
-    try:
-        w, h = [int(x) for x in str(size).split("x")]
-    except ValueError:
-        w, h = 1024, 1024
-    per_image = (1756 * w * h / 1024 ** 2 * ip.get("image_out", 30) + 300 * ip.get("text_in", 5)
+    def area(s):
+        try:
+            w, h = [int(x) for x in str(s).split("x")]
+            return w * h
+        except ValueError:
+            return 1024 * 1024
+    sizes = list(size) if isinstance(size, (list, tuple)) else [size]  # one size per call when they differ (forge)
+    mean_area = sum(area(s) for s in sizes) / max(1, len(sizes))
+    per_image = (1756 * mean_area / 1024 ** 2 * ip.get("image_out", 30) + 300 * ip.get("text_in", 5)
                  + (1500 * ip.get("image_in", 8) if edits else 0)) / 1e6
     estimate = image_calls * per_image + text_calls * (tokens_in * tp.get("in", 2) + tokens_out * tp.get("out", 10)) / 1e6
     estimate += web_calls * PRICES["web_search"]["per_call"]

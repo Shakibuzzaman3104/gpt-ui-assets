@@ -223,7 +223,7 @@ def _status_scan(base):
             for n in core + ("icon_spec.json", "review/", "icons/", "traced/", "rig/", "anim/", "vector/", "frames/"):
                 npath = d / n.rstrip("/")
                 is_dir = n.endswith("/")
-                exists = npath.is_dir() if is_dir else npath.exists()
+                exists = (npath.is_dir() and any(npath.iterdir())) if is_dir else npath.exists()  # an empty dir is not done
                 if not exists and n not in core:
                     continue  # optional outputs are listed only once they exist
                 state = "done" if exists else "missing"
@@ -295,7 +295,7 @@ def _status_scan(base):
         concept_pngs = [p for p in children if p.suffix.lower() == ".png" and re.match(r"concept(?:_v\d+)?\.png$", p.name)]
         if "concepts" in names or concept_pngs:
             checks = [{"name": "concept PNGs", "status": "done" if concept_pngs else "missing"},
-                      {"name": "review/", "status": "done" if (d / "review").is_dir() else "missing"}]
+                      {"name": "review/", "status": "done" if (d / "review").is_dir() and any((d / "review").iterdir()) else "missing"}]
             chosen = concept_pngs[0] if len(concept_pngs) == 1 else None
             nxt = [f"python3 $K appicon build {_status_arg(chosen)} --out {_status_arg(d / 'build')}" ] if chosen else []
             add(d, "appicon concepts", d.name, checks, [], nxt)

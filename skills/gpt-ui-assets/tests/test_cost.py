@@ -141,8 +141,17 @@ def test_budget_exceeded_and_dry_run_no_calls():
         assert "plan:" in out.getvalue() and not calls
 
 
+def test_plan_prices_each_call_by_its_size():
+    with env(GPTKIT_IMAGE_MODEL="gpt-image-2", GPTKIT_BUDGET_USD=None):
+        with contextlib.redirect_stdout(io.StringIO()):
+            square = K._plan(2, 0, edits=True)
+            wide = K._plan(2, 0, edits=True, size=["1536x1024", "1536x1024"])
+            mixed = K._plan(2, 0, edits=True, size=["1536x1024", "1024x1024"])
+    assert square < mixed < wide, (square, mixed, wide)
+
+
 def run():
-    tests = [test_image_records_usage_and_fallback, test_responses_and_web_search_usage,
+    tests = [test_plan_prices_each_call_by_its_size, test_image_records_usage_and_fallback, test_responses_and_web_search_usage,
              test_parallel_lines_and_off, test_cost_json_and_malformed,
              test_budget_exceeded_and_dry_run_no_calls]
     for test in tests:

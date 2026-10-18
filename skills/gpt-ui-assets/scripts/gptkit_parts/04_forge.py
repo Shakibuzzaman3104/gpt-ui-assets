@@ -169,7 +169,8 @@ def cmd_forge(a):
     by_name = {x["name"]: x for x in todo}
     results = {x["name"]: list(keep.get(x["name"], [])) for x in todo}
     jobs = [(x, c) for x in todo for c in range(a.candidates) if c + 1 not in {k["cand"] for k in results[x["name"]]}]
-    _plan(len(jobs), 0, image_model=a.model, task="precise", background="transparent", edits=True)
+    _plan(len(jobs), 0, image_model=a.model, task="precise", background="transparent", edits=True,
+          size=[_size_for(x["bbox"]["w"], x["bbox"]["h"]) for x, _ in jobs] or "1024x1024")
     if getattr(a, "dry_run", False):
         print("would render: " + (", ".join(f"{x['name']} c{c + 1}" for x, c in jobs) or "nothing"))
         return
