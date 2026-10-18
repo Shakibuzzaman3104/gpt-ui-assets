@@ -385,11 +385,13 @@ def _compare_region_text(r, rep, part, ctx):
         tx, ty, tw_, th_ = t["box"]
         px_, py_ = int(0.6 * st["size_px"]) + 6, int(0.35 * st["size_px"]) + 4
         found_ = []
-        for ox, oy in {(0, ctx["dy0"]), (ib[0] - x, ib[1] + ctx["dy0"] - y)}:
-            g_ = _locate_text(ctx["S"], [tx + ox - px_, ty + oy - py_, tw_ + 2 * px_, th_ + 2 * py_], t["sample"],
-                              st["size_px"], st.get("letter_spacing_em", 0), t["ink"])
+        for ox, oy in {(0, ctx["dy0"]), (0, ib[1] + ctx["dy0"] - y), (ib[0] - x, ib[1] + ctx["dy0"] - y)}:
+            win = [tx + ox - px_, ty + oy - py_, tw_ + 2 * px_, th_ + 2 * py_]
+            g_ = _locate_text(ctx["S"], win, t["sample"], st["size_px"], st.get("letter_spacing_em", 0), t["ink"])
             if g_ and _de_hex(g_["ink"], t["ink"]) < 20 and 0.6 < g_["box"][3] / th_ < 1.6:
-                found_.append((abs(math.log(g_["box"][3] / th_)) + abs(math.log(g_["box"][2] / tw_)), g_))
+                bx_, sh_ = g_["box"], ctx["S"].shape
+                cut = (bx_[1] <= win[1] + 1 and win[1] > 0) or (bx_[1] + bx_[3] >= win[1] + win[3] - 1 and win[1] + win[3] < sh_[0])
+                found_.append((abs(math.log(g_["box"][3] / th_)) + abs(math.log(g_["box"][2] / tw_)) + (10 if cut else 0), g_))
         got = min(found_, key=lambda f_: f_[0])[1] if found_ else None
         text_boxes.append((tx - x, ty - y, tw_, th_))
         if not got:
@@ -413,6 +415,10 @@ def _compare_region_text(r, rep, part, ctx):
                                            "glyph_similarity_vs_design": shape, "spec_font_fit": fspec,
                                            "best_font_fit": fbest, "shift_dp": sh})
         lab = f"'{t['sample'][:20]}'"
+        if abs(hr - 1) <= 0.1 and len(t["sample"].strip()) >= 3:  # wrong-size or 1-2 character text can't place its neighbours
+            ctx.setdefault("text_nodes", []).append({"rep": rep, "label": lab, "role": role, "comp": r["name"], "d": list(t["box"]),
+                                                     "i": [gx, gy - ctx["dy0"], gw, gh], "own": r["bbox"],
+                                                     "tol": 0.1 * st["size_px"] * ctx["k"]})
         token = f", token {ctx['token_names'][role]}" if role in ctx["token_names"] else ""
         if abs(hr - 1) >= 0.04 and abs(gh - th_) >= 2:
             design_sp = st["size_px"] * ctx["k"]
@@ -497,17 +503,231 @@ def _compare_finish_region(r, rep, part):
     return rep
 
 
-def _compare_rank_regions(found, data):
-    """Suppress uniform text-scale hints, rank regions, and locate unlabelled differences."""
+def _text_scale(found):
+    """The common height ratio of the implemented text when nearly all of it is off by the same factor, or None."""
     ratios = [t_["height_ratio"] for r in found for t_ in r.get("text", [])]
-    global_scale = None
     if len(ratios) >= 3:
         med = float(np.median(ratios))
         if abs(med - 1) > 0.05 and sum(abs(v - med) <= 0.05 for v in ratios) >= max(3, 0.75 * len(ratios)):
-            global_scale = med
-            for rep, hint in data["size_hints"]:
-                rep["hints"] = [h_ for h_ in rep["hints"] if h_ != hint]
-            data["overall"]["text_scale"] = round(med, 3)
+            return med
+    return None
+
+
+LAYOUT_TOL_DP = {"radius": 2.0, "radius_rel": 0.25, "inset": 3.0, "gap": 3.0, "size": 4.0, "size_rel": 0.03}
+
+
+def _layout_tokens(d, platform):
+    """(kind, dp, name, source) for the radius and spacing tokens in DIR/tokens/tokens.json, named for the platform."""
+    try:
+        tk = json.loads((d / "tokens" / "tokens.json").read_text())
+    except (OSError, ValueError):
+        return []
+    p = tk.get("prefix") or "App"
+    out = []
+    for kind, key in (("radius", "radii"), ("spacing", "spacing")):
+        for t in tk.get(key) or []:
+            if not isinstance(t, dict) or not isinstance(t.get("dp"), (int, float)):
+                continue
+            if platform in ("ios", "macos") and t.get("sw"):
+                name = f"{p}{'Radius' if kind == 'radius' else 'Spacing'}.{t['sw']}"
+            elif platform == "web" and t.get("css"):
+                name = f"var(--{'radius' if kind == 'radius' else 'space'}-{t['css']})"
+            elif t.get("kt"):
+                name = f"{t['kt']}Shape" if kind == "radius" else f"{p}Dimens.{t['kt']}"
+            else:
+                continue
+            out.append((kind, float(t["dp"]), name, str(t.get("source", ""))))
+    return out
+
+
+def _token_for(tokens, kind, dp, source):
+    """', token X' for the token holding dp whose redline source is this measurement, or ''."""
+    pick = next((t for t in tokens if t[0] == kind and abs(t[1] - dp) <= 0.5 and t[3].startswith(source)), None)
+    return f", token {pick[2]}" if pick else ""
+
+
+def _compare_layout(regs, found, data):
+    """Corner radii, surface sizes, padding and gaps of the built screen against the design, measured with redline's
+    surface geometry on both. A wrong gap is reported once, and the shifts it causes below are dropped."""
+    from .redline import _not_surface, _surface_geometry  # deferred: redline imports this module
+    k, dy0 = data["k"], data["dy0"]
+    shot_dp, design_dp = data["shot_dp"], data["design_dp"]
+    if shot_dp and abs(shot_dp - design_dp) / design_dp > 0.05:
+        data["overall"]["layout"] = {"skipped": "screenshot width differs from the design"}
+        return
+    Mu, Su = data["M"].astype(np.uint8), data["S"].astype(np.uint8)
+    tokens = _layout_tokens(data["d"], data["platform"])
+    T = LAYOUT_TOL_DP
+    text_boxes = [inst["box"] for t in data["texts"].values() for inst in t.get("instances", [])]
+    nodes = []
+    reach = max(8, round(0.02 * data["W"]))
+    system = {c.get("name"): str(c.get("native", "")).lower() == "system" for c in data["spec"].get("components", []) if isinstance(c, dict)}
+    for r, rep in zip(regs, found):
+        if rep.get("status") or _not_surface(r, data["texts"]) == "text component" or system.get(r["name"]):
+            continue  # the OS draws system UI (status bar, home indicator), not the app
+        b = r["bbox"]
+        why = _not_surface(r, data["texts"])
+        if why == "container of other components" or min(b["w"], b["h"]) * k < 20:
+            continue  # tiny elements (icons in rows) match ambiguously; their rows and texts carry the layout
+        tx, ty = round(rep["shift_dp"][0] / k), round(rep["shift_dp"][1] / k)  # 0, 0 when the region didn't match
+        gd0 = _surface_geometry(Mu, b) if not why else None
+        gd = gi = None
+        if gd0:  # re-measured from the found edges with a short reach on both screens, so nearby content can't pull them
+            box = lambda v, dx=0, dy=0: {"x": round(v[0] + dx), "y": round(v[1] + dy), "w": round(v[2]), "h": round(v[3])}
+            gd = _surface_geometry(Mu, box(gd0["box"]), reach)
+            for c in ([box(gd["box"], sx_, sy_ + dy0) for sx_, sy_ in ((0, 0), (0, ty), (tx, ty), (tx, 0))] if gd else ()):
+                if c["x"] >= 0 and c["y"] >= 0 and c["x"] + c["w"] <= Su.shape[1] and c["y"] + c["h"] <= Su.shape[0]:
+                    gi = _surface_geometry(Su, c, reach)
+                    if gi and _de_hex(gi["fill"], gd["fill"]) < 10 and all(abs(gi["box"][j] / gd["box"][j] - 1) <= 0.15 for j in (2, 3)):
+                        break
+                    gi = None
+        solid = lambda g_: g_["shadow"] or _de_hex(g_["fill"], g_["outside"]) >= 1.5  # an outline or a phantom has no fill of its own
+        if gd and gi and solid(gd) and solid(gi):
+            di, ii = list(gd["box"]), list(gi["box"])
+            ii[1] -= dy0
+            x_, y_, w_, h_ = (round(v) for v in di)
+            inner = Mu[y_ + h_ // 4:y_ + 3 * h_ // 4, x_ + w_ // 4:x_ + 3 * w_ // 4].reshape(-1, 3).astype(np.float64)
+            photo = len(inner) > 0 and float(np.linalg.norm(inner - np.median(inner, 0), axis=1).mean()) > 12
+            nodes.append({"rep": rep, "label": r["name"], "comp": r["name"], "d": di, "i": ii, "gd": gd, "gi": gi, "photo": photo})
+            continue
+        if "impl_bbox" not in rep or not r.get("asset") or any(min(b["x"] + b["w"], ib_[0] + ib_[2]) - max(b["x"], ib_[0]) > 0.5 * ib_[2]
+               and min(b["y"] + b["h"], ib_[1] + ib_[3]) - max(b["y"], ib_[1]) > 0.5 * ib_[3] for ib_ in text_boxes):
+            continue  # only artwork has a box of its own; a text's box follows the font, a row's its faint edges
+        pad = 4
+        x0, y0 = max(0, b["x"] - pad), max(0, b["y"] - pad)
+        ob_d = _object_box(data["M"][y0:b["y"] + b["h"] + pad, x0:b["x"] + b["w"] + pad])
+        ix0, iy0 = max(0, b["x"] + tx - pad), max(0, b["y"] + ty + dy0 - pad)
+        ob_i = _object_box(data["S"][iy0:b["y"] + ty + dy0 + b["h"] + pad, ix0:b["x"] + tx + b["w"] + pad])
+        if ob_d and ob_i and 0.7 <= ob_i[2] / ob_d[2] <= 1.4 and 0.7 <= ob_i[3] / ob_d[3] <= 1.4:
+            nodes.append({"rep": rep, "label": r["name"], "comp": r["name"], "d": [x0 + ob_d[0], y0 + ob_d[1], ob_d[2], ob_d[3]],
+                          "i": [ix0 + ob_i[0], iy0 + ob_i[1] - dy0, ob_i[2], ob_i[3]]})
+    surf = [n for n in nodes if "gd" in n]
+    ratios = [n["i"][2] / n["d"][2] for n in surf if not set(n["gd"]["full_bleed"]) & {"left", "right"}]
+    scales = [rep["scale"] for rep in found if "impl_bbox" in rep]
+    if len(ratios) < 2 and len(scales) >= 3:
+        ratios = scales
+    if len(ratios) >= 2 and abs(float(np.median(ratios)) - 1) > 0.04:
+        data["overall"]["layout"] = {"skipped": f"the surfaces are ~{abs(float(np.median(ratios)) - 1) * 100:.0f}% "
+                                                f"{'wider' if np.median(ratios) > 1 else 'narrower'}: the screenshot width differs from the design"}
+        return
+    if not _text_scale(found):  # all text off by one factor (font scale): the text can't place anything
+        nodes += [dict(t, text=True) for t in data.get("text_nodes", [])]
+    issues = []
+
+    def add(n, kind, delta, hint, weight):
+        if hint in n["rep"]["hints"]:
+            return
+        n["rep"]["hints"].append(hint)
+        n["rep"].setdefault("layout", []).append({"kind": kind, "delta_dp": round(delta, 1), "hint": hint})
+        n["rep"]["badness"] = round(n["rep"]["badness"] + min(1.5, abs(delta) / weight), 3)
+        issues.append(kind)
+    dp = lambda v: round(v * k, 1)
+    tol = lambda n: max(T["inset"], n.get("tol", 0))  # ink edges of large text depend on the font: side bearings, descenders
+    for n in surf:
+        gd, gi = n["gd"], n["gi"]
+        if not (gd["shape"] in ("pill", "circle") and gi["shape"] in ("pill", "circle")):
+            pairs = [(c, a_, b_) for c, a_, b_ in zip(("top-left", "top-right", "bottom-left", "bottom-right"), gd["corner_radii"], gi["corner_radii"])
+                     if a_ is not None and b_ is not None and not ({"top", "left"} if c == "top-left" else {"top", "right"} if c == "top-right"
+                                                                    else {"bottom", "left"} if c == "bottom-left" else {"bottom", "right"})
+                     & set(gd["full_bleed"] + gi["full_bleed"])]
+            rt, rr = (4.0, 0.3) if n["photo"] else (T["radius"], T["radius_rel"])  # corners over a photo measure less cleanly
+            bad = [(c, dp(a_), dp(b_)) for c, a_, b_ in pairs if abs(b_ - a_) * k >= max(rt, rr * a_ * k)]
+            if bad:
+                full = "fully rounded" if gd["shape"] in ("pill", "circle") else None
+                if len(bad) == len(pairs):
+                    rd, ri = float(np.median([b_[1] for b_ in bad])), float(np.median([b_[2] for b_ in bad]))
+                    hint = f"corner radius {ri:g}dp, design {full or f'{rd:g}dp'}" + ("" if full else _token_for(tokens, "radius", rd, f"redline: {n['comp']}"))
+                else:
+                    hint = "corners " + ", ".join(f"{c} {ri:g}dp (design {rd:g}dp)" for c, rd, ri in bad)
+                add(n, "radius", max((ri - rd for _, rd, ri in bad), key=abs), hint, 4)
+        if not (set(gd["full_bleed"]) & {"left", "right"}):
+            wd, wi = dp(n["d"][2]), dp(n["i"][2])
+            if abs(wi - wd) >= max(T["size"], T["size_rel"] * wd):
+                add(n, "size", wi - wd, f"{wi - wd:+g}dp {'wider' if wi > wd else 'narrower'} ({wi:g}dp, design {wd:g}dp)", 8)
+    contains = lambda p, c: (p["d"][0] <= c["d"][0] + 2 and p["d"][1] <= c["d"][1] + 2 and p["d"][0] + p["d"][2] >= c["d"][0] + c["d"][2] - 2
+                             and p["d"][1] + p["d"][3] >= c["d"][1] + c["d"][3] - 2 and p["d"][2] * p["d"][3] > c["d"][2] * c["d"][3])
+    for n in nodes:
+        par = [p for p in surf if p is not n and contains(p, n)]
+        n["parent"] = min(par, key=lambda p: p["d"][2] * p["d"][3]) if par else None
+    W = data["W"]
+    every = [[r["bbox"][c] for c in "xywh"] for r in regs] + list(text_boxes)
+    for n in nodes:
+        P = n["parent"]
+        sib = [o for o in nodes if o is not n and o["parent"] is P]
+        x, y, w, h = n["d"]
+        above = [o for o in sib if o["d"][1] + o["d"][3] <= y + 2
+                 and min(x + w, o["d"][0] + o["d"][2]) - max(x, o["d"][0]) > 0.3 * min(w, o["d"][2])]
+        A = max(above, key=lambda o: o["d"][1] + o["d"][3]) if above else None
+        if A:  # a gap is only checked between neighbours: nothing unmeasured may sit between them
+            y0_, y1_ = A["d"][1] + A["d"][3], y
+            x0_, x1_ = max(x, A["d"][0]), min(x + w, A["d"][0] + A["d"][2])
+            if any(bb[1] >= y0_ - 2 and bb[1] + bb[3] <= y1_ + 2 and bb[3] > 0 and min(x1_, bb[0] + bb[2]) - max(x0_, bb[0]) > 0
+                   for bb in every):
+                A = None
+        n["pred"] = A
+        pd, pi = (P["d"], P["i"]) if P else ([0, 0, W, data["H"]], [0, 0, W, data["H"]])
+        where = f"in {P['label']}" if P else "from the screen edge"
+        li, ld = n["i"][0] - pi[0], x - pd[0]
+        ri_, rd_ = pi[0] + pi[2] - n["i"][0] - n["i"][2], pd[0] + pd[2] - x - w
+        centred = abs(ld - rd_) <= max(4, 0.02 * W)
+        o_ = n.get("own")  # text centred in an outlined chip or button: the font's width moves its edges, not the layout
+        chip = bool(o_) and not any(p["comp"] == n["comp"] for p in surf) and o_["w"] > 1.3 * w \
+            and abs((x - o_["x"]) - (o_["x"] + o_["w"] - x - w)) <= max(4, 0.15 * w) \
+            or n.get("text") and centred and w >= 0.6 * pd[2]  # a full-width line: centred or left-aligned can't be told apart
+        A = n["pred"]
+        cx = lambda o, s_: o[s_][0] + o[s_][2] / 2
+        if chip:
+            pass
+        elif A and abs(cx(n, "d") - cx(A, "d")) <= max(3, 0.01 * W) and not centred and w < 0.9 * A["d"][2] \
+                and abs(x - A["d"][0]) > 0.05 * A["d"][2] and y - A["d"][1] - A["d"][3] <= max(h, A["d"][3]):
+            delta = ((cx(n, "i") - cx(A, "i")) - (cx(n, "d") - cx(A, "d"))) * k
+            if abs(delta) >= max(tol(n), tol(A)):
+                add(n, "padding", delta, f"{n['label']} off-centre under {A['label']} by {delta:+.0f}dp", 6)
+        elif centred and (n.get("text") or w < 0.6 * pd[2]):
+            delta = ((li - ri_) - (ld - rd_)) / 2 * k
+            if abs(delta) >= tol(n):
+                add(n, "padding", delta, f"{n['label']} off-centre {where} by {delta:+.0f}dp", 6)
+        else:
+            sides = [("left", li, ld), ("right", ri_, rd_)] if centred else [("left", li, ld) if ld <= rd_ else ("right", ri_, rd_)]
+            for side, vi, vd in sides:
+                if abs(vi - vd) * k >= tol(n) and not (P and side in P["gd"]["full_bleed"] and vd < 1):
+                    src = f"redline: {P['comp']} " if P else f"redline: {n['comp']} {side} of screen edge"
+                    add(n, "padding", (vi - vd) * k, f"{n['label']} {side} {'padding' if P else 'margin'} {where} {dp(vi):g}dp, "
+                        f"design {dp(vd):g}dp" + (" (ink edge)" if n.get("text") else _token_for(tokens, "spacing", dp(vd), src)), 6)
+        if A:
+            gi_, gd_ = n["i"][1] - A["i"][1] - A["i"][3], y - A["d"][1] - A["d"][3]
+            if abs(gi_ - gd_) * k >= max(tol(n), tol(A), T["gap"]):
+                line = n.get("text") and A.get("text") and A["comp"] == n["comp"] and A["role"] == n["role"]
+                add(n, "gap", (gi_ - gd_) * k, (f"line gap above {n['label']} {dp(gi_):g}dp, design {dp(gd_):g}dp (line height)" if line else
+                    f"gap above {n['label']} (below {A['label']}) {dp(gi_):g}dp, design {dp(gd_):g}dp"
+                    + _token_for(tokens, "spacing", dp(gd_), f"redline: gap below {A['comp']} (to {n['comp']})")), 6)
+        elif P and "top" not in P["gd"]["full_bleed"]:
+            ti, td = n["i"][1] - pi[1], y - pd[1]
+            if abs(ti - td) * k >= tol(n):
+                add(n, "padding", (ti - td) * k, f"{n['label']} top padding {where} {dp(ti):g}dp, design {dp(td):g}dp"
+                    + (" (ink edge)" if n.get("text") else _token_for(tokens, "spacing", dp(td), f"redline: {P['comp']} ")), 6)
+    first = [n for n in nodes if n["parent"] is None and n["pred"] is None]
+    offs = [(n["i"][1] - n["d"][1]) * k for n in first]
+    common = bool(offs) and max(offs) - min(offs) <= 2
+    boxed = {id(n["rep"]) for n in nodes if not n.get("text")}
+    for n in nodes:
+        if n in first and not common:
+            continue
+        drop = (f"{n['label']} shifted",) + (() if id(n["rep"]) in boxed else ("shifted ",)) if n.get("text") else ("shifted ",)
+        n["rep"]["hints"] = [h_ for h_ in n["rep"]["hints"] if not h_.startswith(drop)]
+    data["overall"]["layout"] = {"surfaces": len(surf), "elements": len(nodes),
+                                 **{kind: issues.count(kind) for kind in ("radius", "size", "padding", "gap")}}
+    if common and abs(float(np.median(offs))) >= 2:
+        data["overall"]["layout"]["top_offset_dp"] = round(float(np.median(offs)), 1)
+
+
+def _compare_rank_regions(found, data):
+    """Suppress uniform text-scale hints, rank regions, and locate unlabelled differences."""
+    global_scale = _text_scale(found)
+    if global_scale:
+        for rep, hint in data["size_hints"]:
+            rep["hints"] = [h_ for h_ in rep["hints"] if h_ != hint]
+        data["overall"]["text_scale"] = round(global_scale, 3)
     found.sort(key=lambda r: -r["badness"])
     H, W = data["H"], data["W"]
     covered = np.zeros((H, W), bool)
@@ -594,6 +814,16 @@ def _compare_print_report(a, data, found, unl, ranked, global_scale):
     out = data["out"]
     print(f"overall score {overall['score']}/100  (SSIM (7px box) {overall['ssim']}, mean dE00 {overall['mean_de00']}, "
           f"{overall['pct_pixels_de_gt_10']}% px dE>10)")
+    lay = overall.get("layout") or {}
+    if lay.get("skipped"):
+        print(f"  (layout checks skipped: {lay['skipped']})")
+    elif lay:
+        print(f"  layout: {lay['surfaces']} surfaces measured on both screens, {lay['elements']} elements placed; "
+              + ", ".join(f"{lay[x]} {x}" for x in ("radius", "size", "padding", "gap")) + " differences")
+        if lay.get("top_offset_dp"):
+            t_ = lay["top_offset_dp"]
+            print(f"  ~ the top elements sit {abs(t_):g}dp {'lower' if t_ > 0 else 'higher'} than the alignment of the rest: the top inset "
+                  "or a gap below is off (gaps are checked between neighbours, so the gap hints name it)")
     if top_extra or bottom_extra:
         print(f"  aligned with a {top_extra}px ({top_extra * k:.0f}dp) top offset (status bar / extra top inset); "
               f"{bottom_extra}px extra at the bottom (taller screen or nav bar) ignored")
@@ -635,7 +865,8 @@ def cmd_compare(a):
     Sg32, Mg32, R = data["Sg32"], data["Mg32"], data["R"]
     found = []
     font_check_off, size_hints = data["font_check_off"], data["size_hints"]
-    for r in _regions(spec, m, W, H):
+    regs = _regions(spec, m, W, H)
+    for r in regs:
         rep, part = _compare_measure_region(r, data)
         if part is None:
             found.append(rep)
@@ -645,6 +876,7 @@ def cmd_compare(a):
         cur, ref, dmap, own = part["cur"], part["ref"], part["dmap"], part["own"]
         image, hints, text_boxes = part["image"], part["hints"], part["text_boxes"]
         found.append(_compare_finish_region(r, rep, part))
+    _compare_layout(regs, found, data)
     found, global_scale, unl, ranked = _compare_rank_regions(found, data)
     _compare_vision_rows(a, data, ranked)
     _compare_write_report(a, data, found, unl, ranked)

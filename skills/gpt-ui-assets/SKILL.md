@@ -82,8 +82,9 @@ python3 $K export build/home/assets/hero.png --dp 240 --res app/src/main/res --n
 python3 $K fonts build/home
 python3 $K redline build/home
 python3 $K tokens build/home --package com.acme.ui.theme --verify
-# build the screen with spec's native widgets, screenshot it at the design's effective width, then:
-python3 $K compare build/home shot.png
+# build the screen with spec's native widgets and the tokens' padding, gaps and radii (never default ones),
+# screenshot it at the design's effective width, then:
+python3 $K compare build/home shot.png               # also flags wrong corner radii, padding and gaps, with the token
 ```
 
 ## Rules that hold in every phase
