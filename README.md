@@ -19,10 +19,18 @@ Claude is the driver. GPT is one instrument, and each job goes to whatever does 
 - **Claude:** reviews every result and writes the code.
 
 <p align="center">
-  <img src="docs/images/01-mockup.webp" width="260" alt="Approved mockup">
-  <img src="docs/images/02-inventory.webp" width="260" alt="Asset inventory">
+  <a href="docs/video/gpt-ui-assets-promo.mp4"><img src="docs/images/00-promo.webp" width="720" alt="Watch the 66-second promo"></a>
+</p>
+
+<p align="center">
+  <img src="docs/images/16-mockup.webp" width="260" alt="Approved mockup">
+  <img src="docs/images/17-inventory.webp" width="260" alt="Asset inventory">
   <img src="docs/images/07-campfire.gif" width="200" alt="Generated animation">
 </p>
+
+**Same brief, three ways.** Claude alone writes HTML/CSS; plain GPT paints a pretty picture you can't build from;
+the skill gives a native screen in the house style that passed design QA, ready to inventory and build.
+<p align="center"><img src="docs/images/19-three-ways.webp" width="690" alt="The same three briefs by Claude alone, plain GPT and gpt-ui-assets"></p>
 
 ## Why
 
@@ -41,6 +49,11 @@ This skill does what a designer would do instead:
 
 *Left: the element cropped from the mockup and upscaled. Right: the redrawn asset. It's 5–7× the resolution,
 40–100× sharper and on a real transparent background.*
+
+<p align="center"><img src="docs/images/20-forge-vs-gpt.webp" width="700" alt="Design crop vs plain GPT vs forge, scored by the kit"></p>
+
+*Asking plain GPT for the asset re-imagines it: new mouth, new colours. `forge` stays on the design, scored by the
+kit itself (`fid` and ΔE, lower is closer).*
 
 ## What it does
 
@@ -69,9 +82,9 @@ chrome at pointer density, and `--platform web --page landing` composes above th
 <approved phone screen>` recomposes the same app for each form factor instead of stretching it.
 <p align="center"><img src="docs/images/15-form-factors.webp" width="760" alt="iPad (from --set), iPhone, macOS window and web landing page of one app"></p>
 
-**New screens in the approved design language** (`--style-ref`): same wordmark, tab bar, type and illustration style,
-with a new layout.
-<p align="center"><img src="docs/images/10-style-ref.webp" width="520" alt="Style-ref screens"></p>
+**New screens in the approved design language** (`--style-ref`): same wordmark, palette, type and illustration
+style, with a new layout. Here the approved phone screen drives a web landing page.
+<p align="center"><img src="docs/images/18-style-ref.webp" width="760" alt="Approved phone screen and a web landing page designed from it with --style-ref"></p>
 
 **Forge and icon review sheets.**
 <p align="center">
@@ -89,8 +102,7 @@ with a new layout.
 <p align="center"><img src="docs/images/05-frames.webp" width="720" alt="Animation frames"></p>
 <p align="center"><img src="docs/images/13-vector-anim.webp" width="720" alt="Vector animations rendered by lottie-web"></p>
 
-**Compare.** Implementation vs design, with every planted deviation found.
-<p align="center"><img src="docs/images/14-compare.webp" width="720" alt="compare heatmap"></p>
+**Compare.** A screenshot of your build vs the design: a heatmap and a ranked list of fixes until it matches.
 
 ## Install
 
