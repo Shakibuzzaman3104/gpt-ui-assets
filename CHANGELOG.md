@@ -2,6 +2,14 @@
 
 All notable changes to gpt-ui-assets. Versions follow [semantic versioning](https://semver.org).
 
+## 5.1.1 (2026-10-19)
+
+### Fixed
+- **Square card among rounded ones.** `critique` now measures this locally instead of asking vision, which never
+  reported it on a planted case. It raised no false alarm on 33 real mockups, and it caught 27 of 28 planted square
+  cards plus both made by GPT edits.
+- `SKILL.md` metadata version now matches the plugin (it still said 4.0.0).
+
 ## 5.1.0 (2026-10-18)
 
 Spacing, shape and restraint. Measured on 24 probe mockups and planted defects: prompt wording alone barely moves

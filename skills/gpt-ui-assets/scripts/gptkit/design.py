@@ -482,6 +482,68 @@ def measured_contrast(img, bbox):
     return round((hi + 0.05) / (lo + 0.05), 1)
 
 
+def _card_surfaces(img, dp):
+    """Wide filled surfaces (cards, groups) with corner radii in dp, measured along each corner's diagonal on the mask."""
+    from .measure import _dominant, _lab_arr
+    from .trace_rig import _label  # deferred: trace_rig is heavy
+    rgb = np.asarray(img.convert("RGB"))
+    H, W = rgb.shape[:2]
+    k = W / dp
+    y0, y1 = int(0.05 * H), int(0.92 * H)
+    side = np.concatenate([rgb[y0:y1, :4].reshape(-1, 3), rgb[y0:y1, -4:].reshape(-1, 3)]).astype(np.float64)
+    bg = _lab_arr(_dominant(side))
+    noise = float(np.percentile(np.linalg.norm(_lab_arr(side) - bg, axis=-1), 95))
+    mask = np.linalg.norm(_lab_arr(rgb.astype(np.float64)) - bg, axis=-1) > max(1.0, 2 * noise)
+    holes, _ = _label(~mask)
+    edge = np.unique(np.concatenate([holes[0], holes[-1], holes[:, 0], holes[:, -1]]))
+    lab, n = _label(mask | (~np.isin(holes, edge) & (holes > 0)))
+    flat = lab.ravel()
+    area = np.bincount(flat, minlength=n + 1)
+    big = np.zeros(n + 1, bool)
+    big[1:] = area[1:] >= 0.85 * 0.4 * W * 40 * k
+    yy, xx = np.divmod(np.arange(flat.size), W)
+    sel = big[flat]
+    lx, ly, hx, hy = np.full(n + 1, W), np.full(n + 1, H), np.zeros(n + 1, int), np.zeros(n + 1, int)
+    np.minimum.at(lx, flat[sel], xx[sel]); np.maximum.at(hx, flat[sel], xx[sel])
+    np.minimum.at(ly, flat[sel], yy[sel]); np.maximum.at(hy, flat[sel], yy[sel])
+    out = []
+    for i in np.nonzero(big)[0]:
+        bx0, bx1, by0, by1 = int(lx[i]), int(hx[i]) + 1, int(ly[i]), int(hy[i]) + 1
+        w, h = bx1 - bx0, by1 - by0
+        if w < 0.4 * W or h < 40 * k or bx0 <= 2 or bx1 >= W - 2 or by0 < y0 or by1 > y1 or area[i] < 0.85 * w * h:
+            continue
+        m = lab[by0:by1, bx0:bx1] == i
+        d = np.arange(min(h, w) // 2)
+        steps = []
+        for cm in (m, m[:, ::-1], m[::-1], m[::-1, ::-1]):
+            hit = cm[d, d] & cm[np.minimum(d + 1, h - 1), d] & cm[d, np.minimum(d + 1, w - 1)]
+            steps.append(int(np.argmax(hit)) if hit.any() else None)
+        if None in steps:
+            continue
+        corners = [round(s / (1 - 2 ** -0.5) / k, 1) for s in steps]
+        r = float(np.median(corners))
+        out.append({"bbox": {"x": bx0, "y": by0, "w": w, "h": h}, "radius_dp": r, "corners_dp": corners,
+                    "pill": r * k >= 0.45 * min(w, h)})
+    return out
+
+
+def _corner_mix_issues(img, dp):
+    """A square-cornered surface (<= 3 dp) beside rounded ones (>= 8 dp) of about its width; vision QA never sees it."""
+    surfaces = _card_surfaces(img, dp)
+    rounded = [s for s in surfaces if s["radius_dp"] >= 8 and not s["pill"]]
+    issues = []
+    for s in surfaces:
+        peers = [r for r in rounded if abs(s["bbox"]["w"] - r["bbox"]["w"]) <= 0.15 * r["bbox"]["w"]]
+        if s["radius_dp"] <= 3 and peers:
+            want = round(float(np.median([r["radius_dp"] for r in peers])))
+            issues.append({"severity": "medium", "category": "shape", "bbox": s["bbox"], "scope": "local",
+                           "problem": f"This surface has square corners (measured {s['radius_dp']:g} dp) while "
+                                      f"{len(peers)} surface(s) of the same width are rounded (about {want} dp).",
+                           "edit": f"Round this card's corners to about {want} dp to match the other cards.",
+                           "measured_radius_dp": s["radius_dp"]})
+    return issues
+
+
 def critique(img, dp=390, platform="android", style_ref=None, note=None, device_record=None):
     rule = CRITIQUE_REF_RULE if style_ref is not None else ""
     rec = device_record or _device_record(platform)
@@ -492,6 +554,7 @@ def critique(img, dp=390, platform="android", style_ref=None, note=None, device_
                                   device_rule=device_rule, ref_rule=rule) + (f"\nThe user also says: {note}" if note else "")
     parts = [text, img.convert("RGB")] + ([style_ref.convert("RGB")] if style_ref is not None else [])
     issues = _clean_issues(ask(parts, CRITIQUE_SCHEMA, "design_qa"), "issues", img)
+    issues += _corner_mix_issues(img, dp)
     for i, x in enumerate(issues):
         x["id"] = i + 1
         if x["category"] == "contrast" and x["bbox"]["w"] > 2 and x["bbox"]["h"] > 2:

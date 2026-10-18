@@ -65,6 +65,8 @@ position. A set render writes `<name>_<device>.png` for each device and records 
     It also checks spacing (content within 16 units of the screen's side edges, text/controls within 8 units of their
     container's edge, ambiguous grouping, uneven gaps) and shape (more than three radii, non-concentric nested corners,
     card inside a card). Issues marked screen-wide are not edited by `--apply`: re-run `mockup` with the fix in the brief.
+  - A square-cornered card beside rounded cards of the same width is measured locally (vision QA misses it) and
+    reported as a shape issue.
   - `--apply` edits the fixes in and keeps the revision only if the issue weight drops. The verifier is lenient and the
     editor never sees the approved screen, so Read the revision. Give concrete follow-ups with `--edit`.
   - Vision QA is weak at spatial collisions: it can miss a FAB, snackbar or mini player covering content. **Check
