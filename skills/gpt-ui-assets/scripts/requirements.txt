@@ -1,6 +1,7 @@
 requests>=2.28
 pillow>=10.0
 numpy>=1.24
+playwright>=1.40  # `stage` (hybrid screens) drives your installed Chrome; without Chrome also run `playwright install chromium`
 # optional extras (everything works without them):
 # vtracer>=0.6     extra candidate for `trace`
 # scipy>=1.10      faster region labelling in `trace`/`rig`
