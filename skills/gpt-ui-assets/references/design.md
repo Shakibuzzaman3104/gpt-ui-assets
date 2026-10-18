@@ -51,7 +51,8 @@ The canvas and logical dimensions are stored in `design.json`, so critique and l
 device width (including web's 1440 px desktop viewport). Foldable aspect fitting is disabled to preserve the hinge
 position. A set render writes `<name>_<device>.png` for each device and records the anchor and files in `set.json`.
 - **House style:** every `mockup` and `--style-ref` prompt carries the house art direction: clean, decluttered, modern;
-  one focal point and one accent; artwork only where it carries meaning (hero, empty state, onboarding); real content,
+  one focal point and one accent (stat tiles and icon backgrounds share it, never a different tint each); no
+  ALL-CAPS labels above headings; artwork only where it carries meaning (hero, empty state, onboarding); real content,
   no ads or promos unless the brief asks for them. `--edit` does not add it (an edit changes only what it names).
   Set `GPTKIT_HOUSE_STYLE` in `~/.config/gptkit/env` to replace it with the owner's own direction, `off` to drop it,
   or pass `--no-house-style` for one run. The brief always wins over the house style.

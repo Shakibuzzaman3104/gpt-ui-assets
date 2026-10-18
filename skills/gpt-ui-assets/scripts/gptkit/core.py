@@ -456,6 +456,17 @@ def _call(path, *, json_body=None, files=None, data=None, timeout=900, retries=N
 OPTIONAL_PARAMS = ("input_fidelity", "quality", "output_format", "background", "moderation")
 RESPONSES_OPTIONAL = ("reasoning", "tools", "store")
 _DROPPED = set()
+_QUALITY_WARNED = set()
+
+
+def _warn_quality(asked, meta):
+    """Say once when the endpoint answers a lower quality than asked: a gateway cap the kit can't lift."""
+    rank = {"low": 0, "medium": 1, "high": 2}
+    got = meta.get("quality")
+    if got in rank and asked in rank and rank[got] < rank[asked] and (asked, got) not in _QUALITY_WARNED:
+        _QUALITY_WARNED.add((asked, got))
+        print(f"  ! the endpoint returned quality={got} for a quality={asked} request (a gateway cap: softer text and "
+              f"hairlines); use an endpoint that honours quality for final renders", file=sys.stderr)
 
 
 def _with_fallback(send, params, optional=OPTIONAL_PARAMS):
@@ -643,6 +654,7 @@ def generate(prompt, size="1024x1024", background="auto", model=None, task="conc
     try:
         resp = _with_fallback(lambda b: _call("/images/generations", json_body=b), body)
         result = _image_result(resp)
+        _warn_quality(body["quality"], result[1])
         _ledger_record("/images/generations", body["model"], resp, image=True, quality=result[1].get("quality") or body["quality"],
                        size=result[1].get("size") or size)
         return result
@@ -668,6 +680,7 @@ def edit(ref_png: bytes, prompt, size="1024x1024", background="auto", model=None
     try:
         resp = _with_fallback(lambda d: _call("/images/edits", data=d, files=files), data)
         result = _image_result(resp)
+        _warn_quality(data["quality"], result[1])
         _ledger_record("/images/edits", data["model"], resp, image=True, quality=result[1].get("quality") or data["quality"],
                        size=result[1].get("size") or size)
         return result

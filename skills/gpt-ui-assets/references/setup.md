@@ -21,7 +21,8 @@ Config comes from env vars or `~/.config/gptkit/env` (`KEY=value` lines):
   tool and strict `json_schema` (LiteLLM does; the kit's measurements were made on an OpenAI-compatible gateway). Azure OpenAI
   (`api-key` header, deployment URLs) and OpenRouter's native image API are not supported without changes. When a
   gateway rejects an optional field (`input_fidelity`, `quality`, `background`, `reasoning`, `tools`, strict schema)
-  the kit says so once and retries without it.
+  the kit says so once and retries without it. A gateway that accepts `quality: high` but answers `medium` or `low`
+  (measured on a sub2api gateway, with every image model) gets a one-time warning: it caps quality and the kit can't lift it.
 - `GPTKIT_IMAGE_MODEL` and `GPTKIT_TEXT_MODEL`: see `models.md`. Setting `GPTKIT_IMAGE_MODEL` pins one model and turns
   off per-job routing.
 - `GPTKIT_RETRIES` (default 2) retries a call on 408/429/5xx and network errors, honouring `Retry-After`; quota/billing 429s

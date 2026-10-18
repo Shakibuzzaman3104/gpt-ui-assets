@@ -249,6 +249,17 @@ def test_bearer_redacted():
     assert "sk-secret" not in str(e) and "\n" not in str(e)
 
 
+def test_warn_quality_once():
+    K._QUALITY_WARNED.clear()
+    with contextlib.redirect_stderr(io.StringIO()) as err:
+        K._warn_quality("high", {"quality": "medium"})
+        K._warn_quality("high", {"quality": "medium"})
+        K._warn_quality("high", {"quality": "high"})
+        K._warn_quality("high", {"quality": None})
+        K._warn_quality("medium", {"quality": "high"})
+    assert err.getvalue().count("quality=medium for a quality=high") == 1 and err.getvalue().count("!") == 1, err.getvalue()
+
+
 # ---- _with_fallback
 
 def test_fallback_uses_param():

@@ -12,6 +12,9 @@ All notable changes to gpt-ui-assets. Versions follow [semantic versioning](http
   `--apply`, since an image edit can't re-flow a screen; the kit says to re-run `mockup` with the fix instead.
 - `tokens` warns about spacing off the 4 dp grid and about more than four corner radii; `--snap-grid` rounds the
   spacing tokens (a deliberate departure from the mockup that `compare` will show).
+- The house style asks for stat tiles and icon backgrounds in the one accent (not a different tint each) and no
+  ALL-CAPS labels above headings.
+- A one-time warning when the endpoint answers a lower image quality than requested (a gateway cap).
 
 ## 5.0.0 (2026-10-18)
 
