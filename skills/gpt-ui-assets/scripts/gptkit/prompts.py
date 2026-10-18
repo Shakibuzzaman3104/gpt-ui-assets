@@ -72,8 +72,8 @@ DIRECTIONS_SCHEMA = {"type": "object", "additionalProperties": False, "required"
 
 
 def _direction_text(d):
-    """One art direction as prompt words for the renderer."""
-    return (f"Art direction \"{d['name']}\" ({d['theme']} theme; {d['mood']}). Palette: {d['palette']} Type: {d['type']} "
+    """One art direction as prompt words for the renderer; its name stays out, GPT would draw it as the app's name."""
+    return (f"Art direction ({d['theme']} theme; {d['mood']}). Palette: {d['palette']} Type: {d['type']} "
             f"Shape: {d['shape']} Spacing: {d['spacing']} Signature: {d['signature']} Avoid: {d['avoid']}")
 
 

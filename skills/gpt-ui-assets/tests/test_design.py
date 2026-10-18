@@ -407,7 +407,7 @@ class _FakeApiError(K.ApiError):
 
 
 def _direction(name):
-    return {"name": name, "mood": "calm", "theme": "light", "palette": "#ffffff, #111111, #555555, #008866",
+    return {"name": name, "mood": f"{name.lower()} calm", "theme": "light", "palette": "#ffffff, #111111, #555555, #008866",
             "type": "humanist sans, 16/20/24/32", "shape": "4/8/16 radii", "spacing": "16 margin, 8 gap",
             "signature": "oversized progress ring", "avoid": "confetti, badges, streak flames"}
 
@@ -433,7 +433,8 @@ def test_directions_give_each_variant_its_own():
             (d / "design.json").write_text(json.dumps({"custom": "keep"}))
             code, out = run(K.cmd_mockup, _mockup_args(td, variants=2, directions=True, no_critique=True, platform=platform))
             assert code == 0 and len(prompts) == 2, (out, prompts)
-            assert sum("Alpha" in p for p in prompts) == sum("Beta" in p for p in prompts) == 1
+            assert sum("alpha calm" in p for p in prompts) == sum("beta calm" in p for p in prompts) == 1
+            assert not any("Alpha" in p or "Beta" in p for p in prompts)
             assert prompts[0] != prompts[1]
             assert len(asks) == 1 and "direction 1:" in asks[0] and "direction 2:" in asks[0]
             meta = json.loads((d / "design.json").read_text())
