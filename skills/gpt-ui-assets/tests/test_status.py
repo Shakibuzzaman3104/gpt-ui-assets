@@ -2,6 +2,7 @@
 import contextlib
 import io
 import json
+import shutil
 import sys
 import tempfile
 import time
@@ -12,11 +13,13 @@ import gptkit as g  # noqa: E402
 
 
 class TempDir:
-    """Temporary fixture path."""
+    """Temporary fixture path, removed afterwards."""
     def __enter__(self):
-        return tempfile.mkdtemp()
+        self.path = str(Path(tempfile.mkdtemp()).resolve())  # macOS: /var -> /private/var
+        return self.path
 
     def __exit__(self, *exc):
+        shutil.rmtree(self.path, ignore_errors=True)
         return False
 
 
@@ -75,11 +78,22 @@ def test_forge_attention():
         d = Path(td)
         put(d / "assets.json", '{"assets": []}')
         put(d / "design_spec.json")
-        put(d / "forge_report.json", '{"a": {"candidates": [{"path": "review/a.png", "flags": ["OPAQUE"]}]}}')
+        # the shape forge writes: a flagged winner is kept as the final file and marked needs_attention
+        put(d / "assets" / "a.png", "fake png")
+        put(d / "assets" / "b.png", "fake png")
+        put(d / "forge_report.json", json.dumps({
+            "a": {"candidates": [{"path": "raw/a_c1.png", "score": {"flags": ["CUT-OFF"]}}], "complete": True,
+                  "chosen": 1, "final": "assets/a.png", "needs_attention": True},
+            "b": {"candidates": [{"path": "raw/b_c1.png", "score": {"flags": []}}], "complete": True,
+                  "chosen": 1, "final": "assets/b.png", "needs_attention": False},
+            "c": {"candidates": [], "complete": False}}))
         doc = json.loads(call(d, "--json"))
         b = unit(doc, "build")
-        assert any("NEEDS ATTENTION: a" in p for p in b["problems"])
-        assert b["next"] == [f"python3 $K forge {d} --only a --force"]
+        assert any("NEEDS ATTENTION: a" in p for p in b["problems"]), b["problems"]
+        assert any(p == "no final file: c" for p in b["problems"]), b["problems"]
+        assert not any(" b" in p or p.endswith(": b") for p in b["problems"]), b["problems"]
+        assert "pick" in b["next"][0] and "--only a --force" in b["next"][0], b["next"]
+        assert b["next"][1] == f"python3 $K forge {d}", b["next"]
 
 
 def test_corrupt_forge_report():

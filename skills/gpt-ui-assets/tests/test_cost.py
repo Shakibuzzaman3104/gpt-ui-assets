@@ -132,7 +132,7 @@ def test_budget_exceeded_and_dry_run_no_calls():
         K.think = lambda *args, **kwargs: calls.append(args)
         out = io.StringIO()
         try:
-            with contextlib.redirect_stderr(out):
+            with contextlib.redirect_stdout(out):
                 K.cmd_research(argparse.Namespace(depth="standard", model="gpt-6-sol", dry_run=True,
                                                   idea="test app", platform=None, region="global", context=None,
                                                   out=td, effort="high", synth_effort="xhigh", jobs=2))

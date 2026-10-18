@@ -121,17 +121,29 @@ def _ledger_record(endpoint, model, body, *, image=False, quality=None, size=Non
             print(f"gptkit: couldn't write ledger {path}: {e}", file=sys.stderr)
 
 
-def _plan(image_calls=0, text_calls=0, model=None, *, image_model=None, tokens_in=20000, tokens_out=5000,
-          web_calls=0, dry_run=False, what=None):
-    """Print and enforce a conservative list-price estimate before a command starts paid work."""
+def _plan(image_calls=0, text_calls=0, model=None, *, image_model=None, task="concept", background="auto",
+          size="1024x1024", edits=False, tokens_in=20000, tokens_out=5000, web_calls=0, dry_run=False, what=None):
+    """Print (and, with GPTKIT_BUDGET_USD, enforce) a list-price estimate before a command starts paid work.
+    An image call is priced as high-quality output scaled by area, plus ~1,500 image-input tokens when it sends a
+    reference (edits) and ~300 prompt tokens; rough by design, it is meant to catch a 10x surprise, not to bill."""
+    if not image_calls and not text_calls:
+        return 0.0
     text_model = model or _config()["text_model"]
-    image_model = image_model or _config()["image_model"]
-    tp = PRICES.get(text_model, PRICES["gpt-6-sol"])
+    if image_calls:
+        image_model = pick_image_model(image_model, task, background)
     ip = PRICES.get(image_model, PRICES["gpt-image-2"])
-    image_estimate = 1756 * ip.get("image_out", 30) / 1e6
-    estimate = image_calls * image_estimate + text_calls * (tokens_in * tp.get("in", 2) + tokens_out * tp.get("out", 10)) / 1e6
+    tp = PRICES.get(text_model, PRICES["gpt-6-sol"])
+    try:
+        w, h = [int(x) for x in str(size).split("x")]
+    except ValueError:
+        w, h = 1024, 1024
+    per_image = (1756 * w * h / 1024 ** 2 * ip.get("image_out", 30) + 300 * ip.get("text_in", 5)
+                 + (1500 * ip.get("image_in", 8) if edits else 0)) / 1e6
+    estimate = image_calls * per_image + text_calls * (tokens_in * tp.get("in", 2) + tokens_out * tp.get("out", 10)) / 1e6
     estimate += web_calls * PRICES["web_search"]["per_call"]
-    detail = f"~{image_calls} image calls ({image_model}) + {text_calls} text calls ≈ ${estimate:.2f} list price"
+    parts = ([f"~{image_calls} image call{'s' if image_calls != 1 else ''} ({image_model})"] if image_calls else []) + \
+            ([f"{text_calls} text call{'s' if text_calls != 1 else ''} ({text_model})"] if text_calls else [])
+    detail = " + ".join(parts) + f" ≈ ${estimate:.2f} list price"
     budget = os.environ.get("GPTKIT_BUDGET_USD")
     if budget is not None:
         try:
@@ -139,10 +151,9 @@ def _plan(image_calls=0, text_calls=0, model=None, *, image_model=None, tokens_i
         except ValueError:
             sys.exit("gptkit: GPTKIT_BUDGET_USD must be a number")
         if estimate > limit:
-            sys.exit(f"plan: estimate ${estimate:.2f} exceeds GPTKIT_BUDGET_USD=${limit:.2f}; raise GPTKIT_BUDGET_USD or reduce --candidates/--variants")
-    print("plan: " + detail, file=sys.stderr)
-    if dry_run:
-        return estimate
+            sys.exit(f"gptkit: plan {detail} exceeds GPTKIT_BUDGET_USD={limit:.2f}; raise GPTKIT_BUDGET_USD or reduce "
+                     "--candidates/--variants/--only (nothing was called)")
+    print("plan: " + detail)
     return estimate
 
 
@@ -1500,7 +1511,7 @@ def cmd_mockup(a):
     platform = a.platform or (_design_meta(a.edit or a.style_ref).get("platform") if (a.edit or a.style_ref) else None)
     if not platform:
         print("  (no --platform: designing platform-neutral; pass --platform android|ios|web for native components)")
-    _plan(a.variants, 0, image_model=a.model)
+    _plan(a.variants, 0, image_model=a.model, size=a.size, edits=bool(a.edit or a.style_ref))
     rule = _platform_rule(platform)
     prompt = a.prompt if a.raw else MOCKUP_WRAP.format(prompt=a.prompt, aspect=aspect) + rule
     edit_prompt = f"{a.prompt} Keep the {aspect} canvas and everything not mentioned exactly as it is."
@@ -2133,8 +2144,8 @@ def cmd_forge(a):
     by_name = {x["name"]: x for x in todo}
     results = {x["name"]: list(keep.get(x["name"], [])) for x in todo}
     jobs = [(x, c) for x in todo for c in range(a.candidates) if c + 1 not in {k["cand"] for k in results[x["name"]]}]
-    _plan(len(jobs), 0, image_model=a.model)
-    if a.dry_run:
+    _plan(len(jobs), 0, image_model=a.model, task="precise", background="transparent", edits=True)
+    if getattr(a, "dry_run", False):
         print("would render: " + (", ".join(f"{x['name']} c{c + 1}" for x, c in jobs) or "nothing"))
         return
     pending = {x["name"]: sum(1 for j, _ in jobs if j is x) for x in todo}
@@ -5345,7 +5356,7 @@ def cmd_frames(a):
     for k in {"sheet", "static"} - set(jobs):
         if (k == "sheet" or a.static) and not (out / f"{k}_raw.png").exists():
             sys.exit(f"frames: --reuse needs {out / (k + '_raw.png')} from a previous run")
-    _plan(len(jobs), 0, image_model=a.model)
+    _plan(len(jobs), 0, image_model=a.model, task="precise", background="transparent", edits=True)
     sq_src, sq_off = _square(src)
     ex = cf.ThreadPoolExecutor(2)
     futs = {ex.submit(edit, _png_bytes(sq_src if k == "static" else src), p, sz, "transparent", a.model): k
@@ -5732,8 +5743,8 @@ def cmd_sequence_render(a):
         sys.exit(f"sequence render: --every {a.every} must divide the {meta['frames']} frames so the keys repeat with the "
                  "loop (propagate needs that)")
     todo = [i for i in range(0, meta["frames"], a.every) if a.force or _seq_raw_state(d, meta, i) != "ok"]
-    _plan(len(todo), 0, image_model=a.model)
-    if a.dry_run:
+    _plan(len(todo), 0, image_model=a.model, task="precise", background="transparent", edits=True)
+    if getattr(a, "dry_run", False):
         print("would render frames: " + (", ".join(str(i) for i in todo) or "none"))
         return
     print(f"rendering {len(todo)} of {meta['frames']} frames, {a.jobs} at a time (resumable: finished frames are kept)")
@@ -8624,7 +8635,7 @@ def cmd_appicon_concepts(a):
     text = f'The only text is "{a.text}", large and legible.' if a.text else "No text, letters or numbers anywhere."
     dirs = [s.strip() for s in a.directions.split("|")] if a.directions else ICON_DIRECTIONS
     colors = a.colors or (", ".join(_palette(ref)) if ref is not None else "")
-    _plan(a.variants, 0, image_model=a.model)
+    _plan(a.variants, 0, image_model=a.model, edits=ref is not None)
 
     def one(i):
         direction = dirs[i % len(dirs)]
@@ -14281,7 +14292,7 @@ def cmd_material(a):
     if a.ref:
         _, ref = _image_bytes_checked(a.ref, "--ref")
         prompt = ("Use the reference only for its material, lighting and rendering quality, not its layout or content. " + prompt)
-    _plan(a.candidates, 0, image_model=a.model)
+    _plan(a.candidates, 0, image_model=a.model, size=a.size, edits=bool(a.ref))
 
     def one(i):
         try:
@@ -14880,8 +14891,8 @@ def _md_cites(cites):
 
 def cmd_research(a):
     n = DEPTHS[a.depth]
-    _plan(0, n + 2, model=a.model, tokens_in=15000, tokens_out=5000, web_calls=n)
-    if a.dry_run:
+    _plan(0, n + 2, model=a.model, tokens_in=15000, tokens_out=15000, web_calls=n * 4)  # reasoning-heavy, ~4 searches each
+    if getattr(a, "dry_run", False):
         print(f"would make 1 planning call, {n} web-searched questions, and 1 synthesis call")
         return
     out = Path(a.out)
@@ -15182,8 +15193,10 @@ def _status_scan(base):
             if design.exists():
                 _, err = _status_json(design)
                 if err: probs.append(err)
-            add(d, "design", d.name, checks, probs, [] if design.exists() else
-                [f"python3 $K mockup \"<brief>\" --out {_status_arg(d)}"])
+            latest = max(mockups, key=lambda p: p.stat().st_mtime) if mockups else None
+            nxt = [f"python3 $K mockup \"<brief>\" --out {_status_arg(d)}"] if not latest else \
+                [f"once the user approves a variant: python3 $K manifest {_status_arg(latest)} --out <build dir>"]
+            add(d, "design", d.name, checks, probs, nxt)
         critiques = [p for p in children if p.name.endswith("_critique.json")]
         for p in critiques:
             data, err = _status_json(p)
@@ -15236,11 +15249,11 @@ def _status_scan(base):
                         for name, entry in data.items():
                             if not isinstance(entry, dict):
                                 probs.append(f"forge_report.json: damaged entry {name}"); continue
-                            cs = entry.get("candidates", [])
-                            if any(c.get("flags") for c in cs if isinstance(c, dict)) and not (d / "assets" / f"{name}.png").exists(): flagged.append(name)
-                            if not (d / "assets" / f"{name}.png").exists(): incomplete.append(name)
+                            # the same test forge uses to re-queue: flagged winner, unfinished run or no final file
+                            if entry.get("needs_attention"): flagged.append(name)
+                            elif _incomplete(entry) or not (d / "assets" / f"{name}.png").exists(): incomplete.append(name)
                         if flagged: probs.append("NEEDS ATTENTION: " + ", ".join(flagged))
-                        elif incomplete: probs.append("no final file: " + ", ".join(incomplete))
+                        if incomplete: probs.append("no final file: " + ", ".join(incomplete))
                     if n == "svg_report.json" and isinstance(data, dict):
                         for name, entry in data.items():
                             if isinstance(entry, dict) and entry.get("error"): probs.append(f"svg {name}: {entry['error']}")
@@ -15260,7 +15273,10 @@ def _status_scan(base):
                 nxt = [f"python3 $K spec {_status_arg(d)}"]
             elif not (d / "forge_report.json").exists() or any("NEEDS ATTENTION" in x or "no final file" in x for x in probs):
                 flagged = next((x.partition(": ")[2] for x in probs if x.startswith("NEEDS ATTENTION:")), "")
-                nxt = [f"python3 $K forge {_status_arg(d)} --only {flagged.replace(', ', ',')} --force" if flagged else f"python3 $K forge {_status_arg(d)}"]
+                nxt = ([f"read {_status_arg(d / 'review')}/forge_*.png, then python3 $K pick {_status_arg(d)} <name> <N>, "
+                        f"python3 $K fix {_status_arg(d)} <name>, or python3 $K forge {_status_arg(d)} --only "
+                        f"{flagged.replace(', ', ',')} --force --candidates 3"] if flagged else []) + \
+                      ([f"python3 $K forge {_status_arg(d)}"] if not flagged or any(x.startswith("no final file") for x in probs) else [])
             elif not (d / "svg_report.json").exists(): nxt = [f"python3 $K svg {_status_arg(d)}"]
             elif not (d / "tokens" / "tokens.json").exists(): nxt = [f"python3 $K tokens {_status_arg(d)}"]
             elif not (d / "compare" / "report.json").exists(): nxt = [f"python3 $K compare {_status_arg(d)} <screenshot>"]
