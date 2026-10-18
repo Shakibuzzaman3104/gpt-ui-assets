@@ -1,0 +1,46 @@
+{
+  "cozy_campfire": {
+    "candidates": [
+      {
+        "cand": 1,
+        "path": "raw/cozy_campfire_c1.png",
+        "score": {
+          "fid": 18.2,
+          "flags": [],
+          "warn": []
+        }
+      }
+    ],
+    "complete": true,
+    "chosen": 1,
+    "final": "assets/cozy_campfire.png",
+    "needs_attention": false,
+    "dp": {
+      "w": 43.5,
+      "h": 51.5
+    }
+  },
+  "rain_drop": {
+    "candidates": [
+      {
+        "cand": 1,
+        "path": "raw/rain_drop_c1.png",
+        "score": {
+          "fid": 27.5,
+          "flags": [
+            "CUT-OFF"
+          ],
+          "warn": []
+        }
+      }
+    ],
+    "complete": true,
+    "chosen": 1,
+    "final": "assets/rain_drop.png",
+    "needs_attention": true,
+    "dp": {
+      "w": 35.8,
+      "h": 51.5
+    }
+  }
+}

@@ -1,0 +1,209 @@
+{
+  "mockup": "mockup.png",
+  "width": 1024,
+  "height": 1536,
+  "platform": "android",
+  "screen_dp": 412,
+  "assets": [
+    {
+      "name": "featured_lake_night",
+      "kind": "background",
+      "format": "png",
+      "transparent": false,
+      "bbox": {
+        "x": 55,
+        "y": 325,
+        "w": 920,
+        "h": 443
+      },
+      "description": "moonlit lake with pines behind the Sleep Stories card",
+      "material_symbol": "",
+      "sf_symbol": "",
+      "dp": {
+        "w": 370.2,
+        "h": 178.2
+      },
+      "colors": []
+    },
+    {
+      "name": "rain_drop",
+      "kind": "illustration",
+      "format": "png",
+      "transparent": true,
+      "bbox": {
+        "x": 167,
+        "y": 925,
+        "w": 89,
+        "h": 128
+      },
+      "description": "glowing blue water drop with ripple rings",
+      "material_symbol": "water_drop",
+      "sf_symbol": "drop.fill",
+      "dp": {
+        "w": 35.8,
+        "h": 51.5
+      },
+      "colors": []
+    },
+    {
+      "name": "breathe_wind",
+      "kind": "icon",
+      "format": "svg",
+      "transparent": true,
+      "bbox": {
+        "x": 453,
+        "y": 935,
+        "w": 118,
+        "h": 98
+      },
+      "description": "three lavender wind swooshes",
+      "material_symbol": "air",
+      "sf_symbol": "wind",
+      "dp": {
+        "w": 47.5,
+        "h": 39.4
+      },
+      "colors": []
+    },
+    {
+      "name": "cozy_campfire",
+      "kind": "illustration",
+      "format": "png",
+      "transparent": true,
+      "bbox": {
+        "x": 758,
+        "y": 915,
+        "w": 108,
+        "h": 128
+      },
+      "description": "small painted campfire with crossed logs and orange flame",
+      "material_symbol": "local_fire_department",
+      "sf_symbol": "flame.fill",
+      "dp": {
+        "w": 43.5,
+        "h": 51.5
+      },
+      "colors": []
+    },
+    {
+      "name": "mini_player_thumb",
+      "kind": "photo",
+      "format": "png",
+      "transparent": false,
+      "bbox": {
+        "x": 75,
+        "y": 1236,
+        "w": 112,
+        "h": 102
+      },
+      "description": "night lake thumbnail with crescent moon",
+      "material_symbol": "",
+      "sf_symbol": "",
+      "dp": {
+        "w": 45.1,
+        "h": 41.0
+      },
+      "colors": []
+    },
+    {
+      "name": "settings_gear",
+      "kind": "icon",
+      "format": "svg",
+      "transparent": true,
+      "bbox": {
+        "x": 902,
+        "y": 35,
+        "w": 47,
+        "h": 47
+      },
+      "description": "outlined gear",
+      "material_symbol": "settings",
+      "sf_symbol": "gearshape",
+      "dp": {
+        "w": 18.9,
+        "h": 18.9
+      },
+      "colors": []
+    },
+    {
+      "name": "tab_home",
+      "kind": "icon",
+      "format": "svg",
+      "transparent": true,
+      "bbox": {
+        "x": 122,
+        "y": 1408,
+        "w": 55,
+        "h": 49
+      },
+      "description": "filled house, active",
+      "material_symbol": "home",
+      "sf_symbol": "house.fill",
+      "dp": {
+        "w": 22.1,
+        "h": 19.7
+      },
+      "colors": []
+    },
+    {
+      "name": "tab_explore",
+      "kind": "icon",
+      "format": "svg",
+      "transparent": true,
+      "bbox": {
+        "x": 366,
+        "y": 1408,
+        "w": 52,
+        "h": 52
+      },
+      "description": "outlined compass",
+      "material_symbol": "explore",
+      "sf_symbol": "safari",
+      "dp": {
+        "w": 20.9,
+        "h": 20.9
+      },
+      "colors": []
+    },
+    {
+      "name": "tab_library",
+      "kind": "icon",
+      "format": "svg",
+      "transparent": true,
+      "bbox": {
+        "x": 606,
+        "y": 1408,
+        "w": 52,
+        "h": 49
+      },
+      "description": "outlined heart",
+      "material_symbol": "favorite",
+      "sf_symbol": "heart",
+      "dp": {
+        "w": 20.9,
+        "h": 19.7
+      },
+      "colors": []
+    },
+    {
+      "name": "tab_profile",
+      "kind": "icon",
+      "format": "svg",
+      "transparent": true,
+      "bbox": {
+        "x": 850,
+        "y": 1408,
+        "w": 55,
+        "h": 52
+      },
+      "description": "outlined person",
+      "material_symbol": "person",
+      "sf_symbol": "person",
+      "dp": {
+        "w": 22.1,
+        "h": 20.9
+      },
+      "colors": []
+    }
+  ]
+}

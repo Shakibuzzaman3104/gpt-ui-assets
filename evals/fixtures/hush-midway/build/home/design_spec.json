@@ -1,0 +1,20 @@
+{
+  "px_to_dp": 0.4023,
+  "effective_width_dp": 412,
+  "palette": [
+    {
+      "name": "background",
+      "hex": "#141A33",
+      "usage": "screen background"
+    },
+    {
+      "name": "accent",
+      "hex": "#A69BF7",
+      "usage": "buttons, active tab"
+    }
+  ],
+  "typography": [],
+  "components": [],
+  "spacing": [],
+  "radii": []
+}

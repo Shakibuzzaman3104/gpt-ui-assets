@@ -147,10 +147,28 @@ def test_real_offline_kit_output():
         assert f"build {d}" in out and "design_spec.json" in out
 
 
+def test_unforged_assets_and_design_link():
+    from PIL import Image
+    with TempDir() as td:
+        root = Path(td)
+        design, build = root / "design" / "home", root / "build" / "home"
+        design.mkdir(parents=True); build.mkdir(parents=True)
+        Image.new("RGB", (40, 60), (20, 26, 51)).save(design / "mockup_v1.png")
+        put(design / "design.json", '{"platform": "android"}')
+        Image.open(design / "mockup_v1.png").save(build / "mockup.png", optimize=True)  # re-encoded, same pixels
+        put(build / "assets.json", json.dumps({"assets": [{"name": "hero", "format": "png"}, {"name": "gear", "format": "svg"}]}))
+        put(build / "design_spec.json")
+        doc = json.loads(call(root, "--json"))
+        b, d = unit(doc, "build"), unit(doc, "design")
+        assert b["next"][0] == "python3 $K forge " + str(build) and "svg" in b["next"][1], b["next"]
+        assert not any(u["type"] == "design" and u["path"] == str(build) for u in doc["units"])  # mockup.png is not a design
+        assert any(c["name"].startswith("manifest (") for c in d["checks"]) and d["next"] == [], d
+
+
 def run():
     for fn in (test_manifest_to_spec_next, test_stale_spec, test_forge_attention,
                test_corrupt_forge_report, test_sequence_missing_frames, test_empty_dir, test_json_shape,
-               test_real_offline_kit_output):
+               test_real_offline_kit_output, test_unforged_assets_and_design_link):
         fn()
         print(f"ok {fn.__name__}")
 

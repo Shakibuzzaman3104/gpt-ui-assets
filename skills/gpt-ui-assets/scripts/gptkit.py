@@ -21,6 +21,7 @@ import argparse
 import base64
 import concurrent.futures as cf
 import functools
+import hashlib
 import http.server
 import io
 import json
@@ -15467,12 +15468,29 @@ def _status_json(path):
         return None, f"{path.name}: invalid JSON ({type(e).__name__})"
 
 
+def _status_sha(path):
+    """Hash of the decoded pixels: manifest re-encodes the mockup it copies, so the file bytes differ."""
+    try:
+        with Image.open(path) as im:
+            im = im.convert("RGB")
+            return hashlib.sha1(repr(im.size).encode() + im.tobytes()).hexdigest()
+    except (OSError, ValueError):
+        return None
+
+
 def _status_unit(root, kind, label, checks, problems=None, next_=None):
     return {"type": kind, "path": str(root), "name": label,
             "checks": checks, "problems": problems or [], "next": next_ or []}
 
 
 def _status_arg(path):
+    """A path for a printed command: relative to the cwd when inside it (short and still runnable), else absolute."""
+    path = Path(path)
+    try:
+        rel = os.path.relpath(path, os.getcwd())
+        path = rel if not rel.startswith("..") else path
+    except ValueError:  # another drive on Windows
+        pass
     return shlex.quote(str(path))
 
 
@@ -15490,6 +15508,11 @@ def _status_scan(base):
     dirs = sorted(set(dirs), key=lambda p: (len(p.parts), str(p)))
     units = []
     seen = set()
+    # manifest copies the approved mockup into the build dir: matching bytes link a design to its build
+    build_mockups = {}
+    for d in dirs:
+        if (d / "assets.json").exists() and (d / "mockup.png").exists():
+            build_mockups.setdefault(_status_sha(d / "mockup.png"), []).append(d)
     def add(d, kind, label, checks, problems=None, nxt=None):
         key = (str(d), kind)
         if key not in seen:
@@ -15526,7 +15549,7 @@ def _status_scan(base):
             add(d, "blueprint", d.name, checks, probs, [] if all(c["status"] == "done" for c in checks)
                 else [f"python3 $K blueprint {_status_arg(d)}"])
         mockups = [p for p in children if p.suffix.lower() == ".png" and p.name.startswith("mockup")]
-        if mockups or "design.json" in names:
+        if (mockups or "design.json" in names) and "assets.json" not in names:  # a build dir keeps its own mockup.png
             design = d / "design.json"
             checks = [{"name": "mockup PNGs", "status": "done" if mockups else "missing"},
                       {"name": "design.json", "status": "done" if design.exists() else "missing"}]
@@ -15535,7 +15558,10 @@ def _status_scan(base):
                 _, err = _status_json(design)
                 if err: probs.append(err)
             latest = max(mockups, key=lambda p: p.stat().st_mtime) if mockups else None
-            nxt = [f"python3 $K mockup \"<brief>\" --out {_status_arg(d)}"] if not latest else \
+            built = [b for m in mockups for b in build_mockups.get(_status_sha(m), [])]
+            if built:
+                checks.append({"name": "manifest (" + ", ".join(_status_arg(b) for b in built) + ")", "status": "done"})
+            nxt = [f"python3 $K mockup \"<brief>\" --out {_status_arg(d)}"] if not latest else [] if built else \
                 [f"once the user approves a variant: python3 $K manifest {_status_arg(latest)} --out <build dir>"]
             add(d, "design", d.name, checks, probs, nxt)
         critiques = [p for p in children if p.name.endswith("_critique.json")]
@@ -15574,12 +15600,14 @@ def _status_scan(base):
             add(d, "hybrid", d.name, checks, probs, [])
         if "assets.json" in names:
             probs, checks = [], []
-            for n in ("assets.json", "manifest_overlay.png", "design_spec.json", "icon_spec.json", "forge_report.json",
-                      "assets/", "review/", "svg_report.json", "svg/", "icons/", "traced/",
-                      "rig/", "anim/", "vector/", "frames/", "tokens/tokens.json", "compare/report.json"):
+            core = ("assets.json", "manifest_overlay.png", "design_spec.json", "forge_report.json", "assets/", "svg_report.json",
+                    "svg/", "tokens/tokens.json", "compare/report.json")
+            for n in core + ("icon_spec.json", "review/", "icons/", "traced/", "rig/", "anim/", "vector/", "frames/"):
                 npath = d / n.rstrip("/")
                 is_dir = n.endswith("/")
                 exists = npath.is_dir() if is_dir else npath.exists()
+                if not exists and n not in core:
+                    continue  # optional outputs are listed only once they exist
                 state = "done" if exists else "missing"
                 checks.append({"name": n, "status": state})
                 if n.endswith(".json") and exists:
@@ -15609,16 +15637,31 @@ def _status_scan(base):
             stale("svg", ["design_spec.json"], "svg/")
             stale("tokens/tokens.json", ["design_spec.json", "fonts/fonts.json"], "tokens")
             stale("compare/report.json", ["tokens/tokens.json"], "compare")
+            manifest, _ = _status_json(d / "assets.json")
+            report, _ = _status_json(d / "forge_report.json") if (d / "forge_report.json").exists() else ({}, None)
+            report = report if isinstance(report, dict) else {}
+            pngs = [x.get("name") for x in (manifest or {}).get("assets", []) if isinstance(x, dict) and x.get("format") == "png"] \
+                if isinstance(manifest, dict) else []
+            unforged = [n for n in pngs if n and n not in report and not (d / "assets" / f"{n}.png").exists()]
+            if unforged and (d / "forge_report.json").exists():
+                probs.append("not forged yet: " + ", ".join(unforged))
+            svgs = [x.get("name") for x in (manifest or {}).get("assets", []) if isinstance(x, dict) and x.get("format") == "svg"] \
+                if isinstance(manifest, dict) else []
             nxt = []
             if not (d / "design_spec.json").exists() or any(c["name"] == "design_spec.json" and c["status"] == "STALE" for c in checks):
                 nxt = [f"python3 $K spec {_status_arg(d)}"]
-            elif not (d / "forge_report.json").exists() or any("NEEDS ATTENTION" in x or "no final file" in x for x in probs):
+            elif (pngs and not (d / "forge_report.json").exists()) or any("NEEDS ATTENTION" in x or "no final file" in x for x in probs):
                 flagged = next((x.partition(": ")[2] for x in probs if x.startswith("NEEDS ATTENTION:")), "")
                 nxt = ([f"read {_status_arg(d / 'review')}/forge_*.png, then python3 $K pick {_status_arg(d)} <name> <N>, "
                         f"python3 $K fix {_status_arg(d)} <name>, or python3 $K forge {_status_arg(d)} --only "
                         f"{flagged.replace(', ', ',')} --force --candidates 3"] if flagged else []) + \
-                      ([f"python3 $K forge {_status_arg(d)}"] if not flagged or any(x.startswith("no final file") for x in probs) else [])
-            elif not (d / "svg_report.json").exists(): nxt = [f"python3 $K svg {_status_arg(d)}"]
+                      ([f"python3 $K forge {_status_arg(d)}"] if not flagged or any(x.startswith(("no final file", "not forged")) for x in probs) else [])
+                if svgs and not (d / "svg_report.json").exists():
+                    nxt.append(f"python3 $K svg {_status_arg(d)}   (in parallel with forge)")
+            elif unforged:
+                nxt = [f"python3 $K forge {_status_arg(d)}"] + ([f"python3 $K svg {_status_arg(d)}   (in parallel with forge)"]
+                                                               if svgs and not (d / "svg_report.json").exists() else [])
+            elif svgs and not (d / "svg_report.json").exists(): nxt = [f"python3 $K svg {_status_arg(d)}"]
             elif not (d / "tokens" / "tokens.json").exists(): nxt = [f"python3 $K tokens {_status_arg(d)}"]
             elif not (d / "compare" / "report.json").exists(): nxt = [f"python3 $K compare {_status_arg(d)} <screenshot>"]
             else: nxt = ["review reports; no pending kit step"]
@@ -15738,12 +15781,13 @@ def cmd_status(a):
         print(json.dumps(result, indent=2))
         return
     for unit in units:
-        print(f"{unit['type']} {unit['path']}")
+        print(f"{unit['type']} {_status_arg(unit['path'])}")
         for c in unit["checks"]:
             print(f"  {c['status']:7s} {c['name']}")
         for problem in unit["problems"]:
             print(f"  ! {problem}")
-        print("  next: " + (" | ".join(unit["next"]) if unit["next"] else "review / continue to next phase"))
+        for i, command in enumerate(unit["next"] or ["nothing pending in the kit: review the reports or continue to the next phase"]):
+            print(("  next: " if i == 0 else "        ") + command)
 
 
 def main():
