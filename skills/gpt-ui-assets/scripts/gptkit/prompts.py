@@ -190,13 +190,15 @@ def _device_record(platform, device=None, orientation=None, posture=None, page=N
 
 PLATFORM_RULE = ("Target platform: {label}. Build the screen from this platform's native components wherever one fits: "
                  "{components}. Show the {system_ui}. Metrics: {metrics}. Typography: {type}. Icons: {icons}. "
-                 "Anything custom must still look and behave native to this platform. Only top-level destinations show the "
-                 "tab or navigation bar; onboarding, sign-in and sign-up, full-screen media players, camera and modal flows "
-                 "(checkout, compose, edit forms) show a back or close control instead, unless the brief asks for the bar.")
+                 "Anything custom must still look and behave native to this platform.")
+FLOW_NAV_RULE = (" Onboarding, sign-in and sign-up, full-screen media players, camera and modal flows (checkout, compose, "
+                 "edit forms) show a back or close control instead of the tab or navigation bar, unless the brief asks for it.")
 
 
 def _platform_rule(platform):
-    return " " + PLATFORM_RULE.format(**PLATFORMS[platform]) if platform else ""
+    if not platform:
+        return ""
+    return " " + PLATFORM_RULE.format(**PLATFORMS[platform]) + (FLOW_NAV_RULE if platform in ("android", "ios") else "")
 
 
 def _design_meta(path):
@@ -296,6 +298,17 @@ VERIFY_SCHEMA = {"type": "object", "additionalProperties": False, "required": ["
                                                            "properties": {"id": {"type": "integer"},
                                                                           "fixed": {"type": "boolean"}}}},
                      "new_issues": {"type": "array", "items": ISSUE_ITEM}}}
+
+ACCENT_PROMPT = ("This UI screen is {W}x{H} px. Give the bounding boxes (pixels) of up to 3 elements filled with the app's "
+                 "accent colour (the brand or action colour): the primary filled button, the active navigation indicator, a "
+                 "selected chip or the send/primary icon button. Only elements whose fill is the accent; not photos, "
+                 "illustrations, status colours (red/green gains and losses) or category tags. An empty list if the UI has no "
+                 "accent colour.")
+ACCENT_SCHEMA = {"type": "object", "additionalProperties": False, "required": ["elements"],
+                 "properties": {"elements": {"type": "array", "items": {
+                     "type": "object", "additionalProperties": False, "required": ["what", "x", "y", "w", "h"],
+                     "properties": {"what": {"type": "string"}, "x": {"type": "integer"}, "y": {"type": "integer"},
+                                    "w": {"type": "integer"}, "h": {"type": "integer"}}}}}}
 
 SEVERITY = {"high": 3, "medium": 2, "low": 1}
 

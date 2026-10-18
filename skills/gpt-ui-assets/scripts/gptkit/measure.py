@@ -99,9 +99,8 @@ def _dominant(rgb):
     return px[key == np.bincount(key).argmax()].mean(0)
 
 
-def _screen_palette(img):
-    """(background hex, accent hex or None) of a UI screen, from flat fills only so photos and gradients don't count:
-    the background is the dominant flat colour, the accent the most common hue among saturated flat pixels."""
+def _screen_background(img):
+    """Hex of a UI screen's background: the dominant colour among flat pixels (photos and gradients don't count)."""
     rgb = np.asarray(img.convert("RGB"), np.float64)
     H = rgb.shape[0]
     rgb = rgb[int(0.06 * H):int(0.9 * H)]  # status bar and navigation stay out
@@ -113,16 +112,20 @@ def _screen_palette(img):
     flat = np.zeros(g.shape, bool)
     flat[r:-r, r:-r] = box(ii2) - box(ii) ** 2 < 20
     px = rgb[::3, ::3][flat[::3, ::3]]
-    if not len(px):
-        return None, None
-    bg = _dominant(px)
-    lab = _lab_arr(px)
-    sat = np.hypot(lab[:, 1], lab[:, 2]) > 25
-    if sat.sum() < 0.003 * len(px):
-        return _to_hex(bg), None
-    hue = ((np.degrees(np.arctan2(lab[sat, 2], lab[sat, 1])) + 360) % 360 // 15).astype(int)
-    accent = np.median(px[sat][hue == np.bincount(hue).argmax()], 0)
-    return _to_hex(bg), _to_hex(accent)
+    return _to_hex(_dominant(px)) if len(px) else None
+
+
+def _fill_colour(img, boxes):
+    """Hex of the most common saturated colour inside the given pixel boxes, or None when they hold too little colour."""
+    px = [np.asarray(img.convert("RGB").crop((b["x"], b["y"], b["x"] + b["w"], b["y"] + b["h"])), int).reshape(-1, 3)
+          for b in boxes if b["w"] > 0 and b["h"] > 0]
+    px = np.concatenate(px) if px else np.zeros((0, 3), int)
+    lab = _lab_arr(px.astype(np.uint8))
+    px = px[np.hypot(lab[:, 1], lab[:, 2]) > 20]
+    if len(px) < 50:
+        return None
+    key = (px[:, 0] >> 3) * 1024 + (px[:, 1] >> 3) * 32 + (px[:, 2] >> 3)
+    return _to_hex(np.median(px[key == np.bincount(key).argmax()], 0))
 
 
 def _d2c_runs(flags, merge=1):

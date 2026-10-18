@@ -18,8 +18,9 @@ import gptkit as g  # noqa: E402
 def test_platform_rule_names_native_components():
     assert "NavigationBar" in g._platform_rule("android") and "SF Symbols" in g._platform_rule("ios")
     assert g._platform_rule(None) == ""
-    for p in ("android", "ios", "web"):
-        assert "Only top-level destinations show the tab or navigation bar" in g._platform_rule(p)
+    for p in ("android", "ios"):
+        assert g.FLOW_NAV_RULE in g._platform_rule(p)
+    assert g.FLOW_NAV_RULE not in g._platform_rule("web")
     assert "navigation bar on a screen that should not show one" in g.CRITIQUE_PROMPT
     assert g._screen_dp("android") == 412 and g._screen_dp(None) == 390 and g._screen_dp("ios", 400) == 400
 

@@ -439,7 +439,7 @@ def test_prep_ref():
         def fake_edit(ref, prompt, size="1024x1024", **k_):
             sent.append(Image.open(io.BytesIO(ref)).size)
             return _png((1024, 1536)), {"quality": "high", "size": size}
-        with patched(edit=fake_edit):
+        with patched(edit=fake_edit, ask=lambda *a, **k: {"elements": []}):
             code, out = run(K.cmd_mockup, _mockup_args(td, edit=str(big)))
             assert code == 0 and sent == [(1024, 1536)], (out, sent)
             code, out = run(K.cmd_mockup, _mockup_args(td, style_ref=str(big), name="p"))
@@ -449,20 +449,32 @@ def test_prep_ref():
 def test_style_ref_prompt_carries_measured_colours():
     with tempfile.TemporaryDirectory() as td:
         ref = Image.new("RGB", (1024, 1536), "#F6F4EF")
-        ImageDraw.Draw(ref).rounded_rectangle([60, 300, 960, 560], 40, fill="#2F5BEA")
-        ImageDraw.Draw(ref).rectangle([60, 700, 960, 760], fill="#1C1C1E")
+        ImageDraw.Draw(ref).rounded_rectangle([60, 1300, 960, 1400], 40, fill="#2F5BEA")
+        ImageDraw.Draw(ref).rectangle([60, 400, 960, 700], fill="#E0592A")  # a big orange photo-like block, not the accent
         path = Path(td) / "ref.png"
         ref.save(path)
-        assert K._screen_palette(ref) == ("#F6F4EF", "#2F5BEA")
-        assert K._screen_palette(Image.new("RGB", (400, 800), "#FAFAFA")) == ("#FAFAFA", None)
-        prompts = []
+        prompts, asked = [], []
 
         def fake_edit(img, prompt, size="1024x1024", **k_):
             prompts.append(prompt)
             return _png((1024, 1536)), {"quality": "high", "size": size}
-        with patched(edit=fake_edit):
+
+        def fake_ask(parts, *a, **k):
+            asked.append(parts[0])
+            return {"elements": [{"what": "primary button", "x": 60, "y": 1300, "w": 900, "h": 100}]}
+        with patched(edit=fake_edit, ask=fake_ask):
             code, out = run(K.cmd_mockup, _mockup_args(td, style_ref=str(path), name="p"))
-        assert code == 0 and "Use the approved screen's exact colours: background #F6F4EF, accent #2F5BEA." in prompts[0], prompts
+        assert code == 0 and "accent colour" in asked[0], (out, asked)
+        assert ("Keep the approved screen's colours (background #F6F4EF, accent #2F5BEA) unless this brief names other "
+                "colours or a theme." in prompts[0]), prompts
+
+        def failing_ask(*a, **k):
+            raise K.ApiError(429, "HTTP 429")
+        prompts.clear()
+        with patched(edit=fake_edit, ask=failing_ask):
+            code, out = run(K.cmd_mockup, _mockup_args(td, style_ref=str(path), name="q"))
+        assert code == 0 and "accent colour was not located" in out, out
+        assert "(background #F6F4EF) unless this brief" in prompts[0], prompts
 
 
 def test_mockup_wrong_aspect_warns():

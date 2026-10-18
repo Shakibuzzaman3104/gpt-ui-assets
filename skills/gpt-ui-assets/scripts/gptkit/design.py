@@ -17,9 +17,9 @@ from .core import (
 )
 from .imaging import _mean_diff, _rgba, ref_crop
 from .prompts import (
-    ADAPT_PROMPT, ASSET_PROMPT, BACKGROUND_PROMPT, CANDIDATE_FOCUS, CRITIQUE_PROMPT, CRITIQUE_REF_RULE,
-    CRITIQUE_SCHEMA, DEVICES, MANIFEST_PROMPT, MANIFEST_SCHEMA, MOCKUP_WRAP, PLATFORMS, SEVERITY, SPEC_SCHEMA,
-    STYLE_REF_PROMPT, VERIFY_SCHEMA, _aspect_words, _design_meta, _device_record, _house_style, _platform_rule,
+    ACCENT_PROMPT, ACCENT_SCHEMA, ADAPT_PROMPT, ASSET_PROMPT, BACKGROUND_PROMPT, CANDIDATE_FOCUS, CRITIQUE_PROMPT,
+    CRITIQUE_REF_RULE, CRITIQUE_SCHEMA, DEVICES, MANIFEST_PROMPT, MANIFEST_SCHEMA, MOCKUP_WRAP, PLATFORMS, SEVERITY,
+    SPEC_SCHEMA, STYLE_REF_PROMPT, VERIFY_SCHEMA, _aspect_words, _design_meta, _device_record, _house_style, _platform_rule,
     _screen_dp,
 )
 
@@ -340,15 +340,11 @@ def cmd_mockup(a):
     else:
         size = a.size or (record["canvas"] if record else _default_size(platform))
     qa = not a.no_critique
-    _plan(a.variants, a.variants if qa else 0, image_model=a.model, size=size, edits=bool(a.edit or a.style_ref))
+    _plan(a.variants, (a.variants if qa else 0) + (ref_png is not None), image_model=a.model, size=size,
+          edits=bool(a.edit or a.style_ref))
     rule = _platform_rule(platform)
     house = _house_style(a.no_house_style)
-    colours = ""
-    if ref is not None:
-        from .measure import _screen_palette  # deferred: measure is only needed with a reference
-        bg, accent = _screen_palette(ref)
-        if bg:  # a reference image alone lets the accent drift; its measured colours hold it
-            colours = f" Use the approved screen's exact colours: background {bg}" + (f", accent {accent}" if accent else "") + "."
+    colours = _reference_colours(ref) if ref is not None else ""
 
     def prompt_for(sz):
         asp = (record["aspect"] if record and sz == record["canvas"] else ASPECTS.get(sz, f"{sz} px"))
@@ -442,6 +438,23 @@ def cmd_mockup(a):
         sys.exit(f"gptkit: mockup produced no image (all {a.variants} variants failed, see above; last: {last_err})")
     if qa:
         _mockup_qa(sorted(made), platform or "android", ref, record)
+
+
+def _reference_colours(img):
+    """Prompt words carrying the approved screen's measured background and accent. A reference image alone lets the
+    accent drift; vision only locates the accent-filled elements, their colour is measured from the pixels."""
+    from .measure import _fill_colour, _screen_background  # deferred: only needed with a reference
+    bg = _screen_background(img)
+    try:
+        found = ask([ACCENT_PROMPT.format(W=img.width, H=img.height), img.convert("RGB")], ACCENT_SCHEMA, "accent_boxes")
+        boxes = [b for b in (_clip_bbox(e, img.width, img.height) for e in found.get("elements") or []) if b]
+    except (ApiError, AttributeError) as e:
+        print(f"  ! the reference's accent colour was not located ({e}); passing only its background colour")
+        boxes = []
+    accent = _fill_colour(img, boxes)
+    named = [f"background {bg}"] * bool(bg) + [f"accent {accent}"] * bool(accent)
+    return (f" Keep the approved screen's colours ({', '.join(named)}) unless this brief names other colours or a theme."
+            if named else "")
 
 
 def _mockup_qa(paths, platform, ref, record=None):

@@ -128,7 +128,7 @@ def test_set_outputs_and_skips_cross_aspect_copy_check():
         d = Path(td) / "out"
         d.mkdir()
         (d / "design.json").write_text(json.dumps({"platform": "android", "screens": {"home.png": {"device": "phone"}}}))
-        with patched(edit=edit):
+        with patched(edit=edit, ask=lambda *a, **k: {"elements": []}):
             code, out = run(K.cmd_mockup, args(td, out=str(d), platform="android", set="tablet,desktop",
                 anchor=str(anchor)))
         assert code == 0 and (d / "inbox_tablet.png").exists() and (d / "inbox_desktop.png").exists(), (code, out)
@@ -166,7 +166,7 @@ def test_style_ref_from_another_platform_does_not_carry_its_device():
         phone.write_bytes(_png((1152, 2496)))
         (Path(td) / "design.json").write_text(json.dumps({"platform": "ios", "screens": {
             "home.png": {"platform": "ios", "device": "phone", "canvas": "1152x2496"}}}))
-        with patched(edit=edit):
+        with patched(edit=edit, ask=lambda *a, **k: {"elements": []}):
             for platform in ("macos", "web"):
                 code, out = run(K.cmd_mockup, args(td, out=str(Path(td) / platform), platform=platform,
                                                    style_ref=str(phone)))
