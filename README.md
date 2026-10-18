@@ -61,12 +61,13 @@ This skill does what a designer would do instead:
 **Platform-native design.** The same brief, `--platform android` vs `--platform ios`: M3 top app bar, cards, navigation
 bar with the pill indicator and gesture handle vs a large title, inset-grouped list, floating Liquid Glass tab bar and
 Dynamic Island.
-<p align="center"><img src="docs/images/09-platform-native.webp" width="600" alt="Android vs iOS from one brief"></p>
+<p align="center"><img src="docs/images/09-platform-native.webp" width="520" alt="Android vs iOS from one brief"></p>
 
 **Every form factor.** `--device tablet` gives list-detail and navigation rails or an iPad sidebar, `--device foldable`
 keeps every control off the hinge (and QA measures it), `--device desktop` draws real macOS, Windows or Linux window
 chrome at pointer density, and `--platform web --page landing` composes above the fold. `--set tablet,desktop --anchor
 <approved phone screen>` recomposes the same app for each form factor instead of stretching it.
+<p align="center"><img src="docs/images/15-form-factors.webp" width="760" alt="iPad (from --set), iPhone, macOS window and web landing page of one app"></p>
 
 **New screens in the approved design language** (`--style-ref`): same wordmark, tab bar, type and illustration style,
 with a new layout.
