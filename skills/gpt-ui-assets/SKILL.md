@@ -70,6 +70,7 @@ A typical "design a screen and give me the assets" run:
 ```bash
 python3 $K mockup "habit tracker home: date, progress, 5 habits with check + streak, 4-tab nav; mint + warm white" \
   --platform android --out design/home --variants 2    # 9:19.5 phone canvas, house style, aspect-checked, auto-critiqued
+# first screen of a new app: add --directions so the variants differ in palette, type and signature, not just details
 # Read each mockup_v*_critique.png, then show the user the variants
 # ...iterate with --edit until the user approves; screen 2 onward uses --style-ref <approved screen>
 python3 $K manifest design/home/mockup_v1.png --out build/home   # Read manifest_overlay.png; fix assets.json by hand
