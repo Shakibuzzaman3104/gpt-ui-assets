@@ -257,6 +257,58 @@ def test_critique_missing_inputs():
         assert calls == []
 
 
+def _card_screen(rounded=(True, True, False), bg=(245, 247, 250), card=(255, 255, 255), bar=False):
+    """824x1784 px (dp=412, 2 px per dp): 744 px-wide cards from y=200, 60 px apart, rounded ones at 32 px (16 dp)."""
+    im = Image.new("RGB", (824, 1784), bg)
+    d = ImageDraw.Draw(im)
+    if bar:  # full width, touching both side edges: never a card surface
+        d.rectangle((0, 0, 823, 100), fill=card)
+    for i, r in enumerate(rounded):
+        box = (40, 200 + 260 * i, 784, 400 + 260 * i)
+        if r:
+            d.rounded_rectangle(box, 32, fill=card)
+        else:
+            d.rectangle(box, fill=card)
+    return im
+
+
+def test_corner_mix_flags_the_square_card():
+    img = _card_screen()
+    issues = K._corner_mix_issues(img, 412)
+    assert len(issues) == 1, issues
+    x = issues[0]
+    assert abs(x["bbox"]["y"] - 720) <= 6 and x["bbox"]["x"] == 40, x["bbox"]
+    assert (x["severity"], x["category"], x["scope"]) == ("medium", "shape", "local"), x
+    # the 32 px radius measures 15-17 dp depending on PIL's corner rasterisation; the edit names it
+    assert any(f"about {r} dp" in x["edit"] for r in (15, 16, 17)), x["edit"]
+
+
+def test_corner_mix_ignores_uniform_rounding():
+    assert K._corner_mix_issues(_card_screen((True, True, True)), 412) == []
+
+
+def test_corner_mix_ignores_all_square_cards():
+    assert K._corner_mix_issues(_card_screen((False, False, False)), 412) == []
+
+
+def test_corner_mix_reads_a_dark_theme():
+    issues = K._corner_mix_issues(_card_screen(bg=(18, 20, 28), card=(34, 38, 52)), 412)
+    assert len(issues) == 1 and issues[0]["category"] == "shape", issues
+
+
+def test_corner_mix_skips_edge_touching_bars():
+    img = _card_screen((True, True), bar=True)
+    assert len(K._card_surfaces(img, 412)) == 2, K._card_surfaces(img, 412)  # the two cards, never the bar
+    assert K._corner_mix_issues(img, 412) == []
+
+
+def test_critique_reports_the_measured_corner_mix():
+    with patched(ask=lambda *a_, **k_: {"issues": []}):
+        issues = K.critique(_card_screen(), 412, "android")
+    assert len(issues) == 1 and issues[0]["id"] == 1, issues
+    assert (issues[0]["category"], issues[0]["scope"]) == ("shape", "local"), issues[0]
+
+
 def _spec_dir(td, **m_extra):
     d = Path(td)
     _mock_png(d)
