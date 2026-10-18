@@ -14,6 +14,13 @@
       "description": "Design platform-native app UIs with GPT and turn them into production assets: every icon, illustration and background redrawn 1:1 (never cropped), SVG/VectorDrawable icons, app icons, frame/Lottie/AVD animation, fonts, theme code and a screenshot diff for a 1:1 build.",
       "version": "4.0.0",
       "license": "MIT"
+    },
+    {
+      "name": "attachment-preview",
+      "source": "./mods/attachment-preview",
+      "description": "Terminal pane to review generated images: variant grids, side-by-side compare, transparent assets on checker/light/dark, icon contact sheets, aspect and QA at a glance.",
+      "version": "0.2.0",
+      "license": "MIT"
     }
   ]
 }

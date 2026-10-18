@@ -1,0 +1,8 @@
+{
+  "name": "attachment-preview",
+  "version": "0.2.0",
+  "description": "A terminal pane for the images and assets of a session: grids of gptkit variants, side-by-side compare of up to 4, transparent assets on checker/light/dark, icon contact sheets, aspect and QA at a glance",
+  "author": { "name": "Shakibuzzaman", "url": "https://github.com/Shakibuzzaman3104" },
+  "license": "MIT",
+  "types": "./types/index.d.ts"
+}
