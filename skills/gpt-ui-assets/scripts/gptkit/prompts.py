@@ -14,8 +14,8 @@ MOCKUP_WRAP = ("High-fidelity production UI design render of a single {surface} 
 # GPTKIT_HOUSE_STYLE (env or config file) replaces it; "off" drops it; --no-house-style skips it for one run.
 HOUSE_STYLE = ("House style (unless the brief says otherwise): a clean, decluttered, modern UI. Generous whitespace, one "
                "clear focal point and hierarchy, only the elements this screen needs, one accent colour, no ornamental "
-               "noise. Stat tiles and icon backgrounds share that one accent, never a different tint each; no ALL-CAPS "
-               "labels above headings. Add illustration or artwork only where it carries meaning or warmth (a hero, an empty state, "
+               "noise. Stat tiles and icon backgrounds share that one accent, never a different tint each; section headers "
+               "and labels in sentence case, never ALL-CAPS. Add illustration or artwork only where it carries meaning or warmth (a hero, an empty state, "
                "onboarding), in one consistent style. Show real product content only: no ads, ad banners, promos or "
                "placeholder marketing unless the brief asks for them. If the brief names no product, invent an original "
                "product name; never use a real company's or app's name, logo or brand mark.")

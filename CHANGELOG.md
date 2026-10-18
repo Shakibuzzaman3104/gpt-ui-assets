@@ -2,19 +2,29 @@
 
 All notable changes to gpt-ui-assets. Versions follow [semantic versioning](https://semver.org).
 
-## Unreleased
+## 5.1.0 (2026-10-18)
+
+Spacing, shape and restraint. Measured on 24 probe mockups and planted defects: prompt wording alone barely moves
+GPT's spacing, so the gains come from QA that sees spacing and from a measured token audit.
 
 ### Added
-- **Spacing and shape QA.** `critique` (and the automatic QA after `mockup`) now flags content too close to the
-  screen or container edge, ambiguous grouping, uneven gaps, more than three corner radii, non-concentric nested
-  corners and cards inside cards. On planted defects it caught 12 of 15, against 0 of 20 before.
-- Each critique issue has a `scope`. Screen-wide issues (margins, density, section rhythm) are not sent to
-  `--apply`, since an image edit can't re-flow a screen; the kit says to re-run `mockup` with the fix instead.
-- `tokens` warns about spacing off the 4 dp grid and about more than four corner radii; `--snap-grid` rounds the
-  spacing tokens (a deliberate departure from the mockup that `compare` will show).
-- The house style asks for stat tiles and icon backgrounds in the one accent (not a different tint each) and no
-  ALL-CAPS labels above headings.
-- A one-time warning when the endpoint answers a lower image quality than requested (a gateway cap).
+- **Spacing and shape QA.** `critique` (and the automatic QA after `mockup`) flags content within 16 units of the
+  screen's side edges, text or controls within 8 units of their container's edge, ambiguous grouping, uneven gaps,
+  more than three corner radii, non-concentric nested corners and cards inside cards (new `spacing` and `shape`
+  categories). On planted defects it caught 12 of 15 root causes, against 0 of 20 before; a square-cornered card
+  among rounded ones is still missed.
+- **Issue scope.** Each critique issue is `local` or `screen`. Screen-wide issues (margins, density, section rhythm)
+  are not sent to `--apply`, since an image edit can't re-flow a screen; the kit says to re-run `mockup` with the
+  fix in the brief.
+- **Token audit.** `tokens` warns about spacing off the 4 dp grid and about more than four non-pill corner radii, and
+  records both under `audit` in `tokens.json`. `--snap-grid` rounds spacing tokens to the grid, a deliberate
+  departure from the mockup that `compare` will show.
+- **Quality-cap warning.** Image calls warn once when the endpoint answers a lower quality than requested. A sub2api
+  gateway returned `medium` or `low` for `quality: high` with every image model.
+
+### Changed
+- **House style.** Stat tiles and icon backgrounds share the one accent instead of a different tint each, and
+  section headers and labels are in sentence case, never ALL-CAPS.
 
 ## 5.0.0 (2026-10-18)
 
