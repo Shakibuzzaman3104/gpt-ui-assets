@@ -271,7 +271,8 @@ def _png(size, color="white"):
 
 def _mockup_args(td, **kw):
     a = argparse.Namespace(prompt="habit tracker", out=str(Path(td) / "out"), name="mockup", size="1024x1536", variants=1,
-                           edit=None, raw=False, style_ref=None, platform="android", model=None)
+                           edit=None, raw=False, style_ref=None, platform="android", model=None, no_critique=True,
+                           no_house_style=False)
     vars(a).update(kw)
     return a
 
@@ -403,6 +404,159 @@ def test_iconspec_missing_names():
             code, out = run(K.cmd_iconspec, argparse.Namespace(dir=str(d), model=None))
         assert code == 1 and 'no format "svg" assets' in out and "run `manifest` first" in out and calls == [], out
         assert not (d / "icon_spec.json").exists()
+
+
+def _sections_png(w, h):
+    """A screen-like render: flat background with content blocks separated by flat gaps (what _fit_aspect works on)."""
+    im = Image.new("RGB", (w, h), (248, 248, 250))
+    d = ImageDraw.Draw(im)
+    d.rectangle((0, 0, w, int(h * 0.05)), fill=(20, 20, 20))                      # status bar
+    for y0 in range(int(h * 0.1), int(h * 0.85), int(h * 0.12)):
+        d.rectangle((20, y0, w - 20, y0 + int(h * 0.06)), fill=(40, 90, 200))        # sections
+    d.rectangle((0, int(h * 0.9), w, h), fill=(230, 230, 240))                        # nav bar
+    return im
+
+
+def test_mockup_default_canvas_is_phone():
+    sizes = []
+
+    def fake_generate(prompt, size="1024x1024", **k_):
+        sizes.append(size)
+        return K._png_bytes(_sections_png(*map(int, size.split("x")))), {"quality": "high", "size": size}
+    with tempfile.TemporaryDirectory() as td, patched(generate=fake_generate):
+        code, out = run(K.cmd_mockup, _mockup_args(td, size=None))
+        assert code == 0 and sizes == [K.PHONE_SIZE] and "aspect=ok" in out, (out, sizes)
+        code, out = run(K.cmd_mockup, _mockup_args(td, size=None, platform="web", name="w"))
+        assert code == 0 and sizes[-1] == "1536x1024", (out, sizes)
+    assert abs(K._ratio(K.PHONE_SIZE) - 9 / 19.5) < 1e-3
+    assert K._canvas_size(803, 1958) == K.PHONE_SIZE and K._canvas_size(1024, 1536) == "1024x1536"
+    assert K._canvas_size(1536, 1024) == "1536x1024"
+
+
+def test_mockup_edit_keeps_its_canvas():
+    sizes = []
+
+    def fake_edit(ref, prompt, size="1024x1024", **k_):
+        sizes.append((size, prompt))
+        return K._png_bytes(_sections_png(*Image.open(io.BytesIO(ref)).size)), {"quality": "high", "size": size}
+    with tempfile.TemporaryDirectory() as td, patched(edit=fake_edit):
+        old = Path(td) / "old.png"
+        _sections_png(1024, 1536).save(old)
+        code, out = run(K.cmd_mockup, _mockup_args(td, size=None, edit=str(old)))
+        assert code == 0 and sizes[-1][0] == "1024x1536" and "portrait 2:3" in sizes[-1][1], (out, sizes)
+        assert "House style" not in sizes[-1][1]  # an edit changes only what it is asked to
+        tall = Path(td) / "tall.png"
+        _sections_png(806, 1746).save(tall)
+        code, out = run(K.cmd_mockup, _mockup_args(td, size=None, edit=str(tall), name="t"))
+        assert code == 0 and sizes[-1][0] == K.PHONE_SIZE and "9:19.5" in sizes[-1][1], (out, sizes)
+
+
+def test_mockup_fits_an_off_aspect_render():
+    calls = []
+
+    def too_tall(prompt, size="1024x1024", **k_):
+        calls.append(size)
+        return K._png_bytes(_sections_png(800, 1950)), {"quality": "high", "size": size}  # 0.41, phone wants 0.4615
+    with tempfile.TemporaryDirectory() as td, patched(generate=too_tall):
+        code, out = run(K.cmd_mockup, _mockup_args(td, size=None))
+        assert code == 0 and len(calls) == 2, (out, calls)  # one retry, then fitted locally
+        got = Image.open(Path(td) / "out" / "mockup_v1.png")
+        assert got.width == 800 and abs(got.width / got.height - 9 / 19.5) < 0.005, got.size
+        assert Image.open(Path(td) / "out" / "mockup_v1_raw.png").size == (800, 1950)
+        assert "aspect=fitted 800x1950 -> 800x1733" in out and "nothing scaled" in out, out
+
+    def too_short(prompt, size="1024x1024", **k_):
+        return K._png_bytes(_sections_png(800, 1650)), {"quality": "high", "size": size}
+    with tempfile.TemporaryDirectory() as td, patched(generate=too_short):
+        code, out = run(K.cmd_mockup, _mockup_args(td, size=None))
+        got = Image.open(Path(td) / "out" / "mockup_v1.png")
+        assert code == 0 and got.size == (800, 1733) and "added 83 px" in out, (out, got.size)
+
+    def two_three(prompt, size="1024x1024", **k_):
+        return K._png_bytes(_sections_png(1024, 1536)), {"quality": "high", "size": size}
+    with tempfile.TemporaryDirectory() as td, patched(generate=two_three):
+        code, out = run(K.cmd_mockup, _mockup_args(td, size=None))
+        assert code == 0 and "could not be fitted (needs" in out and "aspect=OFF (1024x1536" in out, out
+        assert not (Path(td) / "out" / "mockup_v1_raw.png").exists()
+
+    # a flat screen with no gaps cannot be fitted without scaling, so it is left alone and reported
+    out_img, note = K._fit_aspect(Image.new("RGB", (800, 1950), "white").convert("RGB"), K.PHONE_SIZE)
+    assert out_img is not None  # all rows are flat gaps here
+    busy = Image.effect_noise((800, 1950), 60).convert("RGB")
+    assert K._fit_aspect(busy, K.PHONE_SIZE) == (None, "only 0 px of empty gaps for 217 px")
+
+
+def test_mockup_house_style():
+    prompts = []
+
+    def fake_generate(prompt, size="1024x1024", **k_):
+        prompts.append(prompt)
+        return K._png_bytes(_sections_png(*map(int, size.split("x")))), {"quality": "high", "size": size}
+    base = dict(K._config(), house_style=None)
+    with tempfile.TemporaryDirectory() as td, patched(generate=fake_generate, _config=lambda: base):
+        run(K.cmd_mockup, _mockup_args(td))
+        assert "clean, decluttered, modern UI" in prompts[-1] and "no ads" in prompts[-1], prompts[-1]
+        run(K.cmd_mockup, _mockup_args(td, no_house_style=True))
+        assert "House style" not in prompts[-1]
+        run(K.cmd_mockup, _mockup_args(td, raw=True))
+        assert prompts[-1] == "habit tracker"
+    for value, want in (("off", None), ("Bold brutalist, black and yellow.", "Bold brutalist")):
+        with tempfile.TemporaryDirectory() as td, patched(generate=fake_generate, _config=lambda: dict(base, house_style=value)):
+            run(K.cmd_mockup, _mockup_args(td))
+        assert ("decluttered" not in prompts[-1]) and (want is None or want in prompts[-1]), (value, prompts[-1])
+
+
+def test_mockup_runs_design_qa():
+    def fake_generate(prompt, size="1024x1024", **k_):
+        return K._png_bytes(_sections_png(*map(int, size.split("x")))), {"quality": "high", "size": size}
+    issue = {"severity": "medium", "category": "contrast", "problem": "pale label", "edit": "darken it",
+             "bbox": {"x": 10, "y": 10, "w": 100, "h": 40}}
+    with tempfile.TemporaryDirectory() as td, patched(generate=fake_generate, ask=lambda *a_, **k_: {"issues": [issue]}):
+        code, out = run(K.cmd_mockup, _mockup_args(td, size=None, no_critique=False, variants=2))
+        d = Path(td) / "out"
+        assert code == 0 and "design QA (critique):" in out and out.count("1 issues, weight 2") == 2, out
+        for v in (1, 2):
+            log = json.loads((d / f"mockup_v{v}_critique.json").read_text())
+            assert log["best"].endswith(f"mockup_v{v}.png") and log["rounds"][0]["issues"][0]["problem"] == "pale label"
+            assert (d / f"mockup_v{v}_critique.png").exists()
+
+    def down(*a_, **k_):
+        raise _FakeApiError("HTTP 503 [exhausted]: busy")
+    with tempfile.TemporaryDirectory() as td, patched(generate=fake_generate, ask=down):
+        code, out = run(K.cmd_mockup, _mockup_args(td, size=None, no_critique=False))
+        assert code == 0 and "critique NOT run (HTTP 503" in out, out
+        assert not (Path(td) / "out" / "mockup_v1_critique.json").exists()
+
+
+def test_mockup_falls_back_when_size_is_rejected():
+    sizes = []
+
+    class _SizeError(K.ApiError):
+        def __init__(self):
+            RuntimeError.__init__(self, "HTTP 400 /images/generations [invalid_value]: Invalid size '1152x2496'")
+            self.status, self.code, self.param, self.body, self.prompt, self.etype = 400, "invalid_value", "size", None, "", ""
+
+    def classic_only(prompt, size="1024x1024", **k_):
+        sizes.append((size, prompt))
+        if size not in K.CLASSIC_SIZES:
+            raise _SizeError()
+        return K._png_bytes(_sections_png(1024, 1536)), {"quality": "high", "size": size}
+    with tempfile.TemporaryDirectory() as td, patched(generate=classic_only):
+        code, out = run(K.cmd_mockup, _mockup_args(td, size=None, variants=2))
+        assert code == 0 and "the endpoint rejected size 1152x2496" in out, out
+        assert out.count("the endpoint rejected size") == 1, out  # decided once for all variants
+        assert out.count("aspect=ok (on 1024x1536, the endpoint rejected 1152x2496)") == 2, out
+        assert all("portrait 2:3" in p for s_, p in sizes if s_ == "1024x1536"), sizes
+
+    def other_400(prompt, size="1024x1024", **k_):
+        raise _FakeApiError("HTTP 400 [moderation_blocked]: no")
+    with tempfile.TemporaryDirectory() as td, patched(generate=other_400):
+        try:
+            run(K.cmd_mockup, _mockup_args(td, size=None))
+        except K.ApiError as e:  # any other 400 is not a size problem and surfaces unchanged
+            assert "moderation_blocked" in str(e)
+        else:
+            raise AssertionError("a non-size 400 must not be swallowed")
 
 
 if __name__ == "__main__":

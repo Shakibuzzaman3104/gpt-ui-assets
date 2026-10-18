@@ -8,6 +8,20 @@ MOCKUP_WRAP = ("High-fidelity production UI design render of a single app screen
                "Flat, pixel-crisp screen render at 1:1, no device frame, no hands, no perspective, no watermark. "
                "Real, legible UI text. Consistent spacing grid and one cohesive icon style.")
 
+# House style: the owner's standing art direction, added to every new design (mockup and --style-ref, not --edit).
+# GPTKIT_HOUSE_STYLE (env or config file) replaces it; "off" drops it; --no-house-style skips it for one run.
+HOUSE_STYLE = ("House style (unless the brief says otherwise): a clean, decluttered, modern UI. Generous whitespace, one "
+               "clear focal point and hierarchy, only the elements this screen needs, one accent colour, no ornamental "
+               "noise. Add illustration or artwork only where it carries meaning or warmth (a hero, an empty state, "
+               "onboarding), in one consistent style. Show real product content only: no ads, ad banners, promos or "
+               "placeholder marketing unless the brief asks for them.")
+
+
+def _house_style(skip=False):
+    text = None if skip else (_config().get("house_style") or HOUSE_STYLE)
+    return "" if not text or text.strip().lower() in ("off", "none", "0", "false") else " " + text.strip()
+
+
 PLATFORMS = {
     "android": {
         "label": "native Android app (Material 3 / Material 3 Expressive, Jetpack Compose)",

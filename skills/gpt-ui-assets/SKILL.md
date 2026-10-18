@@ -62,8 +62,8 @@ story.
 A typical "design a screen and give me the assets" run:
 ```bash
 python3 $K mockup "habit tracker home: date, progress, 5 habits with check + streak, 4-tab nav; mint + warm white" \
-  --platform android --out design/home --variants 2
-python3 $K critique design/home/mockup_v1.png          # Read the critique sheet, then show the user the variants
+  --platform android --out design/home --variants 2    # 9:19.5 phone canvas, house style, aspect-checked, auto-critiqued
+# Read each mockup_v*_critique.png, then show the user the variants
 # ...iterate with --edit until the user approves; screen 2 onward uses --style-ref <approved screen>
 python3 $K manifest design/home/mockup_v1.png --out build/home   # Read manifest_overlay.png; fix assets.json by hand
 python3 $K spec build/home                              # calibrated scale, palette, type, native widget per component
@@ -90,20 +90,30 @@ python3 $K compare build/home shot.png
    prompt gives a generic piece in a different style. `forge`, `fix`, `frames`, `sequence` and `material` pass the
    design as the reference.
 4. **Design screen 2 onward with `--style-ref <approved screen>`.** Describing the style in words drifts.
-5. **Measure, don't guess.** Vision hex guesses drift by up to ΔE 10, and GPT draws native components at ~0.7× scale.
+5. **House style and canvas are automatic.** Every new screen is a clean, decluttered, modern UI with artwork only
+   where it adds meaning, and no ads unless the brief asks; the user's `GPTKIT_HOUSE_STYLE` replaces this and
+   `--no-house-style` drops it for one run. Phone screens render on a 9:19.5 (iPhone-proportion) canvas. Each render
+   is checked against it and fitted locally (empty gaps trimmed or extended, nothing scaled) when it comes back off;
+   `aspect=OFF` means it could not be fitted. Never hand over an `OFF` variant as final.
+6. **Measure, don't guess.** Vision hex guesses drift by up to ΔE 10, and GPT draws native components at ~0.7× scale.
    Take colours, sizes, radii and fonts from `spec`, `tokens`, `redline` and `fonts`, not from the model's prose.
-6. **Flags outrank scores.** `EMPTY` and `COPY` are never shipped. After two unsuccessful `fix` rounds, tell the user
+7. **Flags outrank scores.** `EMPTY` and `COPY` are never shipped. After two unsuccessful `fix` rounds, tell the user
    what still differs instead of looping.
-7. **Read the error code before rewording a prompt.** `[moderation_blocked]` needs a rephrase; `exhausted` and 5xx need
+8. **Read the error code before rewording a prompt.** `[moderation_blocked]` needs a rephrase; `exhausted` and 5xx need
    a retry later; a model error needs `doctor`.
-8. **Never claim a check that did not run.** `link skipped`, `not measured: <reason>` and `render check skipped` mean
+9. **Never claim a check that did not run.** `link skipped`, `not measured: <reason>` and `render check skipped` mean
    unverified. Say so.
-9. **An image edit re-renders the whole image.** For a state change, use `state`, which composites only the changed
+10. **An image edit re-renders the whole image.** For a state change, use `state`, which composites only the changed
    region back. Never ship a raw edit as a state frame.
-10. **GPT renders; it does not animate.** Code or the kit decides motion (`--procedural`, `sequence` layouts, `rig`),
+11. **GPT renders; it does not animate.** Code or the kit decides motion (`--procedural`, `sequence` layouts, `rig`),
     and GPT paints only the moving layer.
 
 ## Working with the user
+
+- If the `attachment-preview` mod is installed (it ships in this repo under `mods/`), every picture a gptkit command
+  prints lands in its pane as one grid: variants side by side, picks compared A–D, transparent assets on a checker,
+  light or dark backdrop, icons as a contact sheet, with aspect and QA per picture. Point the user at it
+  (`/attachments`) when showing variants; `/attachments add <folder>` shows a whole output folder.
 
 - Show design variants and let the user choose. Walk them through `blueprint.md`, especially the MVP cut, before
   designing every screen.

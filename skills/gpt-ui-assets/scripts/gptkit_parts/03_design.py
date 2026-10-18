@@ -95,14 +95,93 @@ def _asset(m, name):
     sys.exit(f"gptkit: unknown asset: {name} (known: {_known(m)})")
 
 
-ASPECTS = {"1024x1536": "portrait 2:3 (phone screen, taller than wide)", "1536x1024": "landscape 3:2 (desktop/tablet, wider than tall)",
+PHONE_SIZE = "1152x2496"  # 9:19.5, modern iPhone proportions (1179x2556, 1206x2622); both sides multiples of 16
+ASPECTS = {PHONE_SIZE: "tall 9:19.5 phone screen (modern iPhone proportions, about 2.17x taller than wide)",
+           "1024x1536": "portrait 2:3 (phone screen, taller than wide)", "1536x1024": "landscape 3:2 (desktop/tablet, wider than tall)",
            "1024x1024": "square 1:1"}
+ASPECT_TOL = 0.02  # a render within 2% of the requested width/height ratio passes as is
+CLASSIC_SIZES = ("1024x1536", "1536x1024", "1024x1024")  # the sizes every gpt-image model accepts
+FIT_MAX = 0.15     # local fitting moves at most 15% of the height; past that the render is saved with a warning
+
+
+def _size_rejected(e):
+    """A 400 about the requested size: an endpoint or model that only takes the classic sizes."""
+    return e.status == 400 and (e.param == "size" or bool(re.search(r"\bsize\b", str(e), re.I)))
+
+
+def _default_size(platform):
+    """Canvas for a new screen: the 9:19.5 phone canvas, except web, which designs a 3:2 desktop page."""
+    return "1536x1024" if platform == "web" else PHONE_SIZE
+
+
+def _ratio(size):
+    w, h = map(int, size.split("x"))
+    return w / h
+
+
+def _canvas_size(w, h):
+    """Request size for revising an existing WxH design: the canvas with the nearest ratio (a 9:19.5 screen stays one)."""
+    return min(ASPECTS, key=lambda s: abs(math.log(w / h / _ratio(s))))
 
 
 def _aspect_ok(img_bytes, size):
     w, h = Image.open(io.BytesIO(img_bytes)).size
     tw, th = map(int, size.split("x"))
     return (w > h) == (tw > th) and (w < h) == (tw < th)
+
+
+def _aspect_err(img, size):
+    """Relative error of img's width/height ratio against the requested size's (0.02 = 2%)."""
+    return abs(img.width / img.height / _ratio(size) - 1)
+
+
+def _flat_gaps(img, min_h=28):
+    """(start, end) row ranges at least min_h tall that are one flat colour across the width, outside the system bars
+    (top 6%, bottom 12%). A thin vertical line through a gap (a timeline, a card edge) still counts as flat."""
+    a = np.asarray(img.convert("RGB")).astype(np.int16)
+    flat = (np.abs(a - np.median(a, axis=1, keepdims=True)).max(axis=2) > 10).mean(axis=1) < 0.02
+    H = len(flat)
+    flat[: int(H * 0.06)] = False
+    flat[int(H * 0.88):] = False
+    gaps, y = [], 0
+    while y < H:
+        if flat[y]:
+            s = y
+            while y < H and flat[y]:
+                y += 1
+            if y - s >= min_h:
+                gaps.append((s, y))
+        y += 1
+    return gaps
+
+
+def _fit_aspect(img, size):
+    """img brought to size's ratio WITHOUT scaling anything: rows are taken out of, or repeated inside, the flat gaps
+    between sections (each gap keeps >= 20 px). Returns (image, note), or (None, reason) when the gaps can't absorb it."""
+    W, H = img.size
+    need = round(W / _ratio(size)) - H
+    n = abs(need)
+    if n > FIT_MAX * H:
+        return None, f"needs {n} px, {n / H:.0%} of the height; local fitting stops at {FIT_MAX:.0%}"
+    spare = [(s, e, e - s - 20 if need < 0 else e - s) for s, e in _flat_gaps(img)]
+    total = sum(x[2] for x in spare)
+    if not spare or total < (n if need < 0 else 1):
+        return None, f"only {max(0, total)} px of empty gaps for {n} px"
+    ks = [int(sp * n / total) for *_, sp in spare]
+    for i in sorted(range(len(spare)), key=lambda i: -spare[i][2])[: n - sum(ks)]:
+        ks[i] += 1
+    order, prev = [], 0
+    for (s, e, _), k in zip(spare, ks):
+        m = (s + e) // 2
+        if need < 0:
+            order += range(prev, m - k // 2)
+            prev = m - k // 2 + k
+        else:
+            order += list(range(prev, m)) + [m] * k
+            prev = m
+    order += range(prev, H)
+    out = Image.fromarray(np.asarray(img)[np.asarray(order)])
+    return out, f"{'removed' if need < 0 else 'added'} {n} px of empty space across {len(spare)} gaps, nothing scaled"
 
 
 def _layout_diff(a, b):
@@ -122,22 +201,33 @@ def _prep_ref(path, long_side=1536, what="reference image"):
 def cmd_mockup(a):
     if a.edit and a.style_ref:
         sys.exit("gptkit: use --edit (revise a screen) or --style-ref (new screen in its style), not both")
-    if not re.fullmatch(r"[1-9]\d*x[1-9]\d*", a.size or ""):
-        sys.exit(f"gptkit: --size must be WIDTHxHEIGHT, e.g. 1024x1536 (portrait), 1536x1024 or 1024x1024; got {a.size!r}")
+    if a.size is not None and not re.fullmatch(r"[1-9]\d*x[1-9]\d*", a.size):
+        sys.exit(f"gptkit: --size must be WIDTHxHEIGHT, e.g. {PHONE_SIZE} (9:19.5 phone), 1024x1536, 1536x1024 or "
+                 f"1024x1024; got {a.size!r}")
     edit_png = _prep_ref(a.edit, what="--edit mockup") if a.edit else None
     ref_png = _prep_ref(a.style_ref, what="--style-ref image") if a.style_ref else None
     ref = Image.open(io.BytesIO(ref_png)) if ref_png else None
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
-    aspect = ASPECTS.get(a.size, a.size)
     platform = a.platform or (_design_meta(a.edit or a.style_ref).get("platform") if (a.edit or a.style_ref) else None)
     if not platform:
         print("  (no --platform: designing platform-neutral; pass --platform android|ios|web for native components)")
-    _plan(a.variants, 0, image_model=a.model, size=a.size, edits=bool(a.edit or a.style_ref))
+    # an edit keeps the edited screen's canvas; a new screen gets the phone canvas (web: 3:2)
+    size = a.size or (_canvas_size(*Image.open(io.BytesIO(edit_png)).size) if edit_png else _default_size(platform))
+    qa = not a.no_critique
+    _plan(a.variants, a.variants if qa else 0, image_model=a.model, size=size, edits=bool(a.edit or a.style_ref))
     rule = _platform_rule(platform)
-    prompt = a.prompt if a.raw else MOCKUP_WRAP.format(prompt=a.prompt, aspect=aspect) + rule
-    edit_prompt = f"{a.prompt} Keep the {aspect} canvas and everything not mentioned exactly as it is."
-    style_prompt = a.prompt if a.raw else STYLE_REF_PROMPT.format(prompt=a.prompt, aspect=aspect) + rule
+    house = _house_style(a.no_house_style)
+
+    def prompt_for(sz):
+        asp = ASPECTS.get(sz, f"{sz} px")
+        if edit_png is not None:
+            return f"{a.prompt} Keep the {asp} canvas and everything not mentioned exactly as it is."
+        if a.raw:
+            return a.prompt
+        return (STYLE_REF_PROMPT if ref_png is not None else MOCKUP_WRAP).format(prompt=a.prompt, aspect=asp) + house + rule
+    canvas = {"size": size}  # shared by the variants: drops to a classic size once if the endpoint rejects this one
+    lock = threading.Lock()
     if platform:
         meta_path = out / "design.json"
         meta = _design_meta(meta_path) if meta_path.exists() else {}
@@ -146,31 +236,53 @@ def cmd_mockup(a):
 
     def one(i):
         # the backend picks aspect from the wording, not from `size`, and a style-ref edit can return the reference
-        for _ in range(2):
-            if edit_png is not None:
-                img, meta = edit(edit_png, edit_prompt, a.size, model=a.model, task="concept")
-            elif ref_png is not None:
-                img, meta = edit(ref_png, style_prompt, a.size, model=a.model, task="concept")
-            else:
-                img, meta = generate(prompt, a.size, model=a.model)
-            meta["layout_diff"] = _layout_diff(ref, Image.open(io.BytesIO(img))) if ref is not None else None
+        attempts = 0
+        while attempts < 2:
+            sz = canvas["size"]
+            try:
+                if edit_png is not None or ref_png is not None:
+                    img, meta = edit(edit_png if edit_png is not None else ref_png, prompt_for(sz), sz, model=a.model,
+                                     task="concept")
+                else:
+                    img, meta = generate(prompt_for(sz), sz, model=a.model)
+            except ApiError as e:
+                if not (_size_rejected(e) and sz not in CLASSIC_SIZES):
+                    raise
+                with lock:
+                    if canvas["size"] == sz:
+                        canvas["size"] = _size_for(*map(int, sz.split("x")))
+                        print(f"  ! the endpoint rejected size {sz} ({e}); rendering on {canvas['size']} instead")
+                continue
+            attempts += 1
+            im = Image.open(io.BytesIO(img))
+            meta["layout_diff"] = _layout_diff(ref, im) if ref is not None else None
             copied = ref is not None and meta["layout_diff"] < 10
             if copied:
                 print(f"  ! variant {i + 1} copied the style reference (layout_diff {meta['layout_diff']}), retrying")
-            if _aspect_ok(img, a.size) and not copied:
+            if _aspect_err(im, sz) <= ASPECT_TOL and not copied:
                 break
-        if not _aspect_ok(img, a.size):
-            got = "x".join(map(str, Image.open(io.BytesIO(img)).size))
-            print(f"  ! variant {i + 1}: backend returned {got} instead of the requested {a.size} aspect after 2 attempts; "
-                  "saved anyway (state the aspect in the prompt or crop/pad)")
+        p = out / f"{a.name}_v{i + 1}.png"
+        got = f"{im.width}x{im.height}"
+        fell_back = f" on {sz}, the endpoint rejected {size}" if sz != size else ""
+        if _aspect_err(im, sz) <= ASPECT_TOL:
+            meta["aspect"] = "ok" + (f" ({fell_back.strip()})" if fell_back else "")
+        else:
+            fitted, note = _fit_aspect(im, sz) if _aspect_ok(img, sz) else (None, "wrong orientation")
+            if fitted is not None:
+                (out / f"{a.name}_v{i + 1}_raw.png").write_bytes(img)
+                img = _png_bytes(fitted)
+                meta["aspect"] = f"fitted {got} -> {fitted.width}x{fitted.height} ({note}; original in {p.stem}_raw.png)"
+            else:
+                meta["aspect"] = f"OFF ({got} for {sz}{fell_back})"
+                print(f"  ! variant {i + 1}: backend returned {got} instead of the requested {sz} aspect after 2 attempts "
+                      f"and it could not be fitted ({note}); saved anyway (re-run it, or crop/pad by hand)")
         if copied:
             print(f"  ! variant {i + 1} still copies the style reference after 2 attempts; saved anyway (reword the prompt)")
-        p = out / f"{a.name}_v{i + 1}.png"
         p.write_bytes(img)
         return p, meta
     ex = cf.ThreadPoolExecutor(a.variants)
     futs = {ex.submit(one, i): i for i in range(a.variants)}
-    made, last_err = 0, None
+    made, last_err = [], None
     try:
         for f in cf.as_completed(futs):
             try:
@@ -180,15 +292,41 @@ def cmd_mockup(a):
                 if a.variants > 1:
                     print(f"  ! variant {futs[f] + 1} failed: {e}")
                 continue
-            made += 1
+            made.append(p)
             extra = f" layout_diff={meta['layout_diff']}" if ref is not None else ""
-            print(f"{p}  quality={meta.get('quality')} size={meta.get('size')}{extra}")
+            print(f"{p}  quality={meta.get('quality')} size={meta.get('size')} aspect={meta['aspect']}{extra}")
     finally:
         ex.shutdown(wait=False, cancel_futures=True)
     if not made:
         if a.variants == 1 or last_err is None:
             raise last_err or RuntimeError("mockup produced no image")
         sys.exit(f"gptkit: mockup produced no image (all {a.variants} variants failed, see above; last: {last_err})")
+    if qa:
+        _mockup_qa(sorted(made), platform or "android", ref)
+
+
+def _mockup_qa(paths, platform, ref):
+    """Design QA of each new variant (same files as `critique`), in parallel; a failed call is reported, never hidden."""
+    dp = _screen_dp(platform)
+
+    def one(p):
+        img = _open_image(p, "mockup")
+        return img, critique(img, dp, platform, ref)
+    with cf.ThreadPoolExecutor(len(paths)) as ex:
+        futs = [ex.submit(one, p) for p in paths]
+    print("design QA (critique):")
+    for p, f in zip(paths, futs):
+        try:
+            img, issues = f.result()
+        except (ApiError, SystemExit) as e:
+            print(f"  ! {p.name}: critique NOT run ({e}); run `critique {p}` before showing it")
+            continue
+        print(f"{p.name}: {len(issues)} issues, weight {_weight(issues)}")
+        _print_issues(issues)
+        _issue_overlay(img, issues, p.parent / f"{p.stem}_critique.png")
+        log = {"mockup": str(p), "rounds": [{"image": str(p), "issues": issues, "weight": _weight(issues)}], "best": str(p)}
+        (p.parent / f"{p.stem}_critique.json").write_text(json.dumps(log, indent=2))
+    print("  read each *_critique.png before showing a variant; `critique <png> --apply` edits the fixes in")
 
 
 def _lum(rgb):
@@ -309,11 +447,11 @@ def cmd_critique(a):
         if not todo:
             print("nothing at or above --min-severity to apply")
             break
-        aspect = ASPECTS.get(_size_for(*cur.size), "same")
+        aspect = ASPECTS.get(_canvas_size(*cur.size), "same")
         fixes = "\n".join(f"{i + 1}. {x['edit']}" for i, x in enumerate(todo))
         prompt = (f"Revise the attached app UI design. Apply ONLY these fixes:\n{fixes}\nKeep everything else exactly as "
                   f"it is: layout, content, copy, colours, typefaces, illustrations, icons and the {aspect} canvas.")
-        raw, _ = edit(_png_bytes(cur.convert("RGB")), prompt, _size_for(*cur.size), model=a.model)
+        raw, _ = edit(_png_bytes(cur.convert("RGB")), prompt, _canvas_size(*cur.size), model=a.model)
         p = out / f"{src.stem}_qa{rnd + 1}.png"
         p.write_bytes(raw)
         new = _rgba(p)

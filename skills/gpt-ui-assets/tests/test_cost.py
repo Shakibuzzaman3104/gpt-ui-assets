@@ -118,7 +118,8 @@ def test_budget_exceeded_and_dry_run_no_calls():
         try:
             K.cmd_mockup(argparse.Namespace(edit=None, style_ref=None, size="1024x1536", out=td,
                                             platform=None, raw=False, prompt="test", model=None,
-                                            variants=1, name="mockup"))
+                                            variants=1, name="mockup", no_critique=False,
+                                            no_house_style=False))
         except SystemExit as e:
             assert "exceeds GPTKIT_BUDGET_USD" in str(e)
         else:

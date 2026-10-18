@@ -52,8 +52,13 @@ def main():
     p.set_defaults(fn=cmd_status)
     p = sub.add_parser("mockup", help="generate UI mockup variants (or --edit an existing one)")
     p.add_argument("prompt"); p.add_argument("--out", required=True); p.add_argument("--name", default="mockup")
-    p.add_argument("--size", default="1024x1536", help="WIDTHxHEIGHT: 1024x1536 (portrait), 1536x1024, 1024x1024")
+    p.add_argument("--size", help=f"WIDTHxHEIGHT canvas (default: {PHONE_SIZE}, the 9:19.5 iPhone-proportion phone screen; "
+                   "web 1536x1024; --edit keeps the edited screen's canvas). Every render is checked against it and "
+                   "fitted locally when it comes back off")
     p.add_argument("--variants", type=_pos_int, default=1, help="images generated in parallel")
+    p.add_argument("--no-critique", action="store_true", help="skip the automatic design QA of each variant")
+    p.add_argument("--no-house-style", action="store_true",
+                   help="leave out the house style (clean, decluttered, modern; set GPTKIT_HOUSE_STYLE to change it)")
     p.add_argument("--edit", help="existing mockup PNG to revise with the prompt"); p.add_argument("--raw", action="store_true")
     p.add_argument("--style-ref", help="approved screen PNG: design a NEW screen in its exact design language")
     p.add_argument("--platform", choices=list(PLATFORMS), help="target platform: native components, system UI, metrics")

@@ -291,7 +291,7 @@ def _config():
             "image_model_pinned": bool(pick("GPTKIT_IMAGE_MODEL")),
             "text_model": pick("GPTKIT_TEXT_MODEL", default="gpt-6"),
             "retries": int(retries), "debug": pick("GPTKIT_DEBUG", default="").lower() in _TRUE,
-            "moderation": moderation, "config_path": str(path)}
+            "moderation": moderation, "house_style": pick("GPTKIT_HOUSE_STYLE"), "config_path": str(path)}
 
 
 def _auth():
