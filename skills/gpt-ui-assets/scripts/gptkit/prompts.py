@@ -166,7 +166,7 @@ def _device_record(platform, device=None, orientation=None, posture=None, page=N
     device = device or default
     allowed = DEVICE_VALID.get(platform, {"phone"})
     if device not in allowed:
-        raise ValueError(f"{platform} supports {', '.join(sorted(allowed))}")
+        raise ValueError(f"--device {device} is not available for --platform {platform} (choose: {', '.join(sorted(allowed))})")
     if orientation and device != "tablet":
         raise ValueError("--orientation applies to --device tablet (portrait|landscape)")
     if posture and device != "foldable":
@@ -174,7 +174,7 @@ def _device_record(platform, device=None, orientation=None, posture=None, page=N
     if page and platform != "web":
         raise ValueError("--page applies to --platform web (app|landing)")
     if device == "tablet":
-        variant = orientation or ("landscape" if platform == "android" else "landscape")
+        variant = orientation or "landscape"
     elif device == "foldable":
         variant = posture or "flat"
     elif platform == "web":
@@ -184,7 +184,7 @@ def _device_record(platform, device=None, orientation=None, posture=None, page=N
     key = (platform, device, variant)
     if key not in DEVICES:
         valid = sorted(k[2] for k in DEVICES if k[:2] == key[:2])
-        raise ValueError(f"{platform} {device} supports {', '.join(valid)}")
+        raise ValueError(f"--platform {platform} --device {device} has no {variant!r} variant (choose: {', '.join(valid)})")
     return DEVICES[key]
 
 PLATFORM_RULE = ("Target platform: {label}. Build the screen from this platform's native components wherever one fits: "

@@ -64,7 +64,7 @@ def test_defaults_and_validity():
     calls = []
     with tempfile.TemporaryDirectory() as td, patched(generate=lambda *a, **k: calls.append(1)):
         code, out = run(K.cmd_mockup, args(td, platform="ios", device="desktop"))
-    assert code == 1 and "ios supports phone, tablet" in out and not calls, out
+    assert code == 1 and "--device desktop is not available for --platform ios (choose: phone, tablet)" in out and not calls, out
     assert K._device_record("android", "tablet", "landscape")["canvas"] == "2304x1440"
     assert K._device_record("ios", "tablet", "landscape")["canvas"] == "2320x1600"
     assert K._device_record("android", "foldable", "", "tabletop")["hinge"] == ("y", 0.5)
@@ -153,6 +153,25 @@ def test_manifest_excludes_desktop_window_chrome():
         assert code == 0 and "traffic lights, caption buttons, title bar" in prompts[0]
         assert "taskbar, Dock and browser chrome" in prompts[0]
 
+
+
+def test_style_ref_from_another_platform_does_not_carry_its_device():
+    """A phone screen as --style-ref for macOS or web renders on the target's own desktop canvas."""
+    sizes = []
+    def edit(ref, prompt, size, **kw):
+        sizes.append(size)
+        return _png(tuple(map(int, size.split("x")))), {"quality": "high", "size": size}
+    with tempfile.TemporaryDirectory() as td:
+        phone = Path(td) / "home.png"
+        phone.write_bytes(_png((1152, 2496)))
+        (Path(td) / "design.json").write_text(json.dumps({"platform": "ios", "screens": {
+            "home.png": {"platform": "ios", "device": "phone", "canvas": "1152x2496"}}}))
+        with patched(edit=edit):
+            for platform in ("macos", "web"):
+                code, out = run(K.cmd_mockup, args(td, out=str(Path(td) / platform), platform=platform,
+                                                   style_ref=str(phone)))
+                assert code == 0, out
+    assert sizes == ["2304x1440", "2304x1440"], sizes
 
 if __name__ == "__main__":
     for name, fn in list(globals().items()):

@@ -289,8 +289,11 @@ def cmd_mockup(a):
     if not platform:
         print("  (no --platform: designing platform-neutral; pass --platform android|ios|web for native components)")
     requested_device = getattr(a, "device", None)
-    device_arg = requested_device or source_meta.get("device")
-    inherit_device = not requested_device or requested_device == source_meta.get("device")
+    # the reference's device, orientation, posture and page carry over only within its own platform: a phone screen used
+    # as --style-ref for --platform macos or web must not make that a phone-shaped desktop window or web page
+    same_platform = platform == source_meta.get("platform")
+    device_arg = requested_device or (source_meta.get("device") if same_platform else None)
+    inherit_device = same_platform and (not requested_device or requested_device == source_meta.get("device"))
     orientation = getattr(a, "orientation", None) or (source_meta.get("orientation") if inherit_device else None)
     posture = getattr(a, "posture", None) or (source_meta.get("posture") if inherit_device else None)
     page = getattr(a, "page", None) or (source_meta.get("page") if inherit_device else None)
