@@ -1,8 +1,28 @@
-# gptkit part 20_doctor: doctor.
-# Executed into gptkit.py's namespace in file order (see gptkit.py): names from earlier parts are
-# plain globals here, and the tests' monkeypatching of gptkit.<name> reaches every part.
+"""Doctor."""
+import json
+import os
+import sys
+import time
+from datetime import date
+from pathlib import Path
+
+import requests
+
+from .core import (
+    RETIREMENTS, _auth, _chrome_probe, _config, _need, _open_image, _redact, _today, _unit_float, image_chain,
+    pick_text_model,
+)
+from .imaging import ref_crop, score
+from .design import _asset, _load
+from .forge import _renderer_name, render_svgs, svg_fidelity
+from .vectordrawable import _android_sdk
+from .svg_icons import _svg_issues
+from .sequence import _find_ebsynth
+from .previews import LOTTIE_JS, _chrome, _lottie_js_cache, _lottie_js_ok
+from .fonts import GF_METADATA, _cache_dir
 
 def cmd_doctor(a):
+    from .codex_cli import _backend_status  # deferred: codex_cli imports this module
     c = _config()
     api_ready, cli_ready, selected, reason = _backend_status()
     print(f"backend     : {selected} (auto: {reason})" if c["backend"] == "auto" else f"backend     : {selected}")

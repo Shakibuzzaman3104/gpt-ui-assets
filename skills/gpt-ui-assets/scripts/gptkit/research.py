@@ -1,6 +1,11 @@
-# gptkit part 21_research: research, blueprint.
-# Executed into gptkit.py's namespace in file order (see gptkit.py): names from earlier parts are
-# plain globals here, and the tests' monkeypatching of gptkit.<name> reaches every part.
+"""Research, blueprint."""
+import concurrent.futures as cf
+import json
+import sys
+from pathlib import Path
+
+from .core import ApiError, _plan, _read_json, _responses, _responses_text, _warn_retired_model
+from .prompts import PLATFORMS
 
 # ---- market research + feature blueprint
 
@@ -12,6 +17,7 @@ EFFORTS = ("none", "minimal", "low", "medium", "high", "xhigh", "max")
 def think(prompt, schema=None, name="result", model=None, effort="high", search=False):
     """Reasoning call (optionally with web search). Returns (text or parsed JSON, [url citations]); a refusal,
     truncation, empty or non-JSON answer raises ApiError (see _responses_text)."""
+    from .codex_cli import _cli_think, _selected_backend  # deferred: codex_cli imports this module
     if effort not in EFFORTS:
         raise ValueError(f"think: effort must be one of {', '.join(EFFORTS)}, got {effort!r}")
     if _selected_backend() == "cli":

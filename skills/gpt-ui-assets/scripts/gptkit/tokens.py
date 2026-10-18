@@ -1,6 +1,21 @@
-# gptkit part 15_tokens: tokens: Compose / SwiftUI / CSS / Tailwind.
-# Executed into gptkit.py's namespace in file order (see gptkit.py): names from earlier parts are
-# plain globals here, and the tests' monkeypatching of gptkit.<name> reaches every part.
+"""Tokens: Compose / SwiftUI / CSS / Tailwind."""
+import json
+import math
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+from pathlib import Path
+
+import numpy as np
+from PIL import Image, ImageDraw
+
+from .core import _JAVA_KEYWORDS, _chrome_err, _chrome_flags, _clip_bbox, _need, _open_image, _read_json
+from .previews import _chrome
+from .measure import _de_hex, _hexi, _lab_arr, _norm_hex, _save_text_boxes, _text_targets, _to_hex
 
 # ---- tokens: design_spec.json -> Compose / SwiftUI / CSS / Tailwind
 

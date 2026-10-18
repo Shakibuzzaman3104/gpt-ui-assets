@@ -1,6 +1,13 @@
-# gptkit part 14_measure: colour science and text measurement shared by tokens, fonts, compare.
-# Executed into gptkit.py's namespace in file order (see gptkit.py): names from earlier parts are
-# plain globals here, and the tests' monkeypatching of gptkit.<name> reaches every part.
+"""Colour science and text measurement shared by tokens, fonts, compare."""
+import json
+import math
+import re
+from pathlib import Path
+
+import numpy as np
+from PIL import ImageDraw
+
+from .core import ApiError, _clip_bbox, ask
 
 # ---- design-to-code: colour science + text measurement (shared by tokens, fonts, compare)
 

@@ -1,6 +1,29 @@
-# gptkit part 12_appicon: appicon concepts / build.
-# Executed into gptkit.py's namespace in file order (see gptkit.py): names from earlier parts are
-# plain globals here, and the tests' monkeypatching of gptkit.<name> reaches every part.
+"""Appicon concepts / build."""
+import concurrent.futures as cf
+import io
+import json
+import math
+import re
+import shutil
+import subprocess
+import sys
+import time
+import xml.etree.ElementTree as ET
+from pathlib import Path
+
+import numpy as np
+from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageStat
+
+from .core import ApiError, _clip_bbox, _config, _open_image, _plan, _png_bytes, _res_name, ask, edit, generate
+from .imaging import _lab, _mean_diff, _rgba, _unusable, checker, score, trim
+from .design import _aspect_ok, _asset, _load
+from .forge import (
+    _color_final, _current, _entry, _finalize, _read_report, _render_svg, _renderer_name, _rep_abs, _rep_rel,
+    _update_report,
+)
+from .vectordrawable import _aapt2_tree, _vd_lint, svg_to_vd
+from .frames import _register
+from .export import DENSITIES, _fit
 
 # ---- app launcher icons
 

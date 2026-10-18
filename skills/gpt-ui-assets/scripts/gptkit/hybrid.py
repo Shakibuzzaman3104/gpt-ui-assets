@@ -1,6 +1,28 @@
-# gptkit part 19_hybrid: material, state, stage (+ --compose).
-# Executed into gptkit.py's namespace in file order (see gptkit.py): names from earlier parts are
-# plain globals here, and the tests' monkeypatching of gptkit.<name> reaches every part.
+"""Material, state, stage (+ --compose)."""
+import concurrent.futures as cf
+import functools
+import http.server
+import json
+import math
+import os
+import re
+import shutil
+import subprocess
+import sys
+import threading
+from pathlib import Path
+
+import numpy as np
+from PIL import Image, ImageDraw, ImageFilter
+
+from .core import ApiError, _JAVA_KEYWORDS, _plan, _pos_float, _pos_int, edit, generate
+from .imaging import _flag_weight, content_box, sheet, trim
+from .frames import _decode_result, _opaque_share
+from .previews import _chrome
+from .tokens import _ident, _kotlinc_check, _kt_header, _uniq, cmd_tokens
+from .fonts import cmd_fonts
+from .redline import cmd_redline
+from .compare import cmd_compare
 
 # ---------------------------------------------------------------- hybrid screens: code builds the UI, GPT paints the materials
 # GPT image models draw a plausible screen, not a designed one: chunky type, no hairlines, loud fills. The hybrid route

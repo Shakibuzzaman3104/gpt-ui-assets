@@ -1,7 +1,8 @@
 """Offline checks for `export`: python3 tests/test_export.py (no API calls, no Chrome)."""
 import argparse
-import importlib.util
 import json
+import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -11,9 +12,9 @@ import numpy as np
 from PIL import Image, ImageDraw
 
 HERE = Path(__file__).parent
-spec = importlib.util.spec_from_file_location("gptkit", HERE.parent / "scripts" / "gptkit.py")
-gk = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(gk)
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+os.environ.setdefault("GPTKIT_CODEX", "none")  # the offline tests never reach a real Codex CLI
+import gptkit as gk  # noqa: E402
 KIT = str(HERE.parent / "scripts" / "gptkit.py")
 
 

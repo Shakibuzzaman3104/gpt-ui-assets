@@ -1,6 +1,18 @@
-# gptkit part 07_frames: frames.
-# Executed into gptkit.py's namespace in file order (see gptkit.py): names from earlier parts are
-# plain globals here, and the tests' monkeypatching of gptkit.<name> reaches every part.
+"""Frames."""
+import base64
+import concurrent.futures as cf
+import io
+import json
+import math
+import sys
+from pathlib import Path
+
+import numpy as np
+from PIL import Image, ImageChops, ImageFilter
+
+from .core import ApiError, _config, _open_image, _plan, _png_bytes, _res_name, _size_for, edit, pick_image_model
+from .imaging import _lab, _rgba, content_box, sheet
+from .vectordrawable import _aapt2_tree
 
 # ---- animation frames
 
@@ -304,6 +316,7 @@ def _box_gap(a, b):
 
 def _target_clusters(target, size):
     """Spatial clusters of the target's components (e.g. coin + rays vs slivers the static redraw left behind)."""
+    from .trace_rig import _label  # deferred: trace_rig imports this module
     lab, n = _label(target)
     if n < 2:
         return []

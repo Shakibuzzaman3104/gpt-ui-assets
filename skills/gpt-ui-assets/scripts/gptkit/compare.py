@@ -1,6 +1,19 @@
-# gptkit part 18_compare: compare a built screen with the design.
-# Executed into gptkit.py's namespace in file order (see gptkit.py): names from earlier parts are
-# plain globals here, and the tests' monkeypatching of gptkit.<name> reaches every part.
+"""Compare a built screen with the design."""
+import concurrent.futures as cf
+import json
+import math
+import sys
+from pathlib import Path
+
+import numpy as np
+import requests
+from PIL import Image, ImageDraw, ImageFilter
+
+from .core import _need, _open_image, _read_json, ask
+from .imaging import sheet
+from .measure import _blobs, _de00, _de_hex, _dominant, _hexi, _lab_arr, _locate_text, _text_targets, _to_hex
+from .tokens import _d2c_load_spec, _d2c_manifest, _json_lists
+from .fonts import _fit_font, _gf_meta, _gf_ttf, _shape_similarity
 
 # ---- compare: implemented screen vs approved mockup
 

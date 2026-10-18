@@ -1,6 +1,12 @@
-# gptkit part 11_export: export to Android/iOS/web.
-# Executed into gptkit.py's namespace in file order (see gptkit.py): names from earlier parts are
-# plain globals here, and the tests' monkeypatching of gptkit.<name> reaches every part.
+"""Export to Android/iOS/web."""
+import json
+import re
+import sys
+from pathlib import Path
+
+from PIL import Image
+
+from .core import _open_image, _res_name
 
 # ---- export
 

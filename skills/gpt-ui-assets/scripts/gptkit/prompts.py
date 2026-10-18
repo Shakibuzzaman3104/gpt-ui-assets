@@ -1,6 +1,8 @@
-# gptkit part 02_prompts: prompts and JSON schemas.
-# Executed into gptkit.py's namespace in file order (see gptkit.py): names from earlier parts are
-# plain globals here, and the tests' monkeypatching of gptkit.<name> reaches every part.
+"""Prompts and JSON schemas."""
+import json
+from pathlib import Path
+
+from .core import _config
 
 # ---------------------------------------------------------------- prompts
 

@@ -1,8 +1,10 @@
 """Regressions found by the Phase C code review (offline, no API calls): python3 tests/test_code_review.py."""
 import argparse
 import ast
-import importlib.util
 import json
+import os
+import re
+import sys
 import tempfile
 import time
 from pathlib import Path
@@ -11,16 +13,16 @@ from PIL import Image, ImageDraw
 
 HERE = Path(__file__).parent
 KIT = HERE.parent / "scripts" / "gptkit.py"
-spec = importlib.util.spec_from_file_location("gptkit", KIT)
-gk = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(gk)
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+os.environ.setdefault("GPTKIT_CODEX", "none")  # the offline tests never reach a real Codex CLI
+import gptkit as gk  # noqa: E402
 
 
 def test_python39_grammar():
     """README promises Python 3.9+: the kit must parse under the 3.9 grammar (no match, except*, parenthesised with)."""
     src = KIT.read_text()
     ast.parse(src, feature_version=(3, 9))
-    assert not gk.re.search(r"zip\([^)]*strict\s*=", src), "zip(strict=) is Python 3.10+"
+    assert not re.search(r"zip\([^)]*strict\s*=", src), "zip(strict=) is Python 3.10+"
     for feature in (".bit_count(", "itertools.pairwise", "ExceptionGroup", "hashlib.file_digest", "datetime.UTC"):
         assert feature not in src, f"{feature} is not in Python 3.9"
 
@@ -53,7 +55,7 @@ def test_obb_radial_default_radius():
     base = ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><defs><radialGradient id="g"{attrs}>'
             '<stop offset="0" stop-color="#ff0000"/><stop offset="1" stop-color="#0000ff"/></radialGradient></defs>'
             '<rect width="24" height="24" fill="url(#g)"/></svg>')
-    radius = lambda svg: float(gk.re.search(r'gradientRadius="([^"]+)"', gk.svg_to_vd(svg, 24)).group(1))
+    radius = lambda svg: float(re.search(r'gradientRadius="([^"]+)"', gk.svg_to_vd(svg, 24)).group(1))
     assert radius(base.format(attrs="")) == 12
     assert radius(base.format(attrs=' r="50%"')) == 12
     assert radius(base.format(attrs=' r="0.25"')) == 6
@@ -167,6 +169,19 @@ def test_forge_cancels_queued_calls_on_fatal_error():
         finally:
             gk.edit, gk._finalize = old_edit, old_fin
 
+
+
+def test_package_state_is_registered():
+    """Every module global a function rebinds with `global` is listed in gptkit.STATE (else gptkit.<name> goes stale)."""
+    pkg = Path(gk.__file__).parent
+    rebound = set()
+    for mod in pkg.glob("*.py"):
+        for node in ast.walk(ast.parse(mod.read_text())):
+            if isinstance(node, ast.Global):
+                rebound.update(node.names)
+    assert rebound <= set(gk.STATE), f"add to gptkit.STATE: {sorted(rebound - set(gk.STATE))}"
+    for name, mod in gk.STATE.items():
+        assert name in vars(mod), f"gptkit.STATE[{name!r}] names the wrong module"
 
 if __name__ == "__main__":
     for k, fn in list(globals().items()):

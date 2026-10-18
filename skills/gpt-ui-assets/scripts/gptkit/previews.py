@@ -1,6 +1,35 @@
-# gptkit part 10_previews: lottie-web / SVG previews in headless Chrome.
-# Executed into gptkit.py's namespace in file order (see gptkit.py): names from earlier parts are
-# plain globals here, and the tests' monkeypatching of gptkit.<name> reaches every part.
+"""Lottie-web / SVG previews in headless Chrome."""
+import base64
+import functools
+import json
+import math
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+import xml.etree.ElementTree as ET
+from pathlib import Path
+
+import numpy as np
+import requests
+from PIL import Image
+
+from .core import SVG_NS, _chrome_err, _chrome_flags, _need, _open_image, _res_name, ask
+from .imaging import _rgba, ref_crop, sheet
+from .prompts import MOTION_MIN, MOTION_STRENGTH, VECTOR_PROMPT, VECTOR_SCHEMA
+from .design import _load
+from .forge import _render_svg
+from .vectordrawable import (
+    _IDENTITY, _aapt2_line, _inherit, _mapply, _mmul, _num, _shape_path, _style_dict, aapt2_check,
+)
+from .vectorize import (
+    GLOW_STOPS, _bbox, _canon_vec, _cap, _curve_pts, _d, _fit_viewbox, _fmtn, _grad_chain, _gradient, _join,
+    _layer_name, _layers, _matrix, _morph_at, _motion_at, _normalize_vec, _paint_alphas, _paint_color, _subpaths,
+    _validate_vec, _vec_vb, _xform_subs, build_avd, build_lottie, motion_report,
+)
 
 # ---- previews: lottie-web in headless Chrome, SVG fallback
 
@@ -31,6 +60,7 @@ def _lottie_js_ok(txt):
 
 
 def _lottie_js_cache():
+    from .fonts import _cache_dir  # deferred: fonts imports this module
     return _cache_dir() / "lottie-5.12.2.min.js"
 
 

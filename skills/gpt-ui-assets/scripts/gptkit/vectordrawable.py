@@ -1,6 +1,20 @@
-# gptkit part 05_vectordrawable: SVG -> VectorDrawable conversion and lint.
-# Executed into gptkit.py's namespace in file order (see gptkit.py): names from earlier parts are
-# plain globals here, and the tests' monkeypatching of gptkit.<name> reaches every part.
+"""SVG -> VectorDrawable conversion and lint."""
+import functools
+import json
+import math
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import xml.etree.ElementTree as ET
+from pathlib import Path
+
+import numpy as np
+
+from .core import SVG_NS, _chrome_probe, _res_name
+from .forge import _renderer_name, render_svgs
 
 # ---- SVG -> Android VectorDrawable
 
@@ -291,6 +305,7 @@ _IDENTITY = (1.0, 0.0, 0.0, 1.0, 0.0, 0.0)
 def _tf_affine(tf):
     """SVG transform list -> (a, b, c, d, e, f); _matrix parses skewX/skewY itself, so this is only the name the
     converter uses for it."""
+    from .vectorize import _matrix  # deferred: vectorize imports this module
     return _matrix(tf)
 
 
@@ -306,6 +321,7 @@ def _mapply(m, x, y):
 
 def _abs_path(d, m=_IDENTITY):
     """Path data as absolute L/C segments with matrix m applied (arcs become cubics)."""
+    from .vectorize import _d, _subpaths  # deferred: vectorize imports this module
     subs = _subpaths(d)
     if m != _IDENTITY:
         for sp in subs:
@@ -316,6 +332,7 @@ def _abs_path(d, m=_IDENTITY):
 
 def _path_bbox(d):
     """(x0, y0, x1, y1) hull of the path's anchor and control points (exact for straight edges)."""
+    from .vectorize import _points, _subpaths  # deferred: vectorize imports this module
     pts = _points(_subpaths(d))
     if not pts:
         return None
@@ -356,6 +373,8 @@ def _inline_uses(root, ids):
 def _rewind_evenodd(d):
     """Path data with every subpath wound by nesting depth (a hole runs against its outer loop) so the nonzero rule
     keeps what evenodd cut out: VectorDrawable <clip-path> has no fillType. Exact for nested, non-crossing subpaths."""
+    from .vectorize import _curve_pts, _d, _subpaths  # deferred: vectorize imports this module
+    from .trace_rig import _area, _inside  # deferred: trace_rig imports this module
     subs = _subpaths(d)
     loops = [np.array(_curve_pts([sp])) for sp in subs]
     out = []
@@ -375,6 +394,7 @@ def svg_to_vd(svg_text, width_dp=None, warnings=None):
     Handles shapes, groups and transforms (skews baked into coordinates), <style> classes, <use>/<symbol>, clip-path,
     linear/radial gradients (userSpaceOnUse and objectBoundingBox, gradientTransform), CSS colours.
     Default size: the root width/height (px; pt/mm/cm/in converted), else the viewBox, at the viewBox's aspect."""
+    from .svg_icons import _SHAPES, _bake_transforms  # deferred: svg_icons imports this module
     warns = warnings if warnings is not None else []
     root = ET.fromstring(svg_text)
     vx, vy, vw, vh = _viewbox(root)
@@ -458,6 +478,7 @@ def svg_to_vd(svg_text, width_dp=None, warnings=None):
 
     def geometry(ref, d):
         """Gradient geometry in the path's user space: objectBoundingBox mapped through the path's bbox, then gradientTransform."""
+        from .vectorize import _subpaths  # deferred: vectorize imports this module
         tag, geo, _, _, obb, gt, gid = grads[ref]
         m = gt
         if obb:
@@ -577,6 +598,8 @@ def svg_to_vd(svg_text, width_dp=None, warnings=None):
 
     def clip_of(ref, el_paths, ind, body):
         """<group> with a <clip-path> around body; None when the clip is a rect covering the whole viewBox."""
+        from .svg_icons import _SHAPES  # deferred: svg_icons imports this module
+        from .vectorize import _subpaths  # deferred: vectorize imports this module
         cel = ids.get(ref)
         if cel is None or tag_of(cel) != "clipPath":
             raise ValueError(f"clip-path #{ref} not found")
@@ -628,6 +651,7 @@ def svg_to_vd(svg_text, width_dp=None, warnings=None):
         return m_.group(1) if m_ else None
 
     def walk(el, inherited, ind):
+        from .svg_icons import _SHAPES  # deferred: svg_icons imports this module
         lines = []
         children = list(el)
         if tag_of(el) == "switch":

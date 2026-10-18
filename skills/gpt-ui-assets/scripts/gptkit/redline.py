@@ -1,6 +1,13 @@
-# gptkit part 17_redline: redline geometry.
-# Executed into gptkit.py's namespace in file order (see gptkit.py): names from earlier parts are
-# plain globals here, and the tests' monkeypatching of gptkit.<name> reaches every part.
+"""Redline geometry."""
+import json
+import math
+from pathlib import Path
+
+import numpy as np
+from PIL import ImageDraw
+
+from .measure import _dominant, _lab_arr, _text_targets, _to_hex
+from .tokens import _d2c_load_spec, _d2c_manifest, _link_regions
 
 # ---- redline: pixel-true geometry (edges, corner radii, gaps) for the components of an approved design
 
@@ -38,6 +45,7 @@ def _surface_geometry(rgb, b):
     outline doesn't stand out from the surroundings near the bbox. Sides within 2 px of the image border are the border
     (full-bleed sheets, bars); corners are measured where the background is visible; a drop shadow is tolerated and
     reported as shadow=True."""
+    from .compare import _box_mean  # deferred: compare imports this module
     H, W = rgb.shape[:2]
     x, y, w, h = b["x"], b["y"], b["w"], b["h"]
     if w < 12 or h < 12:
@@ -134,6 +142,7 @@ def _surface_geometry(rgb, b):
 
 
 def cmd_redline(a):
+    from .compare import _object_box, _regions  # deferred: compare imports this module
     d, spec, mock = _d2c_load_spec(a.dir)
     rgb = np.asarray(mock.convert("RGB"))
     k = spec.get("px_to_dp", 1.0)

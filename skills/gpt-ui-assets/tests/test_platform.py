@@ -1,16 +1,17 @@
 """Offline checks for platform profiles, native-scale calibration and moving-part registration: python3 tests/test_platform.py"""
-import importlib.util
 import json
+import os
 import re
+import sys
 import tempfile
 from pathlib import Path
 
 import numpy as np
 from PIL import Image, ImageDraw
 
-spec = importlib.util.spec_from_file_location("gptkit", Path(__file__).parent.parent / "scripts" / "gptkit.py")
-g = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(g)
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+os.environ.setdefault("GPTKIT_CODEX", "none")  # the offline tests never reach a real Codex CLI
+import gptkit as g  # noqa: E402
 
 
 def test_platform_rule_names_native_components():

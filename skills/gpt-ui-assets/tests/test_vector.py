@@ -1,11 +1,11 @@
 """Offline checks for the vector animation builders: python3 tests/test_vector.py (no API calls)."""
 import argparse
-import importlib.util
 import json
 import math
 import os
-import subprocess
+import re
 import shutil
+import subprocess
 import sys
 import tempfile
 import xml.etree.ElementTree as ET
@@ -14,9 +14,9 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-spec = importlib.util.spec_from_file_location("gptkit", Path(__file__).parent.parent / "scripts" / "gptkit.py")
-gk = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(gk)
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+os.environ.setdefault("GPTKIT_CODEX", "none")  # the offline tests never reach a real Codex CLI
+import gptkit as gk  # noqa: E402
 
 HEART = ("M22 40.5 8.2 27.1C3.9 22.8 1.75 19.2 1.75 14.1 1.75 7.6 6.1 3.5 11.7 3.5 16.1 3.5 19.4 6.2 22 9.7 "
          "24.6 6.2 27.9 3.5 32.3 3.5 37.9 3.5 42.25 7.6 42.25 14.1 42.25 19.2 40.1 22.8 35.8 27.1Z")

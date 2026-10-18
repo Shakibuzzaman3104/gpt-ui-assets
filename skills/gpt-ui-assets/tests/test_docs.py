@@ -5,9 +5,9 @@ C3 (docs-vs-behaviour): every `python3 $K <cmd>` recipe in SKILL.md names a real
 As a weaker, whole-document net, every other backticked --flag anywhere in SKILL.md/README.md is accepted by
 *some* command in the kit (catches a typo'd or invented flag that isn't near a runnable recipe line).
 """
+import os
 import re
 import sys
-import types
 from pathlib import Path
 
 HERE = Path(__file__).parent
@@ -18,32 +18,18 @@ README_MD = REPO_ROOT / "README.md"
 # SKILL.md is a router; the recipes live in the phase references it points to (api-findings.md is raw measurements)
 SKILL_DOCS = [SKILL_MD] + sorted(p for p in (ROOT / "references").glob("*.md") if p.name != "api-findings.md")
 
+sys.path.insert(0, str(ROOT / "scripts"))
+os.environ.setdefault("GPTKIT_CODEX", "none")  # the offline tests never reach a real Codex CLI
+import gptkit as K  # noqa: E402
+
 
 def _skill_text():
     return "\n".join(p.read_text() for p in SKILL_DOCS)
-KIT = ROOT / "scripts" / "gptkit.py"
-
-
-def _kit_source():
-    """gptkit.py's imports followed by every part in load order: the module as it exists at runtime."""
-    kit = KIT.read_text()
-    head = kit[:kit.index("# The kit's code lives in gptkit_parts/")]
-    return head + "\n".join(p.read_text() for p in sorted((KIT.parent / "gptkit_parts").glob("[0-9][0-9]_*.py")))
 
 
 def _build_parser():
-    """Re-build main()'s argparse tree without calling parse_args (no sys.argv side effects)."""
-    src = _kit_source()
-    i = src.index("def main():")
-    j = src.index("a = ap.parse_args()")
-    head, main_src = src[:i], src[i:j]
-    mod = types.ModuleType("gptkit_docs_probe")
-    exec(compile(head, str(KIT), "exec"), mod.__dict__)
-    body = main_src.split("\n", 1)[1]
-    dedented = "\n".join(l[4:] if l.startswith("    ") else l for l in body.split("\n"))
-    ns = dict(mod.__dict__)
-    exec(compile(dedented, "<main-body>", "exec"), ns)
-    return ns["sub"]  # the top-level _SubParsersAction's .choices dict of subparsers
+    """main()'s argparse tree, built without parsing sys.argv."""
+    return K.build_parser()[1]  # the top-level _SubParsersAction (.choices: name -> subparser)
 
 
 def _flags_of(parser):

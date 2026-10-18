@@ -1,6 +1,26 @@
-# gptkit part 04_forge: forge, fix, pick, score.
-# Executed into gptkit.py's namespace in file order (see gptkit.py): names from earlier parts are
-# plain globals here, and the tests' monkeypatching of gptkit.<name> reaches every part.
+"""Forge, fix, pick, score."""
+import base64
+import concurrent.futures as cf
+import functools
+import io
+import json
+import math
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+import xml.etree.ElementTree as ET
+from pathlib import Path
+
+import numpy as np
+from PIL import Image, ImageChops, ImageDraw, ImageFilter
+
+from .core import _chrome_err, _chrome_flags, _chrome_probe, _plan, _png_bytes, _read_json, _size_for, ask, edit
+from .imaging import _backdrop, _lab, _rank, _rgba, _unusable, color_match, score, sheet, trim
+from .design import FIX_SCHEMA, _asset, _forge_job, _load, _png_verified, _select
 
 # ---- forge_report.json: dir-relative paths, re-read + merge + atomic replace (parallel forge/fix/pick runs are safe)
 
@@ -361,6 +381,7 @@ def _cairosvg():
 def _renderer_name():
     """The SVG rasteriser that works here: chrome (only when the probe render succeeds), cairosvg, rsvg-convert,
     qlmanage, or None."""
+    from .previews import _chrome  # deferred: previews imports this module
     if _chrome() and _chrome_probe()[0]:
         return "chrome"
     if _cairosvg():
@@ -389,6 +410,7 @@ _warned_chrome = False
 
 def _chrome_render(svgs, size):
     """Rasterise sized SVG texts with headless Chrome, one grid page per <= 256 icons; [RGBA Image or None]."""
+    from .previews import _chrome  # deferred: previews imports this module
     global _warned_chrome
     out = []
     per = max(1, min(256, (2048 // size) * (8192 // size)))  # keep each page under ~2048 x 8192 px

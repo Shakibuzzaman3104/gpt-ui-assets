@@ -1,6 +1,7 @@
-# gptkit part 01_imaging: image utilities and perceptual scoring.
-# Executed into gptkit.py's namespace in file order (see gptkit.py): names from earlier parts are
-# plain globals here, and the tests' monkeypatching of gptkit.<name> reaches every part.
+"""Image utilities and perceptual scoring."""
+import numpy as np
+from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageStat
+
 
 # ---------------------------------------------------------------- image utils
 

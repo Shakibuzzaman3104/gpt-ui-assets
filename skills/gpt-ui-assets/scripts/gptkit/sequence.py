@@ -1,6 +1,24 @@
-# gptkit part 08_sequence: sequence (layout, plan, render, build, propagate, reroll).
-# Executed into gptkit.py's namespace in file order (see gptkit.py): names from earlier parts are
-# plain globals here, and the tests' monkeypatching of gptkit.<name> reaches every part.
+"""Sequence (layout, plan, render, build, propagate, reroll)."""
+import concurrent.futures as cf
+import json
+import math
+import os
+import re
+import shutil
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+import numpy as np
+from PIL import Image, ImageDraw, ImageFilter
+
+from .core import ApiError, _need, _open_image, _plan, _png_bytes, _read_json, edit
+from .imaging import _rgba, sheet
+from .frames import (
+    _decode_result, _durations, _fail_note, _match_colors, _opaque_error, _opaque_share, _pool, _register,
+    _retryable,
+)
 
 # ---- layout-driven sequences: code lays the motion out, GPT renders every frame
 
@@ -40,6 +58,7 @@ def _seq_no_layout(a, d):
 
 
 def _seq_meta(d, **update):
+    from .tokens import _num_ok  # deferred: tokens imports this module
     p = d / "sequence.json"
     meta = _read_json(p, "sequence.json") if p.exists() else {}
     if not isinstance(meta, dict):

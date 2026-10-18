@@ -1,6 +1,24 @@
-# gptkit part 00_core: the API layer: config, retries, image/text calls, model routing, cost ledger, shared helpers.
-# Executed into gptkit.py's namespace in file order (see gptkit.py): names from earlier parts are
-# plain globals here, and the tests' monkeypatching of gptkit.<name> reaches every part.
+"""The API layer: config, retries, image/text calls, model routing, cost ledger, shared helpers."""
+import argparse
+import base64
+import functools
+import io
+import json
+import math
+import os
+import re
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+import xml.etree.ElementTree as ET
+from pathlib import Path
+from datetime import datetime, timezone
+
+import requests
+from PIL import Image
+
 
 SVG_NS = "{http://www.w3.org/2000/svg}"
 ET.register_namespace("", "http://www.w3.org/2000/svg")
@@ -157,6 +175,7 @@ def _chrome_err(r):
 @functools.cache
 def _chrome_probe():
     """(True, '') when headless Chrome can actually render here, else (False, reason). One 64x64 shot, cached."""
+    from .previews import _chrome  # deferred: previews imports this module
     exe = _chrome()
     if not exe:
         return False, "no Chrome/Chromium found (set GPTKIT_CHROME)"
@@ -224,6 +243,7 @@ def _need(path, what, hint=""):
 
 def _open_image(path, what="image", hint=""):
     """_rgba(path) with a one-line exit for a missing or undecodable file."""
+    from .imaging import _rgba  # deferred: imaging imports this module
     p = _need(path, what, hint)
     try:
         return _rgba(p)
@@ -599,6 +619,7 @@ def pick_text_model(model=None):
 
 
 def generate(prompt, size="1024x1024", background="auto", model=None, task="concept"):
+    from .codex_cli import _cli_generate, _selected_backend  # deferred: codex_cli imports this module
     c = _config()
     if _selected_backend() == "cli":
         return _cli_generate(prompt, size=size, background=background, model=model, task=task)
@@ -621,6 +642,7 @@ def generate(prompt, size="1024x1024", background="auto", model=None, task="conc
 def edit(ref_png: bytes, prompt, size="1024x1024", background="auto", model=None, fidelity="high", task="precise"):
     # One reference image per call: multi-image edits returned the reference itself on an OpenAI-compatible gateway the kit
     # was probed against (the official API accepts up to 16; unverified here, see references/api-findings.md).
+    from .codex_cli import _cli_edit, _selected_backend  # deferred: codex_cli imports this module
     c = _config()
     if _selected_backend() == "cli":
         return _cli_edit(ref_png, prompt, size=size, background=background, model=model, fidelity=fidelity, task=task)
@@ -704,6 +726,8 @@ def _responses_text(resp, schema=None):
 def ask(parts, schema=None, name="result", model=None):
     """parts: list of str | PIL.Image | bytes. Returns parsed JSON when a schema is given, else text.
     schema="json" (schema-less json_object mode) is deprecated: pass a real JSON schema."""
+    from .research import _check_keys  # deferred: research imports this module
+    from .codex_cli import _cli_ask, _selected_backend  # deferred: codex_cli imports this module
     content = []
     for p in parts:
         if isinstance(p, str):

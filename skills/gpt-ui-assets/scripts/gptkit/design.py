@@ -1,6 +1,27 @@
-# gptkit part 03_design: mockup, critique, manifest, spec.
-# Executed into gptkit.py's namespace in file order (see gptkit.py): names from earlier parts are
-# plain globals here, and the tests' monkeypatching of gptkit.<name> reaches every part.
+"""Mockup, critique, manifest, spec."""
+import argparse
+import concurrent.futures as cf
+import io
+import json
+import math
+import re
+import sys
+import threading
+from pathlib import Path
+
+import numpy as np
+from PIL import Image, ImageDraw, ImageFont
+
+from .core import (
+    ApiError, _clip_bbox, _need, _open_image, _plan, _png_bytes, _read_json, _size_for, ask, edit, generate,
+)
+from .imaging import _mean_diff, _rgba, ref_crop
+from .prompts import (
+    ADAPT_PROMPT, ASSET_PROMPT, BACKGROUND_PROMPT, CANDIDATE_FOCUS, CRITIQUE_PROMPT, CRITIQUE_REF_RULE,
+    CRITIQUE_SCHEMA, DEVICES, MANIFEST_PROMPT, MANIFEST_SCHEMA, MOCKUP_WRAP, PLATFORMS, SEVERITY, SPEC_SCHEMA,
+    STYLE_REF_PROMPT, VERIFY_SCHEMA, _aspect_words, _design_meta, _device_record, _house_style, _platform_rule,
+    _screen_dp,
+)
 
 # ---------------------------------------------------------------- commands
 
@@ -614,6 +635,7 @@ MANIFEST_REQUIRED = ("name", "kind", "bbox", "format", "transparent", "animated"
 def _manifest_assets(res, W, H):
     """The model's asset list made safe to write: required fields present, bboxes clipped to the WxH mockup (int, inside),
     boxes mostly outside it dropped, names normalised and unique (flame, flame_2, flame_3). Every drop/clamp is printed."""
+    from .svg_icons import _norm_name  # deferred: svg_icons imports this module
     items = res.get("assets") if isinstance(res, dict) else None
     if not isinstance(items, list):
         sys.exit(f"gptkit: the model's manifest response has no 'assets' list (non-conforming gateway?): {str(res)[:200]}")
@@ -645,6 +667,7 @@ def _manifest_assets(res, W, H):
 
 
 def cmd_manifest(a):
+    from .svg_icons import _symbol_names  # deferred: svg_icons imports this module
     mock_path = Path(a.mockup).resolve()
     mock = _open_image(mock_path, "mockup")
     out = Path(a.out)
@@ -694,6 +717,7 @@ def cmd_manifest(a):
 
 def _platform_styles(platform):
     """The text-style names `tokens` maps onto: M3 type-scale slots on android, HIG text styles on ios, none elsewhere."""
+    from .tokens import _HIG_SCALE, _M3_SCALE  # deferred: tokens imports this module
     if platform == "android":
         return tuple(n for n, _, _ in _M3_SCALE)
     if platform == "ios":

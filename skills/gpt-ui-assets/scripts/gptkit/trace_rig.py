@@ -1,6 +1,27 @@
-# gptkit part 13_trace_rig: trace, rig, animate.
-# Executed into gptkit.py's namespace in file order (see gptkit.py): names from earlier parts are
-# plain globals here, and the tests' monkeypatching of gptkit.<name> reaches every part.
+"""Trace, rig, animate."""
+import argparse
+import base64
+import concurrent.futures as cf
+import json
+import math
+import re
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+import numpy as np
+from PIL import Image, ImageDraw, ImageFilter
+
+from .core import (
+    ApiError, _chrome_err, _chrome_flags, _open_image, _png_bytes, _pos_float, _pos_int, _read_json, _res_name,
+    _unit_float, ask, edit,
+)
+from .imaging import _rgba, sheet
+from .vectordrawable import _aapt2_line, _vd_lint, aapt2_check, aapt2_level, svg_to_vd, vd_to_svg
+from .frames import _square
+from .vectorize import _TOK, _d, _hex_rgb, _subpaths, _validate_vec, build_lottie
+from .previews import _check_vec, _chrome, _lottie_js, _vec_svg
 
 # ---- raster -> vector tracing, part rigs, procedural keyframes
 
@@ -1885,6 +1906,7 @@ def _tr_nonneg_int(s):
 
 
 def _add_trace_rig_parsers(sub):
+    from .cli import _color_arg  # deferred: cli imports this module
     p = sub.add_parser("trace", help="raster asset -> multi-colour SVG + VectorDrawable with gradient fits, glow "
                                      "bands, measured fidelity and a vector-or-raster recommendation")
     p.add_argument("files", nargs="+"); p.add_argument("--out", required=True)

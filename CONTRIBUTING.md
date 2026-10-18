@@ -1,22 +1,23 @@
 # Contributing to gptkit
 
-Rules for changing `skills/gpt-ui-assets/scripts/gptkit.py`. They were learned from probing the APIs and from bugs that
+Rules for changing the kit in `skills/gpt-ui-assets/scripts/`. They were learned from probing the APIs and from bugs that
 shipped. Rules for *using* the kit live in the skill (`SKILL.md` and `references/`). Full measurements are in
 `skills/gpt-ui-assets/references/api-findings.md`.
 
 ## Layout
 
-`scripts/gptkit.py` holds only the imports and a loader. The code is in `scripts/gptkit_parts/NN_area.py`, one file per
-area (`04_forge.py`, `08_sequence.py`, `23_cli.py` for argparse, …), executed in name order into `gptkit.py`'s own
-namespace. At runtime it is still one module: a part uses names from earlier parts as plain globals, `import gptkit`
-exposes everything, and the tests' `K.generate = fake` patching reaches every part. So:
-- edit the part, never paste code back into `gptkit.py`;
-- a name used at import time (a constant, a default argument, a decorator) must be defined in an earlier part;
-  names used inside functions can live anywhere;
-- a new subcommand needs its `cmd_*` function in its area's part and its parser in `23_cli.py`.
+`scripts/gptkit.py` only starts the CLI. The code is the `scripts/gptkit/` package, one module per area (`forge.py`,
+`sequence.py`, `cli.py` for argparse, `codex_cli.py` for the local backend, …). `gptkit/__init__.py` imports them in
+order and re-exports every name, so `import gptkit` gives the whole kit and a test's `K.generate = fake` rebinds that
+name in every module that holds it. So:
+- a module imports what it uses from earlier modules at the top. A name from a later module (which imports this one
+  back) is imported inside the function that needs it, marked `# deferred: <module> imports this module`;
+- module state a function rebinds with `global` (warn-once flags, cached probes) goes into `STATE` in `__init__.py`,
+  or `gptkit.<name>` goes stale (`test_code_review` checks this);
+- a new subcommand needs its `cmd_*` function in its area's module and its parser in `cli.py` (`build_parser`).
 
 Run the tests from `skills/gpt-ui-assets`: `for t in tests/test_*.py; do python3 $t || echo FAIL $t; done`. Every file
-runs on its own without pytest, offline, with the API mocked. Keep Python 3.9 compatibility (macOS system Python).
+runs on its own without pytest, offline, with the API mocked and the Codex CLI disabled (`GPTKIT_CODEX=none`). Keep Python 3.9 compatibility (macOS system Python).
 
 ## API behaviour
 

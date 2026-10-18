@@ -1,6 +1,23 @@
-# gptkit part 16_fonts: fonts: Google Fonts matching.
-# Executed into gptkit.py's namespace in file order (see gptkit.py): names from earlier parts are
-# plain globals here, and the tests' monkeypatching of gptkit.<name> reaches every part.
+"""Fonts: Google Fonts matching."""
+import concurrent.futures as cf
+import functools
+import json
+import math
+import os
+import re
+import shutil
+import sys
+import time
+from pathlib import Path
+
+import numpy as np
+import requests
+from PIL import Image, ImageDraw, ImageFilter
+
+from .core import _res_name
+from .vectordrawable import _aapt2_tree
+from .measure import _d2c_runs, _hexi, _text_targets
+from .tokens import _d2c_load_spec
 
 # ---- fonts: match typography to Google Fonts by rendering and measuring
 

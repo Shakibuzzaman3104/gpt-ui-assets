@@ -4,10 +4,10 @@ import contextlib
 import io
 import json
 import math
+import os
 import random
 import re
 import shutil
-import os
 import sys
 import tempfile
 import xml.etree.ElementTree as ET

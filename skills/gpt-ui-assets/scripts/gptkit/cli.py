@@ -1,6 +1,49 @@
-# gptkit part 23_cli: argparse: every subcommand and flag.
-# Executed into gptkit.py's namespace in file order (see gptkit.py): names from earlier parts are
-# plain globals here, and the tests' monkeypatching of gptkit.<name> reaches every part.
+"""gptkit: design-to-assets pipeline on any OpenAI-compatible API or the local Codex CLI: UI mockups for phone, tablet,
+foldable, desktop and web, asset inventory, 1:1 redraws, SVG icons, Android VectorDrawables, animation frames, Lottie
+and app launcher icon sets. `setup` picks a backend; `doctor` checks the setup; `status <dir>` shows a project.
+
+Config (environment variables win over the config file ~/.config/gptkit/env, KEY=value lines; `setup` writes it):
+  GPTKIT_BACKEND                      api | cli | auto (default): the API with a key, else the Codex CLI when signed in
+  GPTKIT_BASE_URL / OPENAI_BASE_URL   default https://api.openai.com/v1 (or a gateway that mirrors /images/* multipart
+                                      and /responses with reasoning, web_search and strict json_schema)
+  GPTKIT_API_KEY  / OPENAI_API_KEY    the API key (not needed with the Codex CLI backend)
+  GPTKIT_IMAGE_MODEL                  pin an image model (default: routed per task from the endpoint's model list)
+  GPTKIT_TEXT_MODEL                   pin a text model (default: routed from the endpoint's model list)
+  GPTKIT_QUALITY                      low | medium | high (default high): image quality; low for cheap drafts
+  GPTKIT_HOUSE_STYLE                  default art direction added to every new design; "off" drops it
+  GPTKIT_BUDGET_USD                   refuse a command whose plan estimate exceeds this
+  GPTKIT_LEDGER                       cost ledger path, default ~/.cache/gptkit/ledger.jsonl
+  GPTKIT_CONFIG                       config file path, default ~/.config/gptkit/env
+  GPTKIT_RETRIES                      retries per API call on 408/429/5xx and transport errors, default 2
+  GPTKIT_DEBUG                        1: re-raise errors with the traceback instead of the one-line "gptkit <cmd>: ..."
+  GPTKIT_MODERATION                   low | auto: `moderation` for image calls (dropped when a gateway rejects it)
+  GPTKIT_CODEX                        Codex CLI binary for the cli backend, default codex (none disables it)
+  GPTKIT_CHROME                       Chrome/Chromium binary for SVG/Lottie/CSS rendering (none disables)
+  GPTKIT_CHROME_NO_SANDBOX            1: pass --no-sandbox to headless Chrome (added automatically when running as root)
+  GPTKIT_EBSYNTH                      ebsynth binary for `sequence propagate`
+"""
+import argparse
+import os
+import re
+import sys
+from pathlib import Path
+
+from .core import ApiError, _TRUE, _config, _pos_float, _pos_int, _unit_float
+from .prompts import MOTION_STRENGTH, PLATFORMS
+from .design import PHONE_SIZE, cmd_critique, cmd_manifest, cmd_mockup, cmd_spec
+from .forge import cmd_fix, cmd_forge
+from .vectordrawable import cmd_vd
+from .svg_icons import cmd_icons, cmd_iconspec, cmd_svg
+from .frames import MOTIONS, cmd_frames
+from .sequence import cmd_sequence
+from .previews import cmd_vectorize
+from .export import cmd_export
+from .appicon import cmd_appicon_build, cmd_appicon_concepts, cmd_pick
+from .trace_rig import _add_trace_rig_parsers
+from .hybrid import _design_to_code_parsers, _hybrid_parsers
+from .doctor import _color_args, cmd_doctor, cmd_score
+from .research import DEPTHS, RESEARCH_MODEL, cmd_blueprint, cmd_research
+from .cost_status import cmd_cost, cmd_status
 
 def _color_arg(s):
     """argparse type: a colour PIL and CSS both read (#RGB, #RRGGBB, #RRGGBBAA or a CSS colour name)."""
@@ -14,7 +57,9 @@ def _color_arg(s):
     return s
 
 
-def main():
+def build_parser():
+    """Every subcommand and flag, as (parser, subparsers); main() parses with it."""
+    from .codex_cli import _backend_parsers  # deferred: codex_cli imports this module
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
     efforts = ["high", "xhigh", "max"]
@@ -276,16 +321,22 @@ def main():
     p.add_argument("dir"); p.add_argument("name", help="asset name from assets.json"); p.add_argument("files", nargs="+")
     p.set_defaults(fn=cmd_score)
     _add_trace_rig_parsers(sub)
-    a = ap.parse_args()
-    global _LEDGER_CMD, _LEDGER_DIR
-    _LEDGER_CMD = ("sequence " + a.stage) if a.cmd == "sequence" else (
+    return ap, sub
+
+
+def main(standalone=False, argv=None):
+    """The CLI. `standalone` is True when run as a script (gptkit.py), False when called from Python."""
+    ap, _ = build_parser()
+    a = ap.parse_args(argv)
+    from . import core  # the ledger reads these from core's globals
+    core._LEDGER_CMD = ("sequence " + a.stage) if a.cmd == "sequence" else (
         "appicon " + a.icmd if a.cmd == "appicon" else a.cmd)
     dir_arg = getattr(a, "dir", None) or getattr(a, "out", None)
-    _LEDGER_DIR = str(Path(dir_arg).expanduser().resolve()) if dir_arg else None
+    core._LEDGER_DIR = str(Path(dir_arg).expanduser().resolve()) if dir_arg else None
     try:
         a.fn(a)
     except KeyboardInterrupt:
-        if __name__ == "__main__":  # the CLI: pool threads still inside a 900 s API call would hold the exit until they return
+        if standalone:  # the CLI: pool threads still inside a 900 s API call would hold the exit until they return
             try:  # the interrupt may have landed inside a print: never let a flush error skip the exit
                 sys.stdout.flush()
                 sys.stderr.flush()

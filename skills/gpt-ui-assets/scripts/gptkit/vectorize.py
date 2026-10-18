@@ -1,6 +1,11 @@
-# gptkit part 09_vectorize: vectorize: keyframes, Lottie, AnimatedVectorDrawable.
-# Executed into gptkit.py's namespace in file order (see gptkit.py): names from earlier parts are
-# plain globals here, and the tests' monkeypatching of gptkit.<name> reaches every part.
+"""Vectorize: keyframes, Lottie, AnimatedVectorDrawable."""
+import math
+import re
+import xml.etree.ElementTree as ET
+
+from .core import SVG_NS, _res_name
+from .prompts import EASES
+from .vectordrawable import _IDENTITY, _color, _mapply, _mmul, _num, _style_dict
 
 # ---- vector keyframes + Lottie + AnimatedVectorDrawable
 

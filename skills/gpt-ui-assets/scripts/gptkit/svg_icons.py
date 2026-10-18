@@ -1,6 +1,25 @@
-# gptkit part 06_svg_icons: svg, icons, iconspec.
-# Executed into gptkit.py's namespace in file order (see gptkit.py): names from earlier parts are
-# plain globals here, and the tests' monkeypatching of gptkit.<name> reaches every part.
+"""Svg, icons, iconspec."""
+import concurrent.futures as cf
+import json
+import math
+import re
+import sys
+import time
+import xml.etree.ElementTree as ET
+from pathlib import Path
+
+import numpy as np
+from PIL import Image
+
+from .core import ApiError, SVG_NS, _read_json, ask
+from .imaging import _rgba, _tile, content_box, ref_crop, sheet
+from .prompts import SVG_RULES, _screen_dp
+from .design import _load, _select
+from .forge import _element_mask, _ensure_xmlns, render_svgs, svg_fidelity
+from .vectordrawable import (
+    _IDENTITY, _NUM, _css_rules, _fmt, _inherit, _mapply, _mmul, _num, _shape_path, _style_dict, _tf_affine,
+    convert_vd, parse_path, path_str, svg_to_vd, transform_path,
+)
 
 # ---- SVG icons: fidelity retry, 24-grid normalisation, icon-set spec + consistency, new icons
 
@@ -95,6 +114,7 @@ def _bake_transforms(txt):
     ok = [True]
 
     def walk(el, m):
+        from .vectorize import _d, _subpaths  # deferred: vectorize imports this module
         for ch in list(el):
             tag = ch.tag.replace(SVG_NS, "")
             cm = mul(m, _tf_affine(ch.get("transform"))) if ch.get("transform") else m
