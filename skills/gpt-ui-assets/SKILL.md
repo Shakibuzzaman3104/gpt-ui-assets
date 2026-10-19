@@ -3,7 +3,7 @@ name: gpt-ui-assets
 description: Design app, tablet, foldable, desktop-app and website screens with OpenAI's GPT image and vision models (API key or the local Codex CLI), then turn an approved design into production assets redrawn 1:1, never cropped: SVG/VectorDrawable icons, PNG/WebP illustrations, launcher icons, frame, Lottie and AVD animation, smoke/steam/rain loops, theme code and fonts measured from the pixels, and a screenshot diff of the built UI. Also writes GPT-researched feature blueprints. Use whenever the user wants GPT/ChatGPT to design screens, icons, illustrations or an app icon; approves a GPT design ("go ahead", "build it", "give me the assets"); wants assets used in the UI; wants an animated drawable, Lottie or AVD from existing art; or complains that GPT cropped assets out of a mockup. Not for go/no-go idea validation, or design direction without GPT.
 license: MIT
 metadata:
-  version: 5.1.1
+  version: 5.2.0
 ---
 
 # GPT UI assets
