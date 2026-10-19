@@ -242,8 +242,9 @@ def _device_record(platform, device=None, orientation=None, posture=None, page=N
 PLATFORM_RULE = ("Target platform: {label}. Build the screen from this platform's native components wherever one fits: "
                  "{components}. Show the {system_ui}. Metrics: {metrics}. Typography: {type}. Icons: {icons}. "
                  "Anything custom must still look and behave native to this platform.")
-FLOW_NAV_RULE = (" Onboarding, sign-in and sign-up, full-screen media players, camera and modal flows (checkout, compose, "
-                 "edit forms) show a back or close control instead of the tab or navigation bar, unless the brief asks for it.")
+FLOW_NAV_RULE = (" Onboarding, sign-in and sign-up, full-screen media players, camera, and modal or step-by-step flows "
+                 "(checkout and payment, compose, edit forms) hide the tab or navigation bar and show a back or close "
+                 "control instead, unless the brief asks for the bar.")
 
 
 def _platform_rule(platform):

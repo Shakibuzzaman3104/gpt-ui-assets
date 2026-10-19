@@ -35,8 +35,9 @@ Design to code that keeps the design's geometry, and smoother animation.
   in-between frames came 4.6× (sway) and 2.3× (breathe) closer to a 96-key reference. `--ease linear` keeps the old
   output.
 - **Flow screens on phones** (onboarding, sign-in, players, camera, checkout, compose, edit forms) show a back or close
-  control instead of the tab bar unless the brief asks for it, and `critique` flags a tab bar on them. Not yet
-  validated: whether detail screens that should keep their bar still do (the image gateway was down for that run).
+  control instead of the tab bar unless the brief asks for it, and `critique` flags a tab bar on them. Measured on 9
+  briefs × 2 variants: 0 of 10 flow screens drew a tab bar and 8 of 8 detail screens kept theirs. An earlier wording
+  left the bar on 4 of 4 iOS payment screens.
 - Animated WebP encodes at libwebp method 5 instead of 6: within 2% of the size at 1/13 to 1/80 of the time.
 
 ## 5.1.1 (2026-10-19)
