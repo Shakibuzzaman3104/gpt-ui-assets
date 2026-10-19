@@ -18,6 +18,7 @@ from .forge import _renderer_name, render_svgs, svg_fidelity
 from .vectordrawable import _android_sdk
 from .svg_icons import _svg_issues
 from .sequence import _find_ebsynth
+from .tween import RIFE_MODEL, find_rife
 from .previews import LOTTIE_JS, _chrome, _chrome_missing_reason, _codex_seatbelt, _lottie_js_cache, _lottie_js_ok
 from .fonts import GF_METADATA, _cache_dir
 
@@ -73,6 +74,14 @@ def cmd_doctor(a):
                          f" && sh build-{'macos' if sys.platform == 'darwin' else 'linux'}-cpu_only.sh, or set GPTKIT_EBSYNTH "
                          "(sequence then renders every frame with GPT)")
     print(f"ebsynth     : {eb_line}")
+    env_rife = os.environ.get("GPTKIT_RIFE")
+    if env_rife and not Path(env_rife).exists():
+        rife_line = f"GPTKIT_RIFE={env_rife} does not exist (--tween-engine rife refuses to run until it does)"
+    else:
+        rife = find_rife()
+        rife_line = (f"{rife}" + ("" if (Path(rife).resolve().parent / RIFE_MODEL).is_dir() else f" ({RIFE_MODEL} missing)")
+                     if rife else "not found (optional: --tween-engine rife; the default flow engine needs only OpenCV)")
+    print(f"rife        : {rife_line}")
     lj = _lottie_js_cache()
     try:
         txt = lj.read_text() if lj.exists() else ""

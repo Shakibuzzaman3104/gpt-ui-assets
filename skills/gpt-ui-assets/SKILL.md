@@ -3,7 +3,7 @@ name: gpt-ui-assets
 description: Design app, tablet, foldable, desktop-app and website screens with OpenAI's GPT image and vision models (API key or the local Codex CLI), then turn an approved design into production assets redrawn 1:1, never cropped: SVG/VectorDrawable icons, PNG/WebP illustrations, launcher icons, frame, Lottie and AVD animation, smoke/steam/rain loops, theme code and fonts measured from the pixels, and a screenshot diff of the built UI. Also writes GPT-researched feature blueprints. Use whenever the user wants GPT/ChatGPT to design screens, icons, illustrations or an app icon; approves a GPT design ("go ahead", "build it", "give me the assets"); wants assets used in the UI; wants an animated drawable, Lottie or AVD from existing art; or complains that GPT cropped assets out of a mockup. Not for go/no-go idea validation, or design direction without GPT.
 license: MIT
 metadata:
-  version: 5.1.1
+  version: 5.2.0
 ---
 
 # GPT UI assets
@@ -70,6 +70,7 @@ A typical "design a screen and give me the assets" run:
 ```bash
 python3 $K mockup "habit tracker home: date, progress, 5 habits with check + streak, 4-tab nav; mint + warm white" \
   --platform android --out design/home --variants 2    # 9:19.5 phone canvas, house style, aspect-checked, auto-critiqued
+# first screen of a new app: add --directions so the variants differ in palette, type and signature, not just details
 # Read each mockup_v*_critique.png, then show the user the variants
 # ...iterate with --edit until the user approves; screen 2 onward uses --style-ref <approved screen>
 python3 $K manifest design/home/mockup_v1.png --out build/home   # Read manifest_overlay.png; fix assets.json by hand
@@ -81,8 +82,9 @@ python3 $K export build/home/assets/hero.png --dp 240 --res app/src/main/res --n
 python3 $K fonts build/home
 python3 $K redline build/home
 python3 $K tokens build/home --package com.acme.ui.theme --verify
-# build the screen with spec's native widgets, screenshot it at the design's effective width, then:
-python3 $K compare build/home shot.png
+# build the screen with spec's native widgets and the tokens' padding, gaps and radii (never default ones),
+# screenshot it at the design's effective width, then:
+python3 $K compare build/home shot.png               # also flags wrong corner radii, padding and gaps, with the token
 ```
 
 ## Rules that hold in every phase

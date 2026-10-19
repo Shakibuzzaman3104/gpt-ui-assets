@@ -1,6 +1,6 @@
 {
   "name": "gpt-ui-assets",
-  "version": "5.1.1",
+  "version": "5.2.0",
   "description": "Design platform-native phone, tablet, foldable, desktop-app and web UIs with GPT (API key or the local Codex CLI) and turn them into production assets: every icon, illustration and background redrawn 1:1 (never cropped), SVG/VectorDrawable icons, app icons, frame/Lottie/AVD animation, fonts, theme code and a screenshot diff for a 1:1 build.",
   "author": {
     "name": "Shakibuzzaman",

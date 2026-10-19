@@ -50,6 +50,18 @@ python3 $K vectorize build/home campfire --rebuild      # after YOU edit layers.
     saved as `sheet_raw.opaque.png` and the run stops; a sheet with fewer frames than asked is flagged `frame-count`;
     when one of the two calls fails the other result is kept (`--reuse static` re-runs only the sheet); an asset with
     no alpha exits, one with an opaque backdrop warns (the whole rectangle would move).
+  - **`--tween N`** puts N-1 in-betweens of the moving layer after every frame, the last→first pair included, then
+    composites them onto `static.png`: N× the frames and fps, the same loop length. The generated frames and the static
+    pixels stay exact, and the printed `in-betweens flagged:` runs the frame QA over the result. `--reuse all --tween 2`
+    adds them to a finished run with no API call. Engines: `flow` (default, built-in optical flow, needs OpenCV), `rife`
+    (rife-ncnn-vulkan, `setup.md`) and `blend` (a crossfade, the fallback without OpenCV; it doubles moving edges).
+    - Measured on held-out frames of two synthetic loops (mean premultiplied error, a procedural smoke plume | a swaying
+      warp of a GPT campfire): flow 3.0 | 2.6, RIFE 3.1 | 2.6, crossfade 4.3 | 5.6, repeating the previous frame 8.2 |
+      8.2. On real GPT flame frames the in-betweens keep the keys' edge sharpness (0.201 vs 0.203; RIFE 0.198;
+      crossfade 0.178, a doubled tip).
+    - It costs N× the WebP/APNG size, the image-sequence Lottie (8→16 flame frames at 480 px: 410→930 KB) and
+      AnimationDrawable memory. A stepped 12 fps flicker can be the look you want: tween when the loop reads choppy.
+    - `--procedural` refuses it: closed-form motion is exact at any frame count, so raise `--count`/`--fps`.
   - `--count 12 --cols 4` gives more frames. `--formats gif,webp,apng,lottie` and `--px 480` control the outputs; the
     image-sequence Lottie costs about 280 KB per 480 px frame.
   - AnimationDrawable decodes every frame into memory, so ship the WebP or Lottie for long loops.
@@ -99,8 +111,8 @@ python3 $K animate build/home/traced/rain_drop.layers.json --part "art=squash:0.
 - Other rig flags: `--order a,b,c` (bottom→top, default = `--parts` order), `--glow part|shared` (each part owns the glow nearest to
   it, or one shared glow layer), `--preset flat|illustration|gradient` (default illustration), `--route gpt` (trace GPT's redraws;
   lower fidelity, ignores `--assign/--namer/--min-detail`), `--force` (redo cached GPT parts), `--model` / `--text-model`,
-  `--preview-bg`. `rig --animate` always renders the Lottie at 512 px with linear easing; use `animate` on `rig/NAME/layers.json`
-  for `--size`, `--ease keys`, `--seconds`, `--fps`, `--out`, `--name`.
+  `--preview-bg`. `rig --animate` always renders the Lottie at 512 px with fitted easing; use `animate` on `rig/NAME/layers.json`
+  for `--size`, `--ease`, `--seconds`, `--fps`, `--out`, `--name`.
 - Every part is extended under the parts above it, so moving parts never open gaps. Check `rig_preview.png`: the recomposite
   should match the source. Without a working headless Chrome the rig is still written, but `rig_preview.png`, `keys_review.png`,
   `lottie_frames.png` and every fidelity number are skipped and the report says `not measured: <reason>` (never a guess).
@@ -109,6 +121,11 @@ python3 $K animate build/home/traced/rain_drop.layers.json --part "art=squash:0.
   `vectorize` (relative commands, arcs, strokes and per-layer `motion` are kept); gradient fills ride along with the part they paint
   (animated Lottie `gf` start/end), so shading does not slide across a moving shape. A layer whose max travel is under 0.2 viewBox
   units is reported as invisible.
+- **Easing between keys** (`--ease`, default `fit`): each segment's bezier ease is fitted to the motion, so the part keeps the
+  motion's own speed instead of a constant one that jumps at every key (`linear`) or stops at every key (`keys`). Measured
+  against the exact motion at the default 8 keys: speed error 20% → 0.6% for sway, breathe, squash, bob and ripple (4 fitted
+  keys beat 12 linear ones), 47% → 37% for flicker, unchanged for wave. In lottie-web, sway frames between keys came 4.6×
+  closer to a 96-key reference, breathe 2.3×, flicker 1.1×. The eases are stored per layer as `key_ease` in `layers.json`.
 - **Read `anim/lottie_frames.png`** (rendered by lottie-web). In `animation_report.json`, `tear_px` per key counts pixels of the
   rest pose's interior (eroded by the largest travel + 1 px, glow bands excluded) that the key leaves uncovered: open gaps and
   enclosed holes both count, key 0 is 0 by construction, and `tear_frac_max` divides by the rest area. Values above ~0.5% mean a

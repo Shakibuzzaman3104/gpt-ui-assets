@@ -50,8 +50,18 @@ candidate-count controls, so prefer the API for pixel-exact asset work (`forge`,
 - **`xcrun actool`** validates the iOS app icon.
 - `pip install vtracer scipy fonttools` add an extra trace candidate, faster region labelling and kerning in the font
   matcher. Everything works without them.
-- `pip install opencv-python-headless` gives `sequence` its motion-direction, seam and shimmer QA; without it the QA
-  falls back to plain frame differences.
+- `pip install opencv-python-headless` gives `sequence` its motion-direction, seam and shimmer QA (without it the QA
+  falls back to plain frame differences) and `--tween` its built-in flow engine (without it in-betweens are crossfades).
+- **RIFE** (`rife-ncnn-vulkan`, MIT, GPU via Vulkan/MoltenVK or CPU) for `--tween-engine rife`. Optional: on this kit's
+  loops it did not beat the built-in flow engine. The release zip is 436 MB with every model; keep the binary and
+  `rife-v4.6` (~35 MB) in `~/.cache/gptkit/rife`, or point `GPTKIT_RIFE` at the binary (`rife-v4.6/` must sit next to
+  it). `--tween-engine rife` prints these commands when RIFE is missing (`ubuntu`/`windows` in the zip name elsewhere):
+  ```bash
+  mkdir -p ~/.cache/gptkit/rife && cd ~/.cache/gptkit/rife
+  curl -LO https://github.com/nihui/rife-ncnn-vulkan/releases/download/20221029/rife-ncnn-vulkan-20221029-macos.zip
+  unzip -j rife-ncnn-vulkan-20221029-macos.zip '*/rife-ncnn-vulkan*' && unzip rife-ncnn-vulkan-20221029-macos.zip '*/rife-v4.6/*'
+  mv rife-ncnn-vulkan-20221029-macos/rife-v4.6 . && rm -r rife-ncnn-vulkan-20221029-macos rife-ncnn-vulkan-20221029-macos.zip
+  ```
 - **EbSynth** for `sequence propagate`: see `sequence.md`.
 - `fonts` needs network access to Google Fonts once; after that it runs from `~/.cache/gptkit`.
 

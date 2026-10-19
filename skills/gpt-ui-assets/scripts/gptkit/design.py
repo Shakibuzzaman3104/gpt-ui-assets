@@ -4,6 +4,7 @@ import concurrent.futures as cf
 import io
 import json
 import math
+import random
 import re
 import sys
 import threading
@@ -17,9 +18,10 @@ from .core import (
 )
 from .imaging import _mean_diff, _rgba, ref_crop
 from .prompts import (
-    ADAPT_PROMPT, ASSET_PROMPT, BACKGROUND_PROMPT, CANDIDATE_FOCUS, CRITIQUE_PROMPT, CRITIQUE_REF_RULE,
-    CRITIQUE_SCHEMA, DEVICES, MANIFEST_PROMPT, MANIFEST_SCHEMA, MOCKUP_WRAP, PLATFORMS, SEVERITY, SPEC_SCHEMA,
-    STYLE_REF_PROMPT, VERIFY_SCHEMA, _aspect_words, _design_meta, _device_record, _house_style, _platform_rule,
+    ACCENT_HUES, ADAPT_PROMPT, ASSET_PROMPT, BACKGROUND_PROMPT, CANDIDATE_FOCUS, CRITIQUE_PROMPT,
+    CRITIQUE_REF_RULE, CRITIQUE_SCHEMA, DEVICES, MANIFEST_PROMPT, MANIFEST_SCHEMA, MOCKUP_WRAP, PLATFORMS, SEVERITY,
+    DIRECTIONS_PROMPT, DIRECTIONS_SCHEMA, SPEC_SCHEMA, STYLE_FAMILIES, STYLE_REF_PROMPT, VERIFY_SCHEMA,
+    _aspect_words, _design_meta, _device_record, _direction_text, _house_style, _platform_rule,
     _screen_dp,
 )
 
@@ -271,6 +273,9 @@ def _prep_ref(path, long_side=1536, what="reference image"):
 def cmd_mockup(a):
     if a.edit and a.style_ref:
         sys.exit("gptkit: use --edit (revise a screen) or --style-ref (new screen in its style), not both")
+    directions = getattr(a, "directions", False)
+    if directions and (a.edit or a.style_ref or getattr(a, "anchor", None) or a.raw):
+        sys.exit("gptkit: --directions designs new screens; not with --edit, --style-ref, --anchor/--set or --raw")
     if a.size is not None and not re.fullmatch(r"[1-9]\d*x[1-9]\d*", a.size):
         sys.exit(f"gptkit: --size must be WIDTHxHEIGHT, e.g. {PHONE_SIZE} (9:19.5 phone), 1024x1536, 1536x1024 or "
                  f"1024x1024; got {a.size!r}")
@@ -318,6 +323,7 @@ def cmd_mockup(a):
             child.page = page if platform == "web" else None
             child.name = f"{a.name}_{dname}"
             child.variants = 1
+            child.directions = False
             child.anchor = anchor_path
             child.style_ref = None
             child.exact_name = child.name  # one render per device, written straight to <name>_<device>.png
@@ -340,11 +346,13 @@ def cmd_mockup(a):
     else:
         size = a.size or (record["canvas"] if record else _default_size(platform))
     qa = not a.no_critique
-    _plan(a.variants, a.variants if qa else 0, image_model=a.model, size=size, edits=bool(a.edit or a.style_ref))
+    _plan(a.variants, (a.variants if qa else 0) + directions, image_model=a.model, size=size,
+          edits=bool(a.edit or a.style_ref))
     rule = _platform_rule(platform)
     house = _house_style(a.no_house_style)
+    dirs = _art_directions(platform or "app", a.variants, a.prompt) if directions else None
 
-    def prompt_for(sz):
+    def prompt_for(sz, i=0):
         asp = (record["aspect"] if record and sz == record["canvas"] else ASPECTS.get(sz, f"{sz} px"))
         if edit_png is not None:
             return f"{a.prompt} Keep the {asp.removesuffix(' canvas')} canvas and everything not mentioned exactly as it is."
@@ -354,7 +362,10 @@ def cmd_mockup(a):
         if anchor_path and record:
             base = ADAPT_PROMPT.format(prompt=a.prompt, aspect=asp, device_rule=record["rule"])
         else:
-            base = (STYLE_REF_PROMPT if ref_png is not None else MOCKUP_WRAP).format(prompt=a.prompt, aspect=asp, surface=surface)
+            base = (STYLE_REF_PROMPT if ref_png is not None else MOCKUP_WRAP).format(prompt=a.prompt, aspect=asp,
+                                                                                    surface=surface)
+            if dirs and i < len(dirs["directions"]):
+                base += " " + _direction_text(dirs["directions"][i])
         return base + house + rule + _device_prompt(record)
     canvas = {"size": size}  # shared by the variants: drops to a classic size once if the endpoint rejects this one
     lock = threading.Lock()
@@ -364,6 +375,22 @@ def cmd_mockup(a):
         meta.update(_screen_meta(platform, record, device_arg or ("desktop" if platform in ("web", "macos", "windows", "linux") else "phone"),
                                  orientation, posture, page, size))
         meta_path.write_text(json.dumps(meta, indent=2))
+    if dirs:
+        meta_path = out / "design.json"
+        meta = _design_meta(meta_path) if meta_path.exists() else {}
+        meta["directions"] = {"families_offered": dirs["families"], "variants": {
+            f"{a.name}_v{i + 1}.png": {**d, "hue": dirs["hues"][i]} for i, d in enumerate(dirs["directions"])}}
+        meta_path.write_text(json.dumps(meta, indent=2))
+    elif (out / "design.json").exists():  # a re-render without directions must not keep the old ones on its files
+        try:
+            meta = json.loads((out / "design.json").read_text())
+        except (OSError, ValueError):
+            meta = {}
+        old = (meta.get("directions") or {}).get("variants") or {} if isinstance(meta, dict) else {}
+        if any(re.fullmatch(rf"{re.escape(a.name)}_v\d+\.png", k) for k in old):
+            meta["directions"]["variants"] = {k: v for k, v in old.items()
+                                              if not re.fullmatch(rf"{re.escape(a.name)}_v\d+\.png", k)}
+            (out / "design.json").write_text(json.dumps(meta, indent=2))
 
     def one(i):
         # the backend picks aspect from the wording, not from `size`, and a style-ref edit can return the reference
@@ -372,10 +399,10 @@ def cmd_mockup(a):
             sz = canvas["size"]
             try:
                 if edit_png is not None or ref_png is not None:
-                    img, meta = edit(edit_png if edit_png is not None else ref_png, prompt_for(sz), sz, model=a.model,
+                    img, meta = edit(edit_png if edit_png is not None else ref_png, prompt_for(sz, i), sz, model=a.model,
                                      task="concept")
                 else:
-                    img, meta = generate(prompt_for(sz), sz, model=a.model)
+                    img, meta = generate(prompt_for(sz, i), sz, model=a.model)
             except ApiError as e:
                 if not (_size_rejected(e) and sz not in CLASSIC_SIZES):
                     raise
@@ -435,6 +462,28 @@ def cmd_mockup(a):
         sys.exit(f"gptkit: mockup produced no image (all {a.variants} variants failed, see above; last: {last_err})")
     if qa:
         _mockup_qa(sorted(made), platform or "android", ref, record)
+
+
+def _art_directions(platform, n, brief, rng=random):
+    """Choose distinct art directions before rendering variants."""
+    fam = rng.sample(STYLE_FAMILIES, min(len(STYLE_FAMILIES), n + 3))
+    hues = [ACCENT_HUES[j % len(ACCENT_HUES)] for j in rng.sample(range(len(ACCENT_HUES)), min(n, len(ACCENT_HUES)))]
+    hues = [hues[i % len(hues)] for i in range(n)]
+    text = DIRECTIONS_PROMPT.format(n=n, platform=platform, brief=brief,
+                                    families="\n".join(f"- {a}: {b}" for a, b in fam),
+                                    hues=", ".join(f"direction {i + 1}: {h}" for i, h in enumerate(hues)))
+    try:
+        result = ask([text], DIRECTIONS_SCHEMA, "art_directions")
+        directions = result["directions"][:n]
+        for d in directions:
+            _direction_text(d)
+        lines = [f"  direction v{i+1}: {d['name']} ({d['theme']}, {hues[i]})" for i, d in enumerate(directions)]
+    except (ApiError, KeyError, TypeError, AttributeError) as e:
+        print(f"  ! art directions failed ({e}); rendering the variants without them")
+        return None
+    for line in lines:
+        print(line)
+    return {"families": [a for a, _ in fam], "hues": hues, "directions": directions}
 
 
 def _mockup_qa(paths, platform, ref, record=None):

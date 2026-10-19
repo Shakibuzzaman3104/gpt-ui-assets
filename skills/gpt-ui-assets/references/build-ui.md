@@ -62,7 +62,13 @@ python3 $K tokens  build/home --package com.acme.app.ui.theme --prefix Acme [--a
     find it" means the sample text in design_spec.json does not match the mockup.
 
 Build the screen with the platform's **native components**, using `spec`'s `native` widget per component and `platform_style` per
-text style, plus these files and the exported assets. Follow the project's conventions. Then close the loop:
+text style, plus these files and the exported assets. Follow the project's conventions.
+- **Keep the design's geometry.** Every padding, gap and corner radius comes from `Dimens`/`Shape` (or the Swift/CSS tokens) or
+  from `redline.json` (`inset_dp`, `gap_below_dp`, `radius_dp`), never from a default such as 16dp padding or a stock card shape.
+  Keep unusual values as they are: an asymmetric inset or a 22dp radius is part of the design, not an error to normalise.
+  Native components (NavigationBar, Switch, TabBar) keep their platform metrics; don't resize them to GPT's drawing.
+
+Then close the loop:
 ```bash
 # screenshot the built screen (emulator/simulator/device, or headless Chrome at the target width), then:
 python3 $K compare build/home shot.png [--vision] [--crop-top PX] [--crop-bottom PX] [--shot-width-dp N] [--fail-below 95]
@@ -75,6 +81,18 @@ python3 $K compare build/home shot.png [--vision] [--crop-top PX] [--crop-bottom
   - `fill colour off by dE 4.8 (#A69BF7 -> #9A8BE6)`
   - `shifted +12dp vertically`
   - `element … missing in the implementation` (no shift/size hints follow a missing or replaced element)
+  - `corner radius 8dp, design 16dp, token PlanCardShape` (per corner when only some differ, e.g. a sheet rounded on top only)
+  - `'Title' left padding in Plan card 28dp, design 20dp`, `off-centre under Send button by +4dp`, `+12dp wider (340dp, design 328dp)`
+  - `gap above Start button (below Plan card) 300dp, design 320dp`: a wrong gap is named once, at the gap; the elements it pushes
+    down get no `shifted` hints. A token is named only when its `redline` source is the same measurement.
+- **Layout line.** `layout: N surfaces measured on both screens, M elements placed; … differences` counts what was checked. Cards
+  and sheets are measured with `redline`'s edge finder on both screens; text by its ink; artwork from the manifest by its box.
+  Not checked: system UI, outlines without a fill of their own, elements under 20dp, 1-2 character text, text drawn at the wrong
+  size (fix the size first), text centred in a chip or spanning the width (font width moves its edges), and surfaces within ΔE ~3
+  of the background (white on cream). It is skipped when the surfaces read uniformly wider or narrower (wrong screenshot width).
+  Measured on 12 GPT mockups rebuilt faithfully in HTML: no false layout hints beyond the rebuilds' own mistakes. Of 4-8dp errors
+  injected into them, 20/22 gaps, 26/33 radii and 9/22 paddings were caught: padding is only checked where a card holds located
+  text or manifest artwork, so a clean layout line is not proof that every inset matches; look at `heatmap.png` too.
 - It detects a status bar and a taller screen automatically. A shorter screenshot prints `compared X% of the design` and marks
   regions below the fold `outside screenshot`; when every text is off by the same factor it prints one `all text is ~N% smaller`
   line instead of per-text hints (wrong dp width or font scale). "Differs inside the artwork" regions come from the forged assets,

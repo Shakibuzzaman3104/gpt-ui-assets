@@ -1057,8 +1057,8 @@ def cmd_tokens(a):
                                                 "hig_style")} for t in tm["types"]],
               "m3": {k_: tm.get(k_) for k_ in ("m3_roles_baseline", "m3_slots_baseline", "m3_slot_notes", "m3_shapes")},
               "prefix": a.prefix, "audit": audit,
-              "radii": [{k: r[k] for k in ("name", "dp", "source", "shape")} for r in tm["radii"]],
-              "spacing": [{k: s[k] for k in ("name", "dp", "source")} for s in tm["spacing"]],
+              "radii": [{k: r[k] for k in ("name", "dp", "source", "shape", "kt", "sw", "css")} for r in tm["radii"]],
+              "spacing": [{k: s[k] for k in ("name", "dp", "source", "kt", "sw", "css")} for s in tm["spacing"]],
               "platforms": platforms, "px_to_dp": tm["px_to_dp"], "fonts": str(fonts_path) if fonts else None}
     print(f"palette ({sum(p['snapped'] for p in palette)}/{len(palette)} snapped to mockup pixels):")
     for p in palette:

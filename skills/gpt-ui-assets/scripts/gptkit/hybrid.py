@@ -719,7 +719,7 @@ def cmd_stage(a):
                     ims = [Image.open(frames / f"{i:04d}.png").convert("RGB") for i in range(n)]
                     durs = [round((i + 1) * 1000 / a.fps) - round(i * 1000 / a.fps) for i in range(n)]
                     webp = out / "motion.webp"
-                    ims[0].save(webp, save_all=True, append_images=ims[1:], duration=durs, loop=0, quality=90, method=6)
+                    ims[0].save(webp, save_all=True, append_images=ims[1:], duration=durs, loop=0, quality=90, method=5)
                     report["motion"]["file"] = webp.name
                     print("  (no ffmpeg: wrote an animated WebP instead of MP4)")
                 picks = sorted({min(n - 1, round(k * (n - 1) / max(1, a.sheet - 1))) for k in range(a.sheet)})

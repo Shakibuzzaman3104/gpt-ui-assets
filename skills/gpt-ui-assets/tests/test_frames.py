@@ -206,7 +206,7 @@ def test_apng_loop_seam():
 def _frames_args(tmp, **kw):
     ns = dict(dir=str(tmp), name="flame", moving="the flame", static=None, static_order="front", motion=None, count=None,
               cols=4, anchor="bottom", fps=None, procedural=None, amount=1.0, reuse=None, reroll=False, match_colors=False,
-              formats="webp", px=120, preview_bg="#1b1d33", model=None)
+              formats="webp", px=120, preview_bg="#1b1d33", model=None, tween=1, tween_engine="flow", rife=None)
     ns.update(kw)
     return argparse.Namespace(**ns)
 
@@ -318,6 +318,29 @@ def test_frames_e2e_reuse_and_reroll():
     shutil.rmtree(tmp)
 
 
+def test_frames_tween_keeps_static_and_loop():
+    tmp = _asset_dir(Path(tempfile.mkdtemp()))
+    out = tmp / "frames" / "flame"
+    with _Sheet():
+        _run(g.cmd_frames, _frames_args(tmp, static="the base", count=8, formats="webp,lottie"))
+    keys = [np.asarray(Image.open(p)) for p in sorted(out.glob("frame_*.png"))]
+    with _Sheet() as sh:
+        text = _run(g.cmd_frames, _frames_args(tmp, static="the base", count=8, reuse="all", tween=2,
+                                               formats="webp,lottie"))
+    assert not sh.calls and "tween x2 (flow): 16 frames @ 24 fps; in-betweens flagged: none" in text, text
+    seq = [np.asarray(Image.open(p)) for p in sorted(out.glob("frame_*.png"))]
+    assert len(seq) == 16 and all((seq[2 * i] == keys[i]).all() for i in range(8))  # the generated frames, untouched
+    st = [f[-40:] for f in seq]                       # the bottom rows hold only the static log: identical in all
+    assert st[0][..., 3].any() and all((x == st[0]).all() for x in st)
+    durs = _webp_chunks(out / "flame.webp")[1]
+    assert len(durs) == 16 and sum(durs) == 667      # 8 frames at 12 fps before: the loop length is unchanged
+    lot = json.loads((out / "flame.json").read_text())
+    assert lot["fr"] == 24 and lot["op"] == 16 and len(lot["assets"]) == 16
+    qa = json.loads((out / "qa.json").read_text())
+    assert qa["tween"]["factor"] == 2 and qa["tween"]["fps"] == 24 and qa["tween"]["flagged_in_betweens"] == []
+    shutil.rmtree(tmp)
+
+
 def test_opaque_render_detected():
     tmp = _asset_dir(Path(tempfile.mkdtemp()))
     out = tmp / "frames" / "flame"
@@ -407,6 +430,11 @@ def test_argv_table():
         (["--formats", "", "--procedural", "pulse"], 1, "--formats"),
         ([], 1, "--moving is required"),
         (["--reuse", "all"], 1, "--moving is required"),
+        (["--tween", "2", "--procedural", "pulse"], 1, "--tween is for generated frames"),
+        (["--tween", "9", "--moving", "x"], 1, "at most 8"),
+        (["--tween-engine", "dain", "--moving", "x"], 2, "invalid choice"),
+        (["--tween", "2", "--tween-engine", "rife", "--rife", "/nonexistent/rife", "--moving", "x"], 1,
+         "--rife /nonexistent/rife not found"),
     ]
     for extra, code, text in table:
         got, err = _main_exit(base + extra)

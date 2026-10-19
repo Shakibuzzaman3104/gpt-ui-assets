@@ -2,6 +2,48 @@
 
 All notable changes to gpt-ui-assets. Versions follow [semantic versioning](https://semver.org).
 
+## 5.2.0 (2026-10-19)
+
+Design to code that keeps the design's geometry, and smoother animation.
+
+### Added
+- **Layout checks in `compare`.** Corner radii, padding and gaps are measured on both screens with `redline`'s edge
+  finder and reported with the token to use, for example `corner radius 8dp, design 16dp, token PlanCardShape` or
+  `gap above Start button (below Plan card) 300dp, design 320dp`. A wrong gap is named once, and the elements it pushes
+  down get no `shifted` hints. On 12 GPT mockups rebuilt faithfully in HTML there were no false layout hints beyond
+  the rebuilds' own mistakes. Of 4-8dp errors injected into them, it caught 20/22 gaps, 26/33 radii and 9/22 paddings.
+  `build-ui.md` says to build with the tokens' padding, gaps and radii and to keep unusual values as designed.
+- **`--tween N`** on `frames` (generated route) and `sequence build`/`propagate`. It adds N-1 in-between frames of the
+  moving layer after every frame, the last→first pair included. The generated frames and the static pixels stay
+  exact, and the loop length holds. Engines:
+  - `flow` (default): built-in optical flow, needs OpenCV.
+  - `rife`: rife-ncnn-vulkan, optional, MIT; `setup.md` has the 35 MB install.
+  - `blend`: a crossfade.
+
+  Measured on held-out frames of two synthetic loops (premultiplied error, a procedural smoke plume | a swaying warp
+  of a GPT campfire): flow 3.0 | 2.6, RIFE 3.1 | 2.6, crossfade 4.3 | 5.6, repeating a frame 8.2 | 8.2. On real GPT
+  flame frames the in-betweens keep the keys' edge sharpness, where a crossfade doubles the flame tip. `sequence`: lay
+  out at 12 fps and tween to 24 fps with half the frames to render; GPT renders whose texture changes frame to frame
+  were not measured. `doctor` reports RIFE.
+- **`mockup --directions`**: a distinct art direction per variant (palette, type, radii, spacing, one signature
+  device) with a different accent hue each; colours named in the brief win.
+
+### Changed
+- **Fitted easing for `rig`/`animate`** (`--ease fit`, the new default). Each key segment's bezier ease follows the
+  motion, instead of a constant speed that jumps at every key. Against the exact motion at 8 keys, speed error went
+  from 20% to 0.6% for sway, breathe, squash, bob and ripple, and from 47% to 37% for flicker. In lottie-web the
+  in-between frames came 4.6× (sway) and 2.3× (breathe) closer to a 96-key reference. `--ease linear` keeps the old
+  output.
+- **Flow screens on phones** (onboarding, sign-in, players, camera, checkout, compose, edit forms) show a back or close
+  control instead of the tab bar unless the brief asks for it, and `critique` flags a tab bar on them. Measured on 9
+  briefs × 2 variants: 0 of 10 flow screens drew a tab bar and 8 of 8 detail screens kept theirs. An earlier wording
+  left the bar on 4 of 4 iOS payment screens.
+- Animated WebP encodes at libwebp method 5 instead of 6: within 2% of the size at 1/13 to 1/80 of the time.
+
+### Docs
+- README shows ten unedited first renders from this version (iOS and Android) and the campfire loop with
+  `--tween 2`.
+
 ## 5.1.1 (2026-10-19)
 
 ### Fixed

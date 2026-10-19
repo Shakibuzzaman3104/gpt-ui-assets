@@ -1155,6 +1155,57 @@ def procedural_keyframes(paths, kind, n=8, amp=1.0, phase=0.0, seed=0, box=None)
     return [[map_path(d, motion_field(kind, box, j / n, amp, phase, seed)) for j in range(n)] for d in paths]
 
 
+def _bez_ease(c, x):
+    """Cubic-bezier ease c = (x1, y1, x2, y2) at progress x (array), as Lottie and CSS evaluate it."""
+    x1, y1, x2, y2 = c
+    bz = lambda u, a, b: 3 * (1 - u) ** 2 * u * a + 3 * (1 - u) * u * u * b + u ** 3  # noqa: E731
+    lo, hi = np.zeros_like(x), np.ones_like(x)
+    for _ in range(30):
+        m = (lo + hi) / 2
+        below = bz(m, x1, x2) < x
+        lo, hi = np.where(below, m, lo), np.where(below, hi, m)
+    return bz((lo + hi) / 2, y1, y2)
+
+
+def _fit_ease(xs, us):
+    """Least-squares cubic-bezier ease through (xs, us); the search starts at linear, so it never fits worse."""
+    c = np.array([1 / 3, 1 / 3, 2 / 3, 2 / 3])
+    err = lambda c: float(((_bez_ease(c, xs) - us) ** 2).mean())  # noqa: E731
+    e, step = err(c), 0.2
+    while step > 1e-3:
+        better = False
+        for i in range(4):
+            for d in (step, -step):
+                c2 = c.copy()
+                c2[i] = c2[i] + d if i % 2 else min(1.0, max(0.0, c2[i] + d))
+                e2 = err(c2)
+                if e2 < e:
+                    c, e, better = c2, e2, True
+        if not better:
+            step /= 2
+    return [round(float(v), 3) for v in c]
+
+
+def key_eases(field_at, pts, n, samples=15):
+    """Per segment j -> j+1 of n evenly spaced loop keys: the ease that makes the straight-line morph between the two
+    keys follow the motion field, so the part keeps the motion's own speed instead of a constant one with a kink at
+    every key. field_at(t) -> fn(x, y)."""
+    pts = pts[::max(1, len(pts) // 400)]
+    at = lambda t: np.array([field_at(t)(x, y) for x, y in pts], float).ravel()  # noqa: E731
+    keys = [at(j / n) for j in range(n)]
+    xs = np.linspace(0, 1, samples + 2)[1:-1]
+    out = []
+    for j in range(n):
+        A, B = keys[j], keys[(j + 1) % n]
+        D = B - A
+        dd = float(D @ D)
+        if dd < 1e-9:
+            out.append([0.0, 0.0, 1.0, 1.0])
+            continue
+        out.append(_fit_ease(xs, np.array([(at((j + x) / n) - A) @ D / dd for x in xs])))
+    return out
+
+
 def _grad_geom(defs, gid):
     """(kind, [(x, y), (x, y)]) of gradient #gid in the defs text: linear -> start/end, radial -> centre and a point at
     the radius. None for gradients the mover does not handle (gradientTransform, objectBoundingBox units)."""
@@ -1208,6 +1259,8 @@ def animate_layers(vec, specs, n=8):
             raise ValueError(f"unknown anchor layer {anchor!r}")
         keys = procedural_keyframes([p["d"] for p in sl["paths"]], kind, n, amp, phase,
                                     seed=sum(map(ord, anchor)), box=boxes[anchor])
+        pts = np.vstack([_path_points(_d(_subpaths(p["d"]))) for p in sl["paths"]])
+        eases = key_eases(lambda t: motion_field(kind, boxes[anchor], t, amp, phase, sum(map(ord, anchor))), pts, n)
         names = [name if len(sl["paths"]) == 1 else f"{name}__{i + 1}" for i in range(len(sl["paths"]))]
         paint = ("fill", "opacity", "stroke", "stroke_width", "cap", "join")  # every paint key survives the morph
         for nm, p, k in zip(names, sl["paths"], keys):
@@ -1216,6 +1269,7 @@ def animate_layers(vec, specs, n=8):
             if sl.get("motion"):
                 al["motion"] = sl["motion"]  # the layer's rigid motion (vectorize schema) rides on top of the morph
             al["keyframes"] = k
+            al["key_ease"] = eases
             ref = re.match(r"url\(#([^)]+)\)", al["fill"] or "")
             geom = _grad_geom(vec.get("defs", ""), ref.group(1)) if ref else None
             if geom:
@@ -1272,6 +1326,23 @@ def _tidy_lottie(lot, linear=True):
                             k["i"], k["o"] = {"x": [1], "y": [1]}, {"x": [0], "y": [0]}
                 else:
                     rnd(ks["k"])
+    return lot
+
+
+def _tr_apply_key_ease(lot, vec):
+    """Each animated layer's fitted eases (key_ease) onto its shape and gradient keys."""
+    eases = {al["name"]: al["key_ease"] for al in vec["animated_layers"] if al.get("key_ease")}
+    for layer in lot["layers"]:
+        e = eases.get(layer["nm"])
+        if not e:
+            continue
+        for gr in layer["shapes"]:
+            for it in gr.get("it", []):
+                props = [it.get("ks")] if it.get("ty") == "sh" else [it.get("s"), it.get("e")] if it.get("ty") in ("gf", "gs") else []
+                for pr in props:
+                    if isinstance(pr, dict) and pr.get("a") == 1 and len(pr["k"]) == len(e) + 1:
+                        for k, (x1, y1, x2, y2) in zip(pr["k"], e):
+                            k["o"], k["i"] = {"x": [x1], "y": [y1]}, {"x": [x2], "y": [y2]}
     return lot
 
 
@@ -1614,7 +1685,7 @@ def _motion_stats(vec):
     return st
 
 
-def write_animation(vec, out, name, seconds=1.6, fps=30, size=512, ease="linear", bg="#1b1d33", strip=8):
+def write_animation(vec, out, name, seconds=1.6, fps=30, size=512, ease="fit", bg="#1b1d33", strip=8):
     """layers.json with animated layers -> Lottie + preview.html + keyframe sheet + lottie-web filmstrip."""
     out = Path(out)
     out.mkdir(parents=True, exist_ok=True)
@@ -1623,8 +1694,10 @@ def write_animation(vec, out, name, seconds=1.6, fps=30, size=512, ease="linear"
         raise ValueError("; ".join(errs))
     (out / "layers.json").write_text(json.dumps(vec, indent=1))
     lot = build_lottie(vec, size, seconds, fps)
-    lot = _tidy_lottie(lot, ease == "linear")
-    _tr_animate_gradients(lot, vec, ease == "linear")
+    lot = _tidy_lottie(lot, ease != "keys")
+    _tr_animate_gradients(lot, vec, ease != "keys")
+    if ease == "fit":
+        _tr_apply_key_ease(lot, vec)
     (out / f"{name}.json").write_text(json.dumps(lot, separators=(",", ":")))
     lib = _lottie_js()  # inline the cached lottie-web so the preview also opens offline; CDN only as a fallback
     (out / "preview.html").write_text(
@@ -1810,7 +1883,7 @@ def cmd_rig(a):
     if a.animate:
         try:
             vec = animate_layers(vec, _parse_motions(a.animate), a.keyframes)
-            rep["animation"] = write_animation(vec, out / "anim", a.name, a.seconds, a.fps, 512, "linear", a.preview_bg)
+            rep["animation"] = write_animation(vec, out / "anim", a.name, a.seconds, a.fps, 512, "fit", a.preview_bg)
         except ValueError as e:
             (out / "rig_report.json").write_text(json.dumps(rep, indent=2, default=str))
             sys.exit(f"rig --animate: {e} (the rig itself was written)")
@@ -1955,8 +2028,9 @@ def _add_trace_rig_parsers(sub):
     p.add_argument("--seconds", type=_pos_float, default=1.6, help="loop length")
     p.add_argument("--fps", type=_pos_int, default=30); p.add_argument("--size", type=_tr_int_min(16), default=512,
                                                                      help="Lottie canvas long side in px")
-    p.add_argument("--ease", choices=["linear", "keys"], default="linear",
-                   help="linear between procedural keys (smooth); keys = build_lottie's ease at every key")
+    p.add_argument("--ease", choices=["fit", "linear", "keys"], default="fit",
+                   help="fit: each segment eased to follow the motion (default); linear: constant speed between keys; "
+                        "keys: ease in and out at every key")
     p.add_argument("--out", help="output dir (default: <layers dir>/anim/<stem>)")
     p.add_argument("--name", help="Lottie file stem (default: the layers.json stem)")
     p.add_argument("--preview-bg", type=_color_arg, default="#1b1d33", help="backdrop of keys_review.png / lottie_frames.png / preview.html")

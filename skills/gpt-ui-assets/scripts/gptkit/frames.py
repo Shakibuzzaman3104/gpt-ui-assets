@@ -12,6 +12,7 @@ from PIL import Image, ImageChops, ImageFilter
 
 from .core import ApiError, _config, _open_image, _plan, _png_bytes, _res_name, _size_for, edit, pick_image_model
 from .imaging import _lab, _rgba, content_box, sheet
+from .tween import _rife_bin, tween
 from .vectordrawable import _aapt2_tree
 
 # ---- animation frames
@@ -386,9 +387,9 @@ def _placement(src, static, frames):
     return s, org, v
 
 
-def _composite(src, static, frames, order):
+def _composite(src, static, frames, order, fit_frames=None):
     """Place every aligned moving frame with one shared transform onto the asset and stack the static layer."""
-    fit = _placement(src, static, frames)
+    fit = _placement(src, static, fit_frames or frames)
     if not fit:
         print("  ! could not locate the moving part in the asset; composites skipped")
         return [], 0.0
@@ -688,9 +689,9 @@ def _write_anim(out, anim, seq, fps, a, labels=None, lottie=None):
                     loop=0, disposal=2)
         wrote.append("preview.gif")
     if "webp" in formats:
-        # Pillow's animated writer defaults to method=0 (fastest, largest); exact keeps RGB under transparent pixels
+        # method 5: within 2% of method 6's size at 1/13-1/80 of its time; exact keeps RGB under transparent pixels
         small[0].save(out / f"{anim}.webp", save_all=True, append_images=small[1:], duration=durs, loop=0, quality=90,
-                      method=6, exact=True)
+                      method=5, exact=True)
         wrote.append(f"{anim}.webp")
     if "apng" in formats:
         small[0].save(out / f"{anim}.apng", format="PNG", save_all=True, append_images=small[1:], duration=durs, loop=0)
@@ -743,6 +744,20 @@ def _frames_procedural(a, src, out):
         indent=1))
     lot = lottie_motion(art, a.procedural, count, a.amount, lo, frames[0].size, fps, a.px, f"{a.name}_{a.procedural}")
     _write_anim(out, f"{a.name}_{a.procedural}", frames, fps, a, lottie=lot)
+
+
+def _tween_frames(a, frames, labels, fps, src, ref_mask, qa):
+    """In-betweens of the moving layer (the static layer and the generated frames stay as they are), QA'd as a loop."""
+    k = a.tween
+    out, engine = tween(frames, k, a.tween_engine, a.rife)
+    tq = _frame_qa(out, src, ref_mask)
+    new = [r for r in tq["frames"] if r["flags"] and (r["frame"] - 1) % k]
+    qa["tween"] = {"factor": k, "engine": engine, "frames": len(out), "fps": fps * k,
+                   "flagged_in_betweens": [{"frame": r["frame"], "flags": r["flags"]} for r in new]}
+    print(f"  tween x{k} ({engine}): {len(out)} frames @ {fps * k:g} fps; in-betweens flagged: "
+          + (", ".join(f"f{r['frame']}({'+'.join(r['flags'])})" for r in new) or "none"))
+    labels = [lab if j == 0 else f"f{i + 1}.{j}" for i, lab in enumerate(labels) for j in range(k)]
+    return out, labels, fps * k
 
 
 def _opaque_share(img):
@@ -893,6 +908,13 @@ def cmd_frames(a):
             old.unlink()
     if a.count is not None and a.count < 2:
         sys.exit(f"frames: --count must be at least 2, got {a.count}")
+    if a.procedural and a.tween > 1:
+        sys.exit("frames: --tween is for generated frames; procedural motion is exact at any frame count, so raise "
+                 "--count and --fps instead")
+    if a.tween > 8:
+        sys.exit(f"frames: --tween {a.tween}: at most 8 (7 in-betweens per pair)")
+    if a.tween > 1 and a.tween_engine == "rife":
+        _rife_bin(a.rife)                             # before any paid call
     if a.procedural:
         return _frames_procedural(a, src, out)
     if not a.moving:
@@ -981,7 +1003,11 @@ def cmd_frames(a):
         _qa_report(qa, " after colour match")
     for i, f in enumerate(frames):
         f.save(out / f"moving_f{i + 1:02d}.png")
-    comps, reg = _composite(src, static, frames, a.static_order) if static is not None else ([], None)
+    labels = [f"f{r['frame']} {' '.join(r['flags'])}".strip() for r in qa["frames"]]
+    keys = frames
+    if a.tween > 1:
+        frames, labels, fps = _tween_frames(a, frames, labels, fps, src, ref_mask, qa)
+    comps, reg = _composite(src, static, frames, a.static_order, keys) if static is not None else ([], None)
     if reg is not None:
         qa["sequence"]["registration_iou"] = round(float(reg), 3)
         if reg < 0.3:
@@ -993,5 +1019,4 @@ def cmd_frames(a):
     seq = comps or frames
     for i, f in enumerate(seq):
         f.save(out / f"frame_{i + 1:02d}.png")
-    labels = [f"f{r['frame']} {' '.join(r['flags'])}".strip() for r in qa["frames"]]
     _write_anim(out, a.name, seq, fps, a, labels)

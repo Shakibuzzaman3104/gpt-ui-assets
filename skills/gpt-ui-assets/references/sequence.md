@@ -109,6 +109,13 @@ python3 $K sequence build/player train_smoke build --ref drawn_smoke.png --below
     `build`); the build output says so too.
   - `--ref`, `--below`, `--quality` and `--preview-bg` are remembered in `sequence.json`, so a `reroll` followed by a
     plain `build` keeps the same output ("using --ref X --below Y from the last build" is printed).
+  - **`--tween 2`** (build/propagate, remembered like `--quality`) adds an in-between after every frame, the last→first
+    pair included. Lay the loop out at `--fps 12` and ship 24 fps with half the frames to render (GPT on every frame) or
+    to propagate (EbSynth; keys stay a quarter-second apart). QA, `frames/` and `reroll` work on the laid-out frames; the
+    WebP and `preview.gif` carry the in-betweens. Measured on a synthetic plume (noise-textured sprites on the layout)
+    at 24 fps, rebuilding the odd frames from the even ones: 41 dB PSNR against the real frames (crossfade 37, repeating
+    the previous frame 32); 8→24 fps (`--tween 3`) 40 dB. `--tween-engine rife` scored the same (40.6 dB, `setup.md`).
+    GPT renders whose texture changes from frame to frame were not measured: check `preview.gif`. The WebP doubles.
   - A render that comes back opaque (a gateway that ignores `background=transparent`) is saved as `raw/NNN.opaque.png`
     and counted as missing; a moderation refusal or another 4xx is printed once with its code and the prompt and is not
     retried (rephrase `--moving`/`--locked`/`--look`); `render` exits 1 while frames are missing. Without OpenCV the

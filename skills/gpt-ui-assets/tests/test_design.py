@@ -406,6 +406,105 @@ class _FakeApiError(K.ApiError):
         return self.args[0]
 
 
+def _direction(name):
+    return {"name": name, "mood": f"{name.lower()} calm", "theme": "light", "palette": "#ffffff, #111111, #555555, #008866",
+            "type": "humanist sans, 16/20/24/32", "shape": "4/8/16 radii", "spacing": "16 margin, 8 gap",
+            "signature": "oversized progress ring", "avoid": "confetti, badges, streak flames"}
+
+
+def test_directions_give_each_variant_its_own():
+    prompts, asks, plans = [], [], []
+
+    def ask(parts, schema, name):
+        asks.append(parts[0])
+        assert schema == K.DIRECTIONS_SCHEMA and name == "art_directions"
+        return {"directions": [_direction("Alpha"), _direction("Beta")]}
+
+    def generate(prompt, size, **kw):
+        prompts.append(prompt)
+        return _png(tuple(map(int, size.split("x")))), {"size": size}
+    for platform in ("android", None):
+        prompts.clear()
+        asks.clear()
+        with tempfile.TemporaryDirectory() as td, patched(ask=ask, generate=generate,
+                                                          _plan=lambda *a, **kw: plans.append(a)):
+            d = Path(td) / "out"
+            d.mkdir()
+            (d / "design.json").write_text(json.dumps({"custom": "keep"}))
+            code, out = run(K.cmd_mockup, _mockup_args(td, variants=2, directions=True, no_critique=True, platform=platform))
+            assert code == 0 and len(prompts) == 2, (out, prompts)
+            assert sum("alpha calm" in p for p in prompts) == sum("beta calm" in p for p in prompts) == 1
+            assert not any("Alpha" in p or "Beta" in p for p in prompts)
+            assert prompts[0] != prompts[1]
+            assert len(asks) == 1 and "direction 1:" in asks[0] and "direction 2:" in asks[0]
+            meta = json.loads((d / "design.json").read_text())
+            variants = meta["directions"]["variants"]
+            assert set(variants) == {"mockup_v1.png", "mockup_v2.png"} and all(v["hue"] for v in variants.values())
+            assert variants["mockup_v1.png"]["name"] == "Alpha" and variants["mockup_v2.png"]["name"] == "Beta"
+            assert meta["custom"] == "keep" and (platform is None or meta["platform"] == platform)
+            assert plans[-1] == (2, 1), plans
+            with patched(generate=generate, _plan=lambda *a, **kw: None):
+                run(K.cmd_mockup, _mockup_args(td, variants=2, no_critique=True, platform=platform))
+            assert json.loads((d / "design.json").read_text())["directions"]["variants"] == {}
+
+
+def test_directions_failure_renders_without_them():
+    def down(*a, **kw):
+        raise _FakeApiError("HTTP 429")
+    for ask in (down, lambda *a: {}, lambda *a: None, lambda *a: {"directions": [None]},
+                lambda *a: {"directions": [{"name": "broken"}]}):
+        prompts = []
+
+        def generate(prompt, size, **kw):
+            prompts.append(prompt)
+            return _png(tuple(map(int, size.split("x")))), {"size": size}
+        with tempfile.TemporaryDirectory() as td, patched(ask=ask, generate=generate):
+            code, out = run(K.cmd_mockup, _mockup_args(td, variants=2, directions=True))
+            assert code == 0 and len(prompts) == 2 and "art directions failed" in out, (out, prompts)
+            assert all("Art direction" not in p for p in prompts)
+
+
+def test_directions_short_response():
+    prompts = []
+
+    def generate(prompt, size, **kw):
+        prompts.append(prompt)
+        return _png(tuple(map(int, size.split("x")))), {"size": size}
+    with tempfile.TemporaryDirectory() as td, patched(generate=generate, ask=lambda *a: {"directions": [_direction("Alpha")]}):
+        code, out = run(K.cmd_mockup, _mockup_args(td, variants=2, directions=True))
+        assert code == 0 and len(prompts) == 2 and sum("Art direction" in p for p in prompts) == 1, (out, prompts)
+
+
+def test_directions_new_screens_only():
+    with tempfile.TemporaryDirectory() as td:
+        png = str(_mock_png(td))
+        for kw in ({"style_ref": png}, {"edit": png}, {"raw": True}, {"anchor": png, "set": "tablet"}):
+            code, out = run(K.cmd_mockup, _mockup_args(td, directions=True, **kw))
+            assert code != 0 and "--directions designs new screens" in out, out
+
+
+def test_directions_default_is_off():
+    prompts = []
+
+    def ask(*a, **kw):
+        raise AssertionError("no art direction call expected")
+
+    def generate(prompt, size, **kw):
+        prompts.append(prompt)
+        return _png(tuple(map(int, size.split("x")))), {"size": size}
+    with tempfile.TemporaryDirectory() as td, patched(ask=ask, generate=generate):
+        code, out = run(K.cmd_mockup, _mockup_args(td, variants=2))
+        assert code == 0 and len(prompts) == 2 and all("Art direction" not in p for p in prompts), (out, prompts)
+
+
+def test_directions_cycle_hues():
+    import random
+    with patched(ask=lambda *a: {"directions": []}):
+        dirs = K._art_directions("ios", 16, "habit tracker", rng=random.Random(1))
+    assert len(dirs["hues"]) == 16 and len(set(dirs["hues"][:14])) == 14
+    assert dirs["hues"][14:] == dirs["hues"][:2] and len(dirs["families"]) == len(K.STYLE_FAMILIES)
+
+
 def test_mockup_validation():
     with tempfile.TemporaryDirectory() as td:
         for size in ("auto", "1024X1536", "0x100", ""):

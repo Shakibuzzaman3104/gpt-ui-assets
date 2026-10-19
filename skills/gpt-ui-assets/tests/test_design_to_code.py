@@ -41,14 +41,14 @@ def _rr(d, box, r, fill, outline=None, width=0, corners=None):
 
 
 def draw_design(title_size=56, body=TRUTH["body"], accent=TRUTH["accent"], chip_dy=0, avatar=True, status=0, nav=0,
-                scale=1.0, body_weight=400, width=W, height=H, font_scale=1.0, body_font=None):
+                scale=1.0, body_weight=400, width=W, height=H, font_scale=1.0, body_font=None, card_r=32, pad_dx=0, btn_dy=0):
     """The synthetic 720x1440 dark design (card r=32 with 2px border, pill r=56, chip r=16, avatar d=80, three text styles)
     with optional planted deviations; returns an RGB image."""
     Hh = height + status + nav
     big = Image.new("RGB", (width * SS, Hh * SS), TRUTH["bg"])
     d = ImageDraw.Draw(big)
-    _rr(d, (40, 200 + status, 640, 360), 32, TRUTH["card"], TRUTH["border"], 2)
-    _rr(d, (60, 1200 + status, 600, 112), 56, accent)
+    _rr(d, (40, 200 + status, 640, 360), card_r, TRUTH["card"], TRUTH["border"], 2)
+    _rr(d, (60, 1200 + status + btn_dy, 600, 112), 56, accent)
     _rr(d, (72, 440 + status + chip_dy, 200, 64), 16, TRUTH["chip"])
     if avatar:
         d.ellipse([600 * SS, (60 + status) * SS, 680 * SS - 1, (140 + status) * SS - 1], fill=TRUTH["avatar"])
@@ -62,10 +62,10 @@ def draw_design(title_size=56, body=TRUTH["body"], accent=TRUTH["accent"], chip_
     if body_font:
         fi = ImageFont.truetype(str(FONTS / body_font), round(28 * font_scale))
     dr.text((40, 80 + status), "Good evening", font=fl, fill=TRUTH["title"])
-    dr.text((80, 240 + status), "Your plan for today", font=fi, fill=body)
-    dr.text((80, 290 + status), "Three short sessions", font=fi, fill=body)
+    dr.text((80 + pad_dx, 240 + status), "Your plan for today", font=fi, fill=body)
+    dr.text((80 + pad_dx, 290 + status), "Three short sessions", font=fi, fill=body)
     tw = dr.textlength("Start session", font=fb)
-    dr.text((360 - tw / 2, 1256 + status), "Start session", font=fb, fill=TRUTH["label"], anchor="lm")
+    dr.text((360 - tw / 2, 1256 + status + btn_dy), "Start session", font=fb, fill=TRUTH["label"], anchor="lm")
     if scale != 1:
         im = im.resize((round(im.width * scale), round(im.height * scale)), Image.LANCZOS)
     return im
@@ -745,7 +745,7 @@ def test_compare_hints():
     assert "try " not in title
     assert len(regs["Avatar"]["hints"]) == 1 and "missing in the implementation" in regs["Avatar"]["hints"][0], regs["Avatar"]["hints"]
     assert regs["Avatar"]["shift_dp"] == [0.0, 0.0] and "impl_bbox" not in regs["Avatar"]
-    assert any("+8dp vertically" in h_ for h_ in regs["Chip"]["hints"]), regs["Chip"]["hints"]
+    assert regs["Chip"]["hints"] == ["gap above Chip (below 'Three short sessions') 69dp, design 61dp"], regs["Chip"]["hints"]
     assert abs(regs["Start button"]["fill"][2] - 4.8) <= 0.3 and any("fill colour off" in h_ for h_ in regs["Start button"]["hints"])
     assert any("colour off by dE 8.9" in h_ for h_ in regs["Plan card"]["hints"]), regs["Plan card"]["hints"]
     # body set in Roboto instead of Inter: the Android default font is named
@@ -753,6 +753,30 @@ def test_compare_hints():
     with fake_gf():
         out = run("compare", d, d / "swap.png", "--out", d / "cmp_swap")
     assert "looks like Roboto 400" in out and "rather than the specified Inter 400" in out and "fontFamily not set?" in out, out
+    shutil.rmtree(d)
+
+
+def test_compare_layout():
+    d = make_design(_tmp())
+    run("redline", d)
+    run("tokens", d, "--prefix", "Acme", "--platforms", "compose")
+    draw_design(card_r=16, pad_dx=16, btn_dy=-40).save(d / "lay.png")
+    out = run("compare", d, d / "lay.png")
+    rep = json.loads((d / "compare" / "report.json").read_text())
+    regs = {r["name"]: r for r in rep["regions"]}
+    assert "corner radius 8dp, design 16dp, token PlanCardShape" in regs["Plan card"]["hints"], regs["Plan card"]["hints"]
+    assert "'Your plan for today' left padding in Plan card 28.5dp, design 20.5dp (ink edge)" in regs["Plan card"]["hints"], regs["Plan card"]["hints"]
+    assert regs["Start button"]["hints"] == ["gap above Start button (below Plan card) 300dp, design 320dp"], regs["Start button"]["hints"]
+    assert {k_: rep["overall"]["layout"][k_] for k_ in ("radius", "gap")} == {"radius": 1, "gap": 1}, rep["overall"]["layout"]
+    assert not any(h_.startswith(("shifted", "'Start session' shifted")) for r in rep["regions"] for h_ in r["hints"])
+    assert "layout: 3 surfaces measured on both screens" in out and "1 radius" in out
+    draw_design(font_scale=0.8).save(d / "small.png")
+    run("compare", d, d / "small.png", "--out", d / "cmp_small")
+    rep = json.loads((d / "cmp_small" / "report.json").read_text())
+    assert "skipped" not in rep["overall"]["layout"] and not any(r.get("layout") for r in rep["regions"]), rep["overall"]["layout"]
+    draw_design(width=800, height=1600).save(d / "narrow.png")  # the same layout on a wider screen: everything reads 10% smaller
+    out = run("compare", d, d / "narrow.png", "--out", d / "cmp_narrow")
+    assert "(layout checks skipped: the surfaces are ~10% narrower: the screenshot width differs" in out, out
     shutil.rmtree(d)
 
 

@@ -40,17 +40,18 @@ def _rise(dev, tau, lab=None, span=4, inside_ok=False):
     return lo + a0 + n - 1 + (0.5 - prog[n - 1]) / max(prog[n] - prog[n - 1], 1e-9) + 0.5
 
 
-def _surface_geometry(rgb, b):
+def _surface_geometry(rgb, b, reach=None):
     """Refined edges, per-corner radii and fill of a surface (fill, border or image) around bbox b, or None if its
     outline doesn't stand out from the surroundings near the bbox. Sides within 2 px of the image border are the border
     (full-bleed sheets, bars); corners are measured where the background is visible; a drop shadow is tolerated and
-    reported as shadow=True."""
+    reported as shadow=True. `reach` caps how far from the box the edges are searched (px), for a box measured before."""
     from .compare import _box_mean  # deferred: compare imports this module
     H, W = rgb.shape[:2]
     x, y, w, h = b["x"], b["y"], b["w"], b["h"]
     if w < 12 or h < 12:
         return None
     m = max(8, int(0.08 * min(w, h)))
+    m = min(m, max(8, reach)) if reach else m  # a box already on the edges needs no wide search
     at_border = {"left": x <= 2, "top": y <= 2, "right": x + w >= W - 2, "bottom": y + h >= H - 2}
     band = lambda y0, y1, x0, x1: rgb[max(0, y0):max(0, y1), max(0, x0):max(0, x1)].reshape(-1, 3).astype(np.float64)
     hm = max(3, m // 2)
@@ -141,6 +142,19 @@ def _surface_geometry(rgb, b):
             "full_bleed": [s for s, v in at_border.items() if v], "shadow": shadow}
 
 
+def _not_surface(r, texts):
+    """Why region r is not measured as a surface (icon or illustration, text block, container), or None."""
+    b = r["bbox"]
+    if r.get("asset_kind") in ("icon", "illustration"):
+        return "icon or illustration"
+    if sum(inst["box"][2] * inst["box"][3] for t in texts.values() for inst in t.get("instances", [])
+           if inst.get("component") == r["name"]) > 0.5 * b["w"] * b["h"]:
+        return "text component"
+    if any(cb["w"] * cb["h"] >= 0.5 * b["w"] * b["h"] for cb in r["children"]):
+        return "container of other components"
+    return None
+
+
 def cmd_redline(a):
     from .compare import _object_box, _regions  # deferred: compare imports this module
     d, spec, mock = _d2c_load_spec(a.dir)
@@ -153,10 +167,9 @@ def cmd_redline(a):
     items = []
     for r in _regions(spec, m, mock.width, mock.height):
         b = r["bbox"]
-        text_comp = sum(inst["box"][2] * inst["box"][3] for t in texts.values() for inst in t.get("instances", [])
-                        if inst.get("component") == r["name"]) > 0.5 * b["w"] * b["h"]
-        group = any(cb["w"] * cb["h"] >= 0.5 * b["w"] * b["h"] for cb in r["children"])
-        geo = _surface_geometry(rgb, b) if r.get("asset_kind") not in ("icon", "illustration") and not text_comp and not group else None
+        why = _not_surface(r, texts)
+        text_comp, group = why == "text component", why == "container of other components"
+        geo = _surface_geometry(rgb, b) if not why else None
         item = {"name": r["name"], "asset": r.get("asset"), "spec_px": [b["x"], b["y"], b["w"], b["h"]]}
         if geo:
             item.update(kind="surface", px=geo["box"], radius_px=geo["radius"], corner_radii_px=geo["corner_radii"], fill=geo["fill"],

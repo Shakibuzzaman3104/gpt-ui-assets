@@ -564,6 +564,40 @@ def test_gradient_follows_part():
         assert np.abs(cols - cols[0]).max() <= 6, cols
 
 
+def test_fitted_ease_follows_the_motion():
+    """Between two keys the straight-line morph, eased by key_eases, lands where the motion field puts the part."""
+    import tempfile
+    pts = np.array([[x, y] for x in np.linspace(10, 90, 9) for y in np.linspace(20, 120, 11)])
+    box = (*pts.min(0), *pts.max(0))
+    for kind in ("sway", "breathe", "squash", "bob", "ripple"):
+        field = lambda t, k=kind: g.motion_field(k, box, t, 1.0, 0.0, 3)  # noqa: E731
+        eases = g.key_eases(field, pts, 8)
+        at = lambda t: np.array([field(t)(x, y) for x, y in pts])  # noqa: E731
+        worst_fit = worst_lin = 0.0
+        for j in range(8):
+            A, B = at(j / 8), at((j + 1) / 8)
+            for x in (0.25, 0.5, 0.75):
+                truth = at((j + x) / 8)
+                u = float(g._bez_ease(eases[j], np.array([x]))[0])
+                worst_fit = max(worst_fit, np.abs(A + (B - A) * u - truth).max())
+                worst_lin = max(worst_lin, np.abs(A + (B - A) * x - truth).max())
+        assert worst_fit < 0.15 * worst_lin, (kind, worst_fit, worst_lin)
+    vec = g.animate_layers(g.layers_vec(g.trace_image(synthetic(), "illustration", work=64)), g._parse_motions("art=sway"), 8)
+    al = vec["animated_layers"][0]
+    assert len(al["key_ease"]) == 8 and al["key_ease"] != [[0, 0, 1, 1]] * 8
+    with tempfile.TemporaryDirectory() as td:
+        g.write_animation(vec, td, "t", 1.0, 24, 128)
+        lot = json.loads((Path(td) / "t.json").read_text())
+        g.write_animation(vec, Path(td) / "lin", "t", 1.0, 24, 128, ease="linear")
+        lin = json.loads((Path(td) / "lin" / "t.json").read_text())
+
+    def eases(lot):
+        sh = [it["ks"]["k"] for L in lot["layers"] for gr in L["shapes"] for it in gr["it"]
+              if it["ty"] == "sh" and it["ks"]["a"] == 1]
+        return [[k["o"]["x"][0], k["o"]["y"][0], k["i"]["x"][0], k["i"]["y"][0]] for k in sh[0][:-1]]
+    assert eases(lot) == al["key_ease"] and eases(lin) == [[0, 0, 1, 1]] * 8
+
+
 def test_rig_internals():
     """region_components / region_overlay / build_rig modes / _assign_by_masks / register_part / name_regions / vtracer."""
     src = campfire(192)
