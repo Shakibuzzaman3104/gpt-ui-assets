@@ -40,6 +40,10 @@ Design to code that keeps the design's geometry, and smoother animation.
   left the bar on 4 of 4 iOS payment screens.
 - Animated WebP encodes at libwebp method 5 instead of 6: within 2% of the size at 1/13 to 1/80 of the time.
 
+### Docs
+- README shows ten unedited first renders from this version (iOS and Android) and the campfire loop with
+  `--tween 2`.
+
 ## 5.1.1 (2026-10-19)
 
 ### Fixed
