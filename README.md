@@ -105,6 +105,9 @@ style, with a new layout. Here the approved phone screen drives a web landing pa
 <p align="center"><img src="docs/images/05-frames.webp" width="720" alt="Animation frames"></p>
 <p align="center"><img src="docs/images/13-vector-anim.webp" width="720" alt="Vector animations rendered by lottie-web"></p>
 
+**In-between frames.** `frames --tween 2` doubles the frame rate of a painted loop without another paid call: optical-flow in-betweens of the moving layer only, the loop length unchanged. Left: the 8 painted keys. Right: the same keys with 8 in-betweens.
+<p align="center"><img src="docs/images/22-tween.webp" width="520" alt="A campfire loop at 12 fps and with --tween 2 at 24 fps"></p>
+
 **Compare.** A screenshot of your build vs the design: a heatmap and a ranked list of fixes until it matches.
 
 ## Install
