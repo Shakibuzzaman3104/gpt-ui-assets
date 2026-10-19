@@ -55,9 +55,10 @@ python3 $K vectorize build/home campfire --rebuild      # after YOU edit layers.
     pixels stay exact, and the printed `in-betweens flagged:` runs the frame QA over the result. `--reuse all --tween 2`
     adds them to a finished run with no API call. Engines: `flow` (default, built-in optical flow, needs OpenCV), `rife`
     (rife-ncnn-vulkan, `setup.md`) and `blend` (a crossfade, the fallback without OpenCV; it doubles moving edges).
-    - Measured on held-out frames (mean premultiplied error, smoke | sway): flow 3.0 | 2.6, RIFE 3.1 | 2.6, crossfade
-      4.3 | 5.6, repeating the previous frame 8.2 | 8.2. On GPT's flame frames the in-betweens keep the keys' edge
-      sharpness (0.201 vs 0.203; RIFE 0.198; crossfade 0.178, a doubled tip).
+    - Measured on held-out frames of two synthetic loops (mean premultiplied error, a procedural smoke plume | a swaying
+      warp of a GPT campfire): flow 3.0 | 2.6, RIFE 3.1 | 2.6, crossfade 4.3 | 5.6, repeating the previous frame 8.2 |
+      8.2. On real GPT flame frames the in-betweens keep the keys' edge sharpness (0.201 vs 0.203; RIFE 0.198;
+      crossfade 0.178, a doubled tip).
     - It costs N× the WebP/APNG size, the image-sequence Lottie (8→16 flame frames at 480 px: 410→930 KB) and
       AnimationDrawable memory. A stepped 12 fps flicker can be the look you want: tween when the loop reads choppy.
     - `--procedural` refuses it: closed-form motion is exact at any frame count, so raise `--count`/`--fps`.

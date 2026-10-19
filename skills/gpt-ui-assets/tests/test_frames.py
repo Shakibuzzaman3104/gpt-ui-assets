@@ -433,6 +433,8 @@ def test_argv_table():
         (["--tween", "2", "--procedural", "pulse"], 1, "--tween is for generated frames"),
         (["--tween", "9", "--moving", "x"], 1, "at most 8"),
         (["--tween-engine", "dain", "--moving", "x"], 2, "invalid choice"),
+        (["--tween", "2", "--tween-engine", "rife", "--rife", "/nonexistent/rife", "--moving", "x"], 1,
+         "--rife /nonexistent/rife not found"),
     ]
     for extra, code, text in table:
         got, err = _main_exit(base + extra)

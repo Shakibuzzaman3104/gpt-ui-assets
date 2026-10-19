@@ -12,7 +12,7 @@ from PIL import Image, ImageChops, ImageFilter
 
 from .core import ApiError, _config, _open_image, _plan, _png_bytes, _res_name, _size_for, edit, pick_image_model
 from .imaging import _lab, _rgba, content_box, sheet
-from .tween import tween
+from .tween import _rife_bin, tween
 from .vectordrawable import _aapt2_tree
 
 # ---- animation frames
@@ -913,6 +913,8 @@ def cmd_frames(a):
                  "--count and --fps instead")
     if a.tween > 8:
         sys.exit(f"frames: --tween {a.tween}: at most 8 (7 in-betweens per pair)")
+    if a.tween > 1 and a.tween_engine == "rife":
+        _rife_bin(a.rife)                             # before any paid call
     if a.procedural:
         return _frames_procedural(a, src, out)
     if not a.moving:
