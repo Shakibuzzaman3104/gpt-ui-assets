@@ -21,6 +21,7 @@ Config (environment variables win over the config file ~/.config/gptkit/env, KEY
   GPTKIT_CHROME                       Chrome/Chromium binary for SVG/Lottie/CSS rendering (none disables)
   GPTKIT_CHROME_NO_SANDBOX            1: pass --no-sandbox to headless Chrome (added automatically when running as root)
   GPTKIT_EBSYNTH                      ebsynth binary for `sequence propagate`
+  GPTKIT_RIFE                         rife-ncnn-vulkan binary for `--tween-engine rife`
 """
 import argparse
 import os
@@ -34,6 +35,7 @@ from .design import PHONE_SIZE, cmd_critique, cmd_manifest, cmd_mockup, cmd_spec
 from .forge import cmd_fix, cmd_forge
 from .vectordrawable import cmd_vd
 from .svg_icons import cmd_icons, cmd_iconspec, cmd_svg
+from .tween import TWEEN_ENGINES
 from .frames import MOTIONS, cmd_frames
 from .sequence import cmd_sequence
 from .previews import cmd_vectorize
@@ -188,6 +190,15 @@ def _asset_parsers(sub):
     p.set_defaults(fn=cmd_vd)
 
 
+def _tween_args(p, scope="", remembered=False):
+    p.add_argument("--tween", type=_pos_int, default=None if remembered else 1,
+                   help=f"{scope}N-1 in-between frames after each frame (N x the frames and fps, same loop length; "
+                        f"default 1 = none{', remembered' if remembered else ''})")
+    p.add_argument("--tween-engine", choices=TWEEN_ENGINES, default=None if remembered else "flow",
+                   help="flow (default): built-in optical flow (needs OpenCV); rife: rife-ncnn-vulkan; blend: crossfade")
+    p.add_argument("--rife", help="rife-ncnn-vulkan binary (else $GPTKIT_RIFE, PATH, ~/.cache/gptkit/rife)")
+
+
 def _animation_parsers(sub):
     """Add animation parsers to the command line."""
     p = sub.add_parser("frames", help="frame-by-frame animation from a forged asset (moving layer sprite sheet, "
@@ -204,6 +215,7 @@ def _animation_parsers(sub):
     p.add_argument("--reuse", choices=["all", "static"], help="reuse sheet_raw/static_raw.png from a previous run")
     p.add_argument("--reroll", action="store_true", help="redraw QA-flagged frames from a good neighbour (1 call each)")
     p.add_argument("--match-colors", action="store_true", help="shift frame colours onto the approved asset (Lab)")
+    _tween_args(p, "generated route: ")
     p.add_argument("--formats", default="gif,webp,apng,lottie", help="comma list of gif,webp,apng,lottie")
     p.add_argument("--px", type=_pos_int, default=480, help="long side of the animated WebP/APNG/Lottie/GIF and the "
                                                             "android/drawable-nodpi frames")
@@ -255,6 +267,7 @@ def _animation_parsers(sub):
     p.add_argument("--below", type=_pos_float, help="build/propagate: drop anything below this canvas row (under a chimney "
                                                     "mouth; remembered for later builds)")
     p.add_argument("--quality", type=_pos_int, help="build: WebP quality 1-100 (default 80, remembered)")
+    _tween_args(p, "build/propagate: ", remembered=True)
     p.add_argument("--frames", help="reroll: comma list of frames (default: the outliers build reported)")
     p.add_argument("--candidates", type=_pos_int, default=2, help="reroll: renders per frame to choose from")
     p.add_argument("--preview-bg", type=_color_arg, help="build: backdrop of preview.gif and contact.png (default #a0aabe, remembered)")

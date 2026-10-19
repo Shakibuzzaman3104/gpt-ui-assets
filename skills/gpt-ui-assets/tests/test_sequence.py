@@ -46,7 +46,7 @@ def _args(tmp, stage, **kw):
               size=40, grow="0.5,1.4", front=False, moving="The smoke", locked="The engine", look=None, jobs=2,
               force=False, ref=None, below=None, quality=80, frames=None, candidates=1, preview_bg="#a0aabe", model=None,
               every=1, ebsynth=None, guide_weight=2.0, position_weight=1.5, engine=None, ebsynth_timeout=None,
-              keep_work=False)
+              keep_work=False, tween=None, tween_engine=None, rife=None)
     ns.update(kw)
     return argparse.Namespace(**ns)
 
@@ -114,7 +114,24 @@ def test_build_cuts_the_locked_art_and_writes_a_loop():
     if HAVE_CV2:
         assert report["backwards"] == 0                 # a perfect render of the layout only ever moves forward
         assert report["seam_step"] > 0
+    # --tween 2: 24 frames at 24 fps in the WebP, the same second; the 12 renders and their QA stay as they were
+    out = _quiet(g.cmd_sequence_build, _args(tmp, "build", tween=2))
+    assert "24 frames @ 24 fps" in out and "12 rendered, x2 in-betweens" in out, out
+    assert len(_webp_durs(d / "smoke.webp")) == 24 and sum(_webp_durs(d / "smoke.webp")) == 1000
+    assert len(list((d / "frames").glob("*.png"))) == 12 and json.loads((d / "report.json").read_text())["frames"] == 12
+    assert Image.open(d / "preview.gif").n_frames == 24
+    out = _quiet(g.cmd_sequence_build, _args(tmp, "build"))
+    assert "--tween 2" in out and "24 frames @ 24 fps" in out, out   # remembered, like --quality
     shutil.rmtree(tmp)
+
+
+def _webp_durs(path):
+    im, durs = Image.open(path), []
+    for i in range(im.n_frames):
+        im.seek(i)
+        im.load()
+        durs.append(im.info["duration"])
+    return durs
 
 
 def test_qa_names_a_render_that_ignored_the_layout():
@@ -624,7 +641,8 @@ def test_engine_and_build_opts_persist():
     # build options are remembered: --below on the first build still applies to the second
     _quiet(g.cmd_sequence_build, _args(tmp, "build", below=60, ref=str(tmp / "puff_s.png"), quality=None, preview_bg=None))
     meta = json.loads((d / "sequence.json").read_text())
-    assert meta["build_opts"] == {"ref": "inputs/ref.png", "below": 60, "quality": 80, "preview_bg": "#a0aabe"}, meta["build_opts"]
+    assert meta["build_opts"] == {"ref": "inputs/ref.png", "below": 60, "quality": 80, "preview_bg": "#a0aabe",
+                                  "tween": 1, "tween_engine": "flow"}, meta["build_opts"]
     out = _quiet(g.cmd_sequence_build, _args(tmp, "build", quality=None, preview_bg=None))
     assert "using --ref inputs/ref.png --below 60 from the last build" in out, out
     frame = np.asarray(Image.open(d / "frames" / "005.png"))

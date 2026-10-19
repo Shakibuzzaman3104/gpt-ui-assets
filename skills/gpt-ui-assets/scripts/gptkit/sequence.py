@@ -15,6 +15,7 @@ from PIL import Image, ImageDraw, ImageFilter
 
 from .core import ApiError, _need, _open_image, _plan, _png_bytes, _read_json, edit
 from .imaging import _rgba, sheet
+from .tween import tween
 from .frames import (
     _decode_result, _durations, _fail_note, _match_colors, _opaque_error, _opaque_share, _pool, _register,
     _retryable,
@@ -511,7 +512,8 @@ def _build_opts(d, meta, a):
     used (kept in sequence.json, so a reroll + build does not silently change the output). Returns the --ref image."""
     last = meta.get("build_opts") or {}
     opts, reused = {}, []
-    for k, default in (("ref", None), ("below", None), ("quality", 80), ("preview_bg", "#a0aabe")):
+    for k, default in (("ref", None), ("below", None), ("quality", 80), ("preview_bg", "#a0aabe"), ("tween", 1),
+                       ("tween_engine", "flow")):
         v = getattr(a, k, None)
         if v is None and last.get(k) is not None:
             v = last[k]
@@ -556,9 +558,14 @@ def _seq_finish(d, meta, a, frames):
     ys, xs = np.nonzero(union)
     box = (max(0, xs.min() - 4), max(0, ys.min() - 4), min(union.shape[1], xs.max() + 5), min(union.shape[0], ys.max() + 5))
     crops = [f.crop(box) for f in frames]
+    shown, fps, engine = frames, meta["fps"], None
+    if a.tween > 1:
+        shown, engine = tween(frames, a.tween, a.tween_engine, getattr(a, "rife", None))
+        fps *= a.tween
     webp = d / f"{a.name}.webp"
-    crops[0].save(webp, save_all=True, append_images=crops[1:], duration=_durations(n, meta["fps"]), loop=0,
-                  format="WEBP", lossless=False, quality=a.quality, method=6, exact=True)
+    out = [f.crop(box) for f in shown]
+    out[0].save(webp, save_all=True, append_images=out[1:], duration=_durations(len(out), fps), loop=0,
+                format="WEBP", lossless=False, quality=a.quality, method=5, exact=True)
     static = _seq_static_mask(d, meta)
     layout = []
     for i in range(n):
@@ -582,14 +589,15 @@ def _seq_finish(d, meta, a, frames):
     (d / "report.json").write_text(json.dumps({"rect": rect, **qa}, indent=1))
     base = _rgba(_seq_path(d, meta["base"])).resize((meta["canvas"], meta["canvas"])) if meta.get("base") else None
     comps = []
-    for f in frames:
+    for f in shown:
         c = Image.new("RGBA", f.size, a.preview_bg)
         c.alpha_composite(f)
         if base is not None:
             c.alpha_composite(base)
         comps.append(c.convert("RGB"))
-    comps[0].save(d / "preview.gif", save_all=True, append_images=comps[1:], duration=_durations(n, meta["fps"], 10),
+    comps[0].save(d / "preview.gif", save_all=True, append_images=comps[1:], duration=_durations(len(comps), fps, 10),
                   loop=0)
+    comps = comps[::a.tween]
     picks = list(range(0, n, max(1, n // 12)))[:12]
     sheet([[(f"f{i}{' !' if i in qa['outliers'] else ''}", comps[i]) for i in picks[r:r + 6]] for r in (0, 6)],
           d / "contact.png", T=200)
@@ -603,8 +611,8 @@ def _seq_finish(d, meta, a, frames):
         fix = "run `sequence ... reroll` on them (2 candidates each, the best neighbour fit wins), then `build`"
     direction = (f"{qa['backwards']} steps backwards, seam {qa['seam_step']} vs median {qa['median_step']}"
                  if qa.get("directional", True) else "no direction QA (the layout has no dominant heading)")
-    print(f"{n} frames @ {meta['fps']:g} fps -> {webp} ({webp.stat().st_size // 1024} KB), rect {rect} on the "
-          f"{meta['canvas']} canvas\n"
+    print(f"{len(out)} frames @ {fps:g} fps -> {webp} ({webp.stat().st_size // 1024} KB), rect {rect} on the "
+          f"{meta['canvas']} canvas" + (f"; {n} rendered, x{a.tween} in-betweens ({engine})" if engine else "") + "\n"
           f"  QA: {direction}, shimmer {qa['shimmer_mean']} (max {qa['shimmer_max']})"
           + (f", follows the layout {qa['follows']}%" if "follows" in qa else "")
           + (f"\n  ! outliers {qa['outliers']}: {fix}" if qa["outliers"] else "")

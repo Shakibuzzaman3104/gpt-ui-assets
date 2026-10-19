@@ -50,6 +50,17 @@ python3 $K vectorize build/home campfire --rebuild      # after YOU edit layers.
     saved as `sheet_raw.opaque.png` and the run stops; a sheet with fewer frames than asked is flagged `frame-count`;
     when one of the two calls fails the other result is kept (`--reuse static` re-runs only the sheet); an asset with
     no alpha exits, one with an opaque backdrop warns (the whole rectangle would move).
+  - **`--tween N`** puts N-1 in-betweens of the moving layer after every frame, the last→first pair included, then
+    composites them onto `static.png`: N× the frames and fps, the same loop length. The generated frames and the static
+    pixels stay exact, and the printed `in-betweens flagged:` runs the frame QA over the result. `--reuse all --tween 2`
+    adds them to a finished run with no API call. Engines: `flow` (default, built-in optical flow, needs OpenCV), `rife`
+    (rife-ncnn-vulkan, `setup.md`) and `blend` (a crossfade, the fallback without OpenCV; it doubles moving edges).
+    - Measured on held-out frames (mean premultiplied error, smoke | sway): flow 3.0 | 2.6, RIFE 3.1 | 2.6, crossfade
+      4.3 | 5.6, repeating the previous frame 8.2 | 8.2. On GPT's flame frames the in-betweens keep the keys' edge
+      sharpness (0.201 vs 0.203; RIFE 0.198; crossfade 0.178, a doubled tip).
+    - It costs N× the WebP/APNG size, the image-sequence Lottie (8→16 flame frames at 480 px: 410→930 KB) and
+      AnimationDrawable memory. A stepped 12 fps flicker can be the look you want: tween when the loop reads choppy.
+    - `--procedural` refuses it: closed-form motion is exact at any frame count, so raise `--count`/`--fps`.
   - `--count 12 --cols 4` gives more frames. `--formats gif,webp,apng,lottie` and `--px 480` control the outputs; the
     image-sequence Lottie costs about 280 KB per 480 px frame.
   - AnimationDrawable decodes every frame into memory, so ship the WebP or Lottie for long loops.
