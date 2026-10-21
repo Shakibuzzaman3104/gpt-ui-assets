@@ -310,7 +310,20 @@ severe first:
   no room around it; repeated items with uneven gaps.
 - shape: more than three distinct corner radii without a role; a nested rounded element whose corner radius is equal to
   or larger than its container's (non-concentric corners); a card inside a card; one surface with square corners among
-  rounded surfaces of the same kind (e.g. a square-cornered card next to rounded cards).{ref_rule}
+  rounded surfaces of the same kind (e.g. a square-cornered card next to rounded cards).
+- coherence: values on the screen that contradict each other. Check the arithmetic: items that don't add up to their
+  total, a count that disagrees with its dots or list, a ring or bar that is clearly off its percent (don't estimate
+  fills to a few points), a stated difference ("won by 120", "in 1h 18m", "3 left") that doesn't match the numbers or
+  times shown, a countdown or "upcoming" status that the status-bar time contradicts (a timestamp later than the
+  mockup clock is fine), a weekday that doesn't match its date or a second calendar shown with it. Quote both values.
+  Don't fact-check quotes or translations. Also placeholder text (lorem ipsum, "Title", "Label") and a row or
+  card repeated verbatim where its content should differ.
+- state: two or more filled primary buttons for different actions in one view; a selected or active item (tab, chip,
+  segment, option) that can't be told from its siblings; meaning carried only by hue (a status dot, red or green
+  text) with no icon, text or shape. A selected item with its own fill, border or weight, and a tab-bar item in the
+  platform's standard selected tint, are not colour alone.
+- copy: one action labelled two different ways on the screen ("Get started" and "Start now"); stock marketing
+  filler that says nothing about this app ("Unlock your potential", "Seamless", "Elevate your", "Supercharge").{ref_rule}
 Report each root cause ONCE: group repeated instances (e.g. several labels with the same size problem) into one
 issue. Per issue: severity (high = broken, illegible or blocks the build; medium = visible defect; low = nit),
 category, a bbox around the problem (or its first instance) in this image's pixels, the problem in one sentence,
@@ -334,7 +347,7 @@ ISSUE_ITEM = {"type": "object", "additionalProperties": False,
                   "severity": {"type": "string", "enum": ["high", "medium", "low"]},
                   "category": {"type": "string", "enum": ["text", "alignment", "icons", "contrast", "accessibility",
                                                           "overlap", "platform", "adaptivity", "implementability", "consistency",
-                                                          "spacing", "shape"]},
+                                                          "spacing", "shape", "coherence", "state", "copy"]},
                   "bbox": {"type": "object", "additionalProperties": False, "required": ["x", "y", "w", "h"],
                            "properties": {k: {"type": "integer"} for k in "xywh"}},
                   "problem": {"type": "string"}, "edit": {"type": "string"},
