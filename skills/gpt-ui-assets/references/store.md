@@ -115,6 +115,9 @@ capture, so the palette, light and rendering match the app.
 - Play is always frameless (Play asks for no device imagery). It uses Android captures and falls back to iOS ones with
   a note, so capture Android for release.
 - Tablet sets appear when tablet captures exist (`--devices phone,tablet` to choose).
+- Headlines share one size per set: the largest at which every caption fits in two lines above the screen, up to 13%
+  of the canvas width, and on Play under 18% of the image. Shorter captions buy bigger headlines (HushNest: 42 → 51 px
+  on iPhone).
 - `--variant lettering` uses the OCR-checked lettering. `--locale de` builds from `storyboard.de.json` into `build-de/`.
 - Every shot is rendered three times: as shipped, with the text hidden (`bare`, for contrast) and with the overlays
   hidden (`fid`, for fidelity).

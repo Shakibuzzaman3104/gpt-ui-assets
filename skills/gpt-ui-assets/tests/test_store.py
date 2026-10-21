@@ -275,6 +275,39 @@ def test_check_fails_wrong_size_and_alpha():
         assert "needs 1206x2622" in msgs and "RGBA" in msgs and "drifted" in msgs and "headline contrast" in msgs
 
 
+def test_headlines_share_the_largest_size_that_fits():
+    try:
+        import playwright.sync_api  # noqa: F401
+    except ImportError:
+        print("  skip build: no playwright")
+        return
+    if not K._chrome():
+        print("  skip build: no Chrome")
+        return
+    sizes = {}
+    for name, caps in (("short", ["Calm tiles", "Daily puzzles"]),
+                       ("long", ["Calm tiles", "Relax with a gentle puzzle every single evening"])):
+        with tempfile.TemporaryDirectory() as d:
+            src = Path(d) / "src"
+            src.mkdir()
+            _screen().save(src / "home.png")
+            _screen(hue=(160, 80, 60), label="B").save(src / "level.png")
+            _run(["capture", d, "--from", str(src)])
+            _storyboard(d, [{"id": f"s{i}", "capture": c, "caption": cap, "sub": "One small puzzle a day, every day.",
+                             "ink": "dark", "alt": "Board"} for i, (c, cap) in enumerate(zip(("home", "level"), caps))])
+            _run(["build", d, "--no-webfonts", "--no-pill"])
+            rep = json.loads((Path(d) / "build" / "report.json").read_text())
+            for key, t in rep["targets"].items():
+                fonts = {round(s["h1_px"], 1) for s in t["shots"]}
+                assert len(fonts) == 1, (name, key, fonts)  # one headline size across the set
+                sizes[name, key] = fonts.pop()
+                for s in t["shots"]:
+                    rep_tag = s["tagline_share"]
+                    assert key != "play-phone" or rep_tag <= K.TAGLINE_FIT + 0.005, (name, s)
+    for key in ("ios-phone", "play-phone"):
+        assert sizes["short", key] > sizes["long", key] * 1.15, sizes  # short copy earns a bigger headline
+
+
 def test_build_and_check_render_a_real_set():
     try:
         import playwright.sync_api  # noqa: F401

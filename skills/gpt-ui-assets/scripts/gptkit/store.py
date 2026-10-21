@@ -45,6 +45,7 @@ CONTRAST_MIN = 4.5
 FID_MEAN_MAX, FID_P99_MAX = 2.5, 20.0
 SEARCH_SCALE, SEARCH_MIN_PT = 0.261, 9.0  # an iPhone search result shows a portrait shot at ~0.26 of its width
 TAGLINE_MAX = 0.20  # Play: taglines under 20% of the image
+TAGLINE_FIT, HEAD_MAX = 0.18, 13.0  # headlines grow to HEAD_MAX (% of width) while Play's tagline stays under 18%
 FLOATS_MAX, FLOAT_COVER_MAX = 3, 0.03  # floating art per slot, and the share of the screen front floats may hide
 GPT_SIZES = {(1024, 1024), (1024, 1536), (1536, 1024), (1024, 1792), (1792, 1024), (1152, 2496), (2496, 1152)}
 IOS_PHONE_SIZES = {(1320, 2868), (1290, 2796), (1260, 2736), (1206, 2622), (1179, 2556), (1284, 2778), (1170, 2532),
@@ -831,7 +832,7 @@ fetch(q.get('data')||'data.json').then(r=>r.json()).then(D=>{
   const capTop=H*(W>H?.045:.052), capW=Math.min(.88*W,106*u);
   const pill=S.pill?`;background:${I.pill};padding:${2.2*u}px ${3.4*u}px;border-radius:${4*u}px`:'';
   if(S.letter) html.push(`<div class="cap over" style="top:${capTop}px;width:${capW}px"><img id="letter" src="${S.letter}" style="max-height:${H*.17}px;filter:drop-shadow(0 ${.6*u}px ${.8*u}px ${B.shadow})"></div>`);
-  else html.push(`<div class="cap over" style="top:${capTop}px;width:${capW}px${pill}"><h1 style="color:${I.h};font-size:${10.4*u}px">${esc(S.cap)}</h1>${S.sub?`<p style="color:${I.p};font-size:${4.1*u}px">${esc(S.sub)}</p>`:''}</div>`);
+  else html.push(`<div class="cap over" style="top:${capTop}px;width:${capW}px${pill}"><h1 style="color:${I.h};font-size:${(T.fs||D.fit_max)*u}px">${esc(S.cap)}</h1>${S.sub?`<p style="color:${I.p};font-size:${4.1*u}px">${esc(S.sub)}</p>`:''}</div>`);
   const devTop=H*(S.letter?.245:.262);
   const crop=(c,w)=>{const [x0,y0,x1,y1]=c.box,k=w/(x1-x0);
     return `width:${w}px;height:${(y1-y0)*k}px;background-image:url(${c.src});background-size:${c.w*k}px ${c.h*k}px;background-position:${-x0*k}px ${-y0*k}px`;};
@@ -860,7 +861,10 @@ fetch(q.get('data')||'data.json').then(r=>r.json()).then(D=>{
   return Promise.all([document.fonts.ready,...[...document.images].map(i=>i.decode().catch(()=>{}))]).then(async()=>{
     const h1=document.querySelector('.cap h1');
     if(h1){let fs=parseFloat(h1.style.fontSize);const lh=()=>h1.getBoundingClientRect().height/(fs*1.02);
-      while(lh()>2.05&&fs>6*u){fs-=.2*u;h1.style.fontSize=fs+'px';}}
+      const capEl=h1.parentElement, share=()=>{const b=[tight(h1),tight(document.querySelector('.cap p'))].filter(Boolean);
+        return (Math.max(...b.map(t=>t.x+t.w))-Math.min(...b.map(t=>t.x)))*(Math.max(...b.map(t=>t.y+t.h))-Math.min(...b.map(t=>t.y)))/(W*H);};
+      const over=()=>lh()>2.05||capEl.getBoundingClientRect().bottom>devTop-1.8*u||(T.tag_max&&share()>T.tag_max);
+      while(over()&&fs>6*u){fs-=.2*u;h1.style.fontSize=fs+'px';}}
     if(S.arch==='callout'){const r=document.getElementById('shot').getBoundingClientRect(), k=r.width/S.screen.w;
       S.calls.forEach(c=>{const bw=c.box[2]-c.box[0], bh=c.box[3]-c.box[1], w=Math.min(94*wu,bw*k*1.2), hh=bh*w/bw;
         const cy=r.top+(c.box[1]+c.box[3])/2*k, el=document.createElement('div');
@@ -1117,6 +1121,15 @@ class _Renderer:
         self.browser = self.pw.chromium.launch(executable_path=exe) if exe else self.pw.chromium.launch()
 
     def shot(self, page, query, size, dpr):
+        pg = self._load(page, query, size, dpr)
+        img = Image.open(io.BytesIO(pg.screenshot(type="png"))).convert("RGB")
+        return img, pg.evaluate("window.REPORT")
+
+    def layout(self, page, query, size):
+        """The page's REPORT without a screenshot (layout only, at DPR 1)."""
+        return self._load(page, query, size, 1).evaluate("window.REPORT")
+
+    def _load(self, page, query, size, dpr):
         from playwright.sync_api import Error as PwError
         key = (size, dpr)
         pg = self.pages.get(key)
@@ -1133,8 +1146,7 @@ class _Renderer:
         except PwError:
             raise RuntimeError(f"store: build/{page}?{query} never got ready within {self.timeout}s"
                                + (f" ({self.errors[-1]})" if self.errors else ""))
-        img = Image.open(io.BytesIO(pg.screenshot(type="png"))).convert("RGB")
-        return img, pg.evaluate("window.REPORT")
+        return pg
 
     def close(self):
         try:
@@ -1253,7 +1265,7 @@ def cmd_store_build(a):
     build.mkdir(exist_ok=True)
     pal = _store_palette(sb.get("brand", {}))
     link, head, body = _fonts_link(sb.get("brand", {}), a.webfonts)
-    notes, data = set(), {"ink": pal["ink"], "brand": pal["brand"], "targets": {}}
+    notes, data = set(), {"ink": pal["ink"], "brand": pal["brand"], "fit_max": HEAD_MAX, "targets": {}}
     for key in targets:
         rows = {}
         for s in slots:
@@ -1262,7 +1274,8 @@ def cmd_store_build(a):
                 rows[s["id"]] = sd
             else:
                 notes.add(f"{key}: {s['id']} has no {TARGETS[key]['device']} capture of {s['capture']!r}; left out")
-        data["targets"][key] = {"store": TARGETS[key]["store"], "device": TARGETS[key]["device"], "slots": rows}
+        data["targets"][key] = {"store": TARGETS[key]["store"], "device": TARGETS[key]["device"], "slots": rows,
+                                "tag_max": TAGLINE_FIT if TARGETS[key]["store"] == "play" else None}
     page = (STORE_PAGE.replace("__FONTS__", link).replace("__HEAD__", head).replace("__BODY__", body)
             .replace("__BG__", pal["brand"]["bg"]))
     pname, dname = "store.html", "data.json" if not a.locale else f"data-{a.locale}.json"
@@ -1286,6 +1299,12 @@ def cmd_store_build(a):
                 prev.mkdir(exist_ok=True)
                 out.rename(prev / f"{key}-{datetime.now():%Y%m%d-%H%M%S}")
             out.mkdir(exist_ok=True)
+            fits = [(r.layout(pname, f"t={key}&s={sid}" + (f"&data={dname}" if a.locale else ""), size).get("h1") or {})
+                    .get("font") for sid, sd in td["slots"].items() if not sd["letter"]]
+            fits = [f for f in fits if f]
+            if fits:  # one headline size per set: the largest every caption fits at
+                td["fs"] = math.floor(min(fits) / (min(size[0], size[1] * 0.5625) / 100) * 10) / 10
+                write_data()
             entries = []
             for i, (sid, sd) in enumerate(td["slots"].items(), 1):
                 q = f"t={key}&s={sid}" + (f"&data={dname}" if a.locale else "")
