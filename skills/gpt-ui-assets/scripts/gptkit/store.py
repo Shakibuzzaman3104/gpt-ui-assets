@@ -61,6 +61,8 @@ CLAIM_WORDS = re.compile(r"(#\s?1\b|\bno\.?\s?1\b|\bnumber one\b|\bbest\b|\bawar
                          r"\bleading\b|\btrusted by\b|\bworld'?s\b)", re.I)
 PRICE = re.compile(r"[$£€¥₹]\s?\d|\d\s?(usd|eur|gbp)\b|\bper month\b|/mo\b", re.I)
 ANDROID_WORDS = re.compile(r"\b(android|google play|play store|pixel|galaxy)\b", re.I)
+TUTORIAL = re.compile(r"\b(?:tap|swipe|click)\s+(?:the|a|an|on|to|here|through|left|right|up|down)\b|"
+                      r"\bstep\s?(?:\d+|one|two|three)\b|\bhow to\b", re.I)
 APPLE_WORDS = re.compile(r"\b(iphone|ipad|ios|app store|apple)\b", re.I)
 
 
@@ -413,7 +415,7 @@ def cmd_store_research(a):
 
 _BOX = {"type": "array", "items": _N}
 STORYBOARD_SCHEMA = _obj({
-    "app": _S, "category": _S, "voice": _S,
+    "app": _S, "category": _S, "voice": _S, "promise": _S,
     "brand": _obj({"colors": _SA, "ink_dark": _S, "ink_light": _S, "head_font": _S, "body_font": _S,
                    "art_style": _S, "lettering_style": _S}),
     "slots": {"type": "array", "items": _obj({
@@ -433,7 +435,13 @@ App: {app}
 Captures (name, platform, device, size) follow, each image after its label. Plan {slots} slots, most important first.
 Rules:
 - Slots 1-3 are the ad: they show in search results and are all most visitors see. One idea per slot.
-- caption: 2-6 words, a benefit or verb-led line, in the app's own voice. sub: one short sentence, at most 12 words.
+- promise: one line, what the app does and the outcome its users want, for whom. Slot 1 says it, so a shopper who
+  sees only slot 1 knows what the app is. Slots 2-3 back it up as a story (the key moment, then the payoff), not a
+  tutorial: no "tap", "swipe" or "step 1".
+- caption: 2-6 words selling the outcome people want (calmer nights, money that arrives), not the feature's name,
+  in words users would say and in the app's own voice. Shorter is better: a short caption is set bigger. No outcome
+  the app can't back (cures, guaranteed results). sub: one short sentence, at most 12 words, naming the feature
+  that delivers it.
 - caption_play/sub_play: the same idea for Google Play with no ranking, award, price or promo words (best, #1, top,
   new, free, sale, million) and no calls to action (download, play now). Repeat caption/sub when they already comply.
 - No prices anywhere. No claims (#1, best, award, million users) unless they are in the allowed claims above.
@@ -483,6 +491,9 @@ def _lint(sb, claims=""):
                 out.append(("WARN", sid, f"play: {m.group(0)!r} is a ranking/promo word Play asks listings to avoid"))
         if CTA_WORDS.search(play_text):
             out.append(("WARN", sid, f"play: call to action {CTA_WORDS.search(play_text).group(0)!r}; Play asks for none"))
+        if TUTORIAL.search(ios_text):
+            out.append(("WARN", sid, f"{TUTORIAL.search(ios_text).group(0)!r} reads as a tutorial; show what the user "
+                                     "gets, not how to use the app"))
         if len((s.get("caption") or "").split()) > 7:
             out.append(("WARN", sid, f"caption has {len(s['caption'].split())} words; 2-6 read at search size"))
         if len((s.get("sub") or "").split()) > 14:
@@ -530,7 +541,8 @@ def _fraction_box(box, w, h):
 
 
 def _storyboard_md(sb, issues):
-    md = [f"# {sb.get('app', 'App')} store storyboard", "", f"Voice: {sb.get('voice', '')}  ", f"Category: {sb.get('category', '')}", "",
+    md = [f"# {sb.get('app', 'App')} store storyboard", "", f"Promise: {sb.get('promise', '')}  ",
+          f"Voice: {sb.get('voice', '')}  ", f"Category: {sb.get('category', '')}", "",
           "| # | Slot | Capture | Arch | Caption | Sub | Play caption | Alt |", "|---|---|---|---|---|---|---|---|"]
     for i, s in enumerate(sb["slots"], 1):
         md.append(f"| {i} | {s['id']} | {s['capture']} | {s.get('arch', 'framed')} | {_mdcell(s['caption'])} | "

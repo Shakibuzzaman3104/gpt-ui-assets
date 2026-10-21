@@ -65,6 +65,15 @@ Play, `arch`, `ink`, callout or card boxes (fractions of the capture), `plate_br
 block (colours, `ink_dark`/`ink_light`, Google Fonts, art and lettering style), the feature subtitle, privacy findings
 and notes on missing screens. Edit the JSON freely, then `store plan DIR --lint`.
 
+The set is an ad, not a manual:
+- `promise` is one line: what the app does, the outcome its users want, and for whom. Slot 1 says it, so a shopper
+  who sees only slot 1 knows what the app is; slots 2-3 back it up as a story (the key moment, then the payoff).
+- Captions sell the outcome in words users would say (calmer nights, money that arrives); the sub names the feature
+  that delivers it. Keep the app's voice, and no outcome the app can't back.
+- Measured on 7 apps × 2 runs, judged blind by a model that wrote none of the copy: slot 1 alone told a shopper what
+  the app does 4.93/5 (4.57 with the earlier wording), the judge would install from the new set in 11 of the 13 pairs
+  it called the same way in both orders, and personality held (7 to 6).
+
 Archetypes:
 - `framed`: the whole screen in a device (iOS) or a frameless card (Play).
 - `callout`: framed, plus 1-2 enlarged crops of the element that proves the caption. Each sits over its own place on
@@ -84,8 +93,8 @@ only, 1-3 per slot, and leave a slot or two without.
 Copy lint (also run by `check`):
 - **FAIL**: prices (Apple 2.3.7), another platform's names on iOS (2.3.10), alt text over 140 characters.
 - **WARN**: claims (#1, best, award, millions) unless `--claims` lists them (2.3.14); Play's ranking and promo words
-  (best, #1, top, new, free, sale) and calls to action (download, play now); captions over 6 words; alt text starting
-  "Image of".
+  (best, #1, top, new, free, sale) and calls to action (download, play now); tutorial copy ("tap the", "swipe
+  to", "step 1": show what the user gets, not how to use the app); captions over 6 words; alt text starting "Image of".
 
 ## 4. Art
 

@@ -157,6 +157,11 @@ def test_lint_flags_prices_platforms_play_words_and_alt():
     assert "'#1'" in msgs and "'new'" in msgs and "download" in msgs and "141 chars" in msgs
     assert any(sid == "b" and "image of" in m for _, sid, m in issues)
     assert not any(sid == "d" and "Award" in m for _, sid, m in K._lint(sb, claims="Award-winning puzzles"))
+    tut = {"slots": [{"id": t, "capture": "x", "caption": c, "sub": "", "alt": "x"} for t, c in
+                     (("t1", "Tap the board to start"), ("t2", "Step 1: pick a word"), ("ok1", "Tap into calm"),
+                      ("ok2", "Bench press, tracked"))]}
+    flagged = {sid for _, sid, m in K._lint(tut) if "tutorial" in m}
+    assert flagged == {"t1", "t2"}, flagged
 
 
 def test_lint_warns_on_callouts_at_the_screen_ends():

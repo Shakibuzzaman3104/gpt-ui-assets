@@ -13,8 +13,11 @@ App Store and Google Play screenshots from the app's real screens.
     image-model sizes.
   - `research` codes the top App Store listings for a term into a category playbook.
   - `plan` writes a storyboard: captions per store, layout per slot, callout boxes, plate briefs, alt text and
-    privacy findings. Its copy lint catches prices, other platforms' names, Play's promo words and calls to action, and
-    unproven claims.
+    privacy findings, plus the set's `promise`: slot 1 states what the app does and the outcome, captions sell the
+    outcome in users' words, and slots 1-3 tell a story rather than a tutorial. Judged blind by another model on 7
+    apps, slot 1 alone conveyed the app 4.93/5 (4.57 before) and the new sets won 11 of 13 order-consistent install
+    picks with personality level. Its copy lint catches prices, other platforms' names, Play's promo words and calls
+    to action, tutorial copy ("tap the", "step 1") and unproven claims.
   - `art` paints background plates as edits of each slot's own capture, flagged TEXT/BUSY-TOP. `--lettering` draws
     display captions transparent and re-rolls them until OCR reads them back exactly.
   - `build` composites the real captures pixel-exact in HTML through one Chrome. It renders an iPhone or iPad frame
@@ -23,6 +26,11 @@ App Store and Google Play screenshots from the app's real screens.
     contrast (moved onto a pill below 4.5:1) and UI fidelity against the capture, then written as 24-bit RGB with alt
     text, review sheets and a search-result row.
   - `check` enforces sizes, counts, no alpha, 8 MB, fidelity, contrast, search legibility and Play's 20% tagline rule.
+    `--idea` is the hide-the-copy test: one call reads the captionless first three shots blind, a second compares that
+    reading with the promise. On HushNest it flagged in 3 of 3 runs that no picture shows babies; given a matching
+    intent it passed 2 of 2. It runs on the Codex CLI too.
+  - Headlines share one size per set, the largest every caption fits in two lines above the screen (and under 18% of
+    the image on Play): HushNest's iPhone headlines went from 42 to 51 px.
   - `feature` renders the 1024x500 Play feature graphic; `--icon` adds the app icon as a rounded tile.
   - Floats: up to 3 pieces of the app's own art per slot, behind or in front of the screen, with warnings when one
     touches the caption or hides more than 3% of the screen. Play reads `calls_play` / `cards_play` / `floats_play`
