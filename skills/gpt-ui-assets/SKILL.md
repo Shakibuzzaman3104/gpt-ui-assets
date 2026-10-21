@@ -3,7 +3,7 @@ name: gpt-ui-assets
 description: Design app, tablet, foldable, desktop-app and website screens with OpenAI's GPT image and vision models (API key or the local Codex CLI), then turn an approved design into production assets redrawn 1:1, never cropped: SVG/VectorDrawable icons, PNG/WebP illustrations, launcher icons, frame, Lottie and AVD animation, smoke/steam/rain loops, theme code and fonts measured from the pixels, and a screenshot diff of the built UI. Also writes GPT-researched feature blueprints. Use whenever the user wants GPT/ChatGPT to design screens, icons, illustrations or an app icon; approves a GPT design ("go ahead", "build it", "give me the assets"); wants assets used in the UI; wants an animated drawable, Lottie or AVD from existing art; or complains that GPT cropped assets out of a mockup. Not for go/no-go idea validation, or design direction without GPT.
 license: MIT
 metadata:
-  version: 5.2.0
+  version: 5.4.0
 ---
 
 # GPT UI assets
@@ -72,7 +72,8 @@ python3 $K mockup "habit tracker home: date, progress, 5 habits with check + str
   --platform android --out design/home --variants 2    # 9:19.5 phone canvas, house style, aspect-checked, auto-critiqued
 # first screen of a new app: add --directions so the variants differ in palette, type and signature, not just details
 # Read each mockup_v*_critique.png, then show the user the variants
-# ...iterate with --edit until the user approves; screen 2 onward uses --style-ref <approved screen>
+# ...iterate with --edit until the user locks one; screen 2 onward uses --style-ref <approved screen>
+python3 $K critique design/home/mockup_v1.png --fit     # on the locked design: offer its fixes, apply the accepted ones
 python3 $K manifest design/home/mockup_v1.png --out build/home   # Read manifest_overlay.png; fix assets.json by hand
 python3 $K spec build/home                              # calibrated scale, palette, type, native widget per component
 python3 $K forge build/home --candidates 3 &         # forge and svg in parallel (each image call takes 35-80 s)
@@ -127,8 +128,20 @@ python3 $K compare build/home shot.png               # also flags wrong corner r
   light or dark backdrop, icons as a contact sheet, with aspect and QA per picture. Point the user at it
   (`/attachments`) when showing variants; `/attachments add <folder>` shows a whole output folder.
 
-- Show design variants and let the user choose. Walk them through `blueprint.md`, especially the MVP cut, before
-  designing every screen.
+- **Design checkpoints.** Stop at each one and wait for the user's answer:
+  1. **Before a new design**, ask how many variants they want (default 2) and whether the variants should take
+     different directions (`--directions`: palette, type, shape and signature differ) or stay close to one idea. Skip
+     the question when the request already says, and for screen 2 onward, which follows the approved screen with
+     `--style-ref`.
+  2. **Show the variants** with what their critiques found, let the user pick one, and iterate with `--edit` until
+     they lock it.
+  3. **When the user locks a design, critique the locked file**: `critique <file>`, plus `--fit` on a phone screen and
+     `--style-ref <approved screen>` for screen 2 onward. Read the sheet, drop the issues you judge wrong, and present
+     the rest as suggested improvements, one line each with its fix. Apply only the ones the user accepts (`--apply`
+     or a targeted `--edit`) and show the result. If nothing is worth fixing, say so.
+  4. **After the user approves**, list the next steps and let them choose: the next screens (`--style-ref`), other
+     form factors (`--set ... --anchor`), the assets (phases 2–4), the app icon, or the 1:1 build.
+- Walk the user through `blueprint.md`, especially the MVP cut, before designing every screen.
 - App-icon concepts, animation routes and whether to ship platform icons (Material Symbols / SF Symbols) instead of the
   generated SVGs are the user's call. Present the options with the review sheet.
 - Hand over files with their destinations (`res/drawable`, `Assets.xcassets`, `public/`) and say what was verified and
