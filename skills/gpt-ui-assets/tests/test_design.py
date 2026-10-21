@@ -122,7 +122,7 @@ def test_manifest_dedup():
 
 def _critique_args(td, mock, **kw):
     a = argparse.Namespace(mockup=str(mock), out=str(Path(td) / "qa"), style_ref=None, platform="android", screen_dp=None,
-                           note=None, apply=False, min_severity="medium", rounds=1, model=None)
+                           note=None, apply=False, min_severity="medium", rounds=1, model=None, fit=False)
     vars(a).update(kw)
     return a
 
@@ -790,6 +790,50 @@ def test_contrast_issue_that_measures_passing_drops_to_low():
     with contextlib.redirect_stdout(out):
         K._print_issues([dict(graphic, id=1, category="contrast")])
     assert "meets 3:1 here; check by eye" in out.getvalue()
+
+
+def test_critique_fit_measures_lines_from_the_pixels():
+    """--fit: a long label in a full-width button fails at 200% text, a short one fits, a busy row is not measured."""
+    from PIL import ImageFont
+    im = Image.new("RGB", (824, 1000), (246, 246, 243))
+    dr = ImageDraw.Draw(im)
+    font = ImageFont.load_default(size=32)  # 16 dp at 2 px per dp
+    lines = []
+    for y, label in ((100, "Cancel my subscription and delete data"), (260, "Save")):
+        dr.rounded_rectangle((32, y, 792, y + 96), 48, fill=(31, 111, 92))
+        tb = dr.textbbox((0, 0), label, font=font)
+        x0, y0 = (824 - (tb[2] - tb[0])) // 2, y + 48 - (tb[3] - tb[1]) // 2 - tb[1]
+        dr.text((x0, y0), label, font=font, fill="white")
+        b = dr.textbbox((x0, y0), label, font=font)
+        lines.append({"kind": "button", "share": 1, "container": {"x": 32, "y": y, "w": 760, "h": 96},
+                      "texts": [{"text": label, "bbox": {"x": b[0], "y": b[1], "w": b[2] - b[0], "h": b[3] - b[1]}}]})
+    noise = Image.effect_noise((760, 96), 90).convert("RGB")
+    im.paste(noise, (32, 420))
+    dr.text((60, 450), "Monthly", font=font, fill="black")
+    lines.append({"kind": "row", "share": 1, "container": {"x": 32, "y": 420, "w": 760, "h": 96},
+                  "texts": [{"text": "Monthly", "bbox": {"x": 60, "y": 450, "w": 120, "h": 34}}]})
+
+    def ask(parts, schema=None, name="", model=None):
+        return {"lines": lines} if name == "fit" else {"issues": []}
+
+    with tempfile.TemporaryDirectory() as td:
+        mock = Path(td) / "mockup.png"
+        im.save(mock)
+        with patched(ask=ask):
+            code, out = run(K.cmd_critique, _critique_args(td, mock, fit=True, screen_dp=412))
+        assert code == 0, out
+        fit = json.loads((Path(td) / "qa" / "mockup_critique.json").read_text())["fit"]["lines"]
+        assert [x["status"] for x in fit] == ["fails", "fits", "unmeasured"], fit
+        assert "max" in fit[0]["short_dp"] and "small" not in fit[0]["short_dp"], fit[0]
+        assert "1 fail, 1 fit" in out and "not measured" in out and "Height is not checked" in out, out
+        with patched(ask=ask):
+            code, out = run(K.cmd_critique, _critique_args(td, mock, fit=False, screen_dp=412))
+        assert "fit (" not in out and "fit" not in json.loads((Path(td) / "qa" / "mockup_critique.json").read_text())
+    from gptkit.fit import _grow, fit_lines
+    assert _grow(17, "large", "ios") == 23 / 17 and _grow(11, "max", "ios") == 24 / 11 and _grow(48, "large", "ios") == 40 / 34
+    assert _grow(14, "max") == 26 / 14
+    tab = fit_lines(im, 412, "ios", [dict(lines[0], kind="tab")])[0]
+    assert not {"large", "max"} & set(tab.get("short_dp", {})), tab
 
 
 def test_house_style_asks_for_an_original_product_name():

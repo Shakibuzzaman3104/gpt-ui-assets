@@ -716,6 +716,13 @@ def cmd_critique(a):
     _print_issues(issues)
     _print_hinge_note(issues, record, cur.width, cur.height)
     _issue_overlay(cur, issues, out / f"{src.stem}_critique.png")
+    if a.fit:
+        if a.device != "phone" and design.get("posture") != "folded":
+            print("fit: phone screens only, skipped")
+        else:
+            from .fit import fit_check, print_fit
+            log["fit"] = fit_check(cur, a.screen_dp, a.platform, a.model)
+            print_fit(log["fit"], a.platform)
     min_w = SEVERITY[a.min_severity]
     if a.apply:
         screen = [x for x in issues if _sev(x) >= min_w and x.get("scope") == "screen"]

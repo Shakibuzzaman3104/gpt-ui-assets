@@ -127,6 +127,8 @@ def _design_parsers(sub):
     p.add_argument("--apply", action="store_true", help="edit the issues' fixes into the mockup, verify, keep if better")
     p.add_argument("--min-severity", choices=["high", "medium", "low"], default="medium")
     p.add_argument("--rounds", type=_pos_int, default=1, help="max --apply rounds (each kept only if the weight drops)")
+    p.add_argument("--fit", action="store_true", help="phone screens: which single-line text runs out of room on a small "
+                   "phone or at large text sizes (one extra vision call; measured from the pixels)")
     p.add_argument("--model", default=None); p.set_defaults(fn=cmd_critique)
     p = sub.add_parser("manifest", help="inventory assets of an approved mockup -> DIR/assets.json")
     p.add_argument("mockup"); p.add_argument("--out", required=True)
