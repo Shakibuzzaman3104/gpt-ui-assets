@@ -46,6 +46,7 @@ FID_MEAN_MAX, FID_P99_MAX = 2.5, 20.0
 SEARCH_SCALE, SEARCH_MIN_PT = 0.261, 9.0  # an iPhone search result shows a portrait shot at ~0.26 of its width
 TAGLINE_MAX = 0.20  # Play: taglines under 20% of the image
 TAGLINE_FIT, HEAD_MAX = 0.18, 13.0  # headlines grow to HEAD_MAX (% of width) while Play's tagline stays under 18%
+BARE_W = 420  # captionless copies for the hide-the-copy check, about search-result size
 FLOATS_MAX, FLOAT_COVER_MAX = 3, 0.03  # floating art per slot, and the share of the screen front floats may hide
 GPT_SIZES = {(1024, 1024), (1024, 1536), (1536, 1024), (1024, 1792), (1792, 1024), (1152, 2496), (2496, 1152)}
 IOS_PHONE_SIZES = {(1320, 2868), (1290, 2796), (1260, 2736), (1206, 2622), (1179, 2556), (1284, 2778), (1170, 2532),
@@ -1299,6 +1300,7 @@ def cmd_store_build(a):
                 prev.mkdir(exist_ok=True)
                 out.rename(prev / f"{key}-{datetime.now():%Y%m%d-%H%M%S}")
             out.mkdir(exist_ok=True)
+            shutil.rmtree(build / "bare" / key, ignore_errors=True)
             fits = [(r.layout(pname, f"t={key}&s={sid}" + (f"&data={dname}" if a.locale else ""), size).get("h1") or {})
                     .get("font") for sid, sd in td["slots"].items() if not sd["letter"]]
             fits = [f for f in fits if f]
@@ -1322,6 +1324,11 @@ def cmd_store_build(a):
                         contrast = {"h1": _contrast(bare, rep.get("h1"), ink_rgb[0], sd["ink"] == "dark", dpr),
                                     "sub": _contrast(bare, rep.get("sub"), ink_rgb[1], sd["ink"] == "dark", dpr),
                                     "pill": True}
+                if sd["letter"]:
+                    bare = r.shot(pname, q + "&mode=bare", size, 1)[0]
+                (build / "bare" / key).mkdir(parents=True, exist_ok=True)
+                bare.resize((BARE_W, round(bare.height * BARE_W / bare.width)), Image.LANCZOS).save(
+                    build / "bare" / key / f"{i:02d}_{sid}.jpg", quality=88)
                 img, rep = r.shot(pname, q, size, dpr)
                 fid = None
                 if sd["arch"] != "fan":
@@ -1431,6 +1438,54 @@ def _feature_checks(img, rep):
 
 # ---------------------------------------------------------------- check
 
+IDEA_SCHEMA = _obj({"app": _S, "audience": _S, "unclear": _B, "slots": {"type": "array", "items": _obj({"idea": _S})}})
+JUDGE_SCHEMA = _obj({"app_match": _B, "app_note": _S,
+                     "slots": {"type": "array", "items": _obj({"match": _B, "note": _S})}})
+IDEA_PROMPT = ("These are the first three App Store screenshots of one app, in order, with their headlines removed, at "
+               "about the size a shopper sees them in search results. From the pictures alone, say in one line what the "
+               "app does and the outcome it promises, who it is for, and for each screenshot the one idea it shows. Read "
+               "only what a shopper would catch at a glance. Set unclear when you cannot tell what the app does.")
+JUDGE_PROMPT = ("The developer meant these screenshots to say:\nApp: {intent}\n{slots}\nA viewer who saw them with the "
+                "headlines hidden read them as:\nApp: {app} (for {audience})\n{seen}\nFor the app and for each screenshot, "
+                "does the viewer's reading carry the intended message in substance (the same job or outcome; the wording "
+                "may differ)? Give a short note for every mismatch.")
+
+
+def _idea_check(d, build, rep, sb, model):
+    """Hide-the-copy test: a blind read of the captionless first three shots, then a text-only comparison with the plan.
+    [(level, where, msg)]."""
+    key = next((k for k in ("ios-phone", "play-phone") if k in rep.get("targets", {})), None)
+    if not key:
+        return [("WARN", "idea", "no phone set in this build; the hide-the-copy test skipped")]
+    shots = rep["targets"][key]["shots"][:3]
+    files = [build / "bare" / key / Path(e["file"]).with_suffix(".jpg").name for e in shots]
+    if not all(f.exists() for f in files):
+        return [("WARN", "idea", f"captionless copies missing in {build / 'bare' / key}; re-run `store build`")]
+    by_id = {s["id"]: s for s in sb.get("slots", [])}
+    caps = [by_id.get(e["slot"], {}) for e in shots]
+    intent = sb.get("promise") or f"{sb.get('app', '')} ({sb.get('category', '')})"
+    _plan(0, 2, model, tokens_in=4000, tokens_out=800)
+    seen = ask([IDEA_PROMPT, *[Image.open(f) for f in files]], schema=IDEA_SCHEMA, name="idea", model=model)
+    ideas = (seen.get("slots") or []) + [{"idea": ""}] * 3
+    judge = ask([JUDGE_PROMPT.format(
+        intent=intent, app=seen.get("app", ""), audience=seen.get("audience", ""),
+        slots="\n".join(f"Screenshot {i}: {c.get('caption', '')}. {c.get('sub', '')}" for i, c in enumerate(caps, 1)),
+        seen="\n".join(f"Screenshot {i}: {ideas[i - 1].get('idea', '')}" for i in range(1, len(caps) + 1)))],
+        schema=JUDGE_SCHEMA, name="idea-judge", model=model)
+    (build / "idea.json").write_text(json.dumps({"target": key, "intent": intent, "seen": seen, "judge": judge}, indent=1))
+    out = []
+    if seen.get("unclear") or not judge.get("app_match"):
+        out.append(("WARN", "idea", f"with the captions hidden, the first shots read as {seen.get('app', '?')!r}, not "
+                    f"{intent!r} ({judge.get('app_note') or 'unclear'}); make slot 1's picture show the outcome"))
+    else:
+        out.append(("PASS", "idea", f"with the captions hidden: {seen.get('app', '')!r}"))
+    for i, (e, j) in enumerate(zip(shots, (judge.get("slots") or []) + [{}] * 3), 1):
+        if j.get("match") is False:
+            out.append(("WARN", f"idea {e['slot']}", f"reads as {ideas[i - 1].get('idea', '')!r} without its caption: "
+                        f"{j.get('note', '')}"))
+    return out
+
+
 def cmd_store_check(a):
     """Store rules over the last build: sizes, counts, no alpha, file size, UI fidelity, caption contrast, search
     legibility, Play tagline share and copy. Exits 1 on any FAIL."""
@@ -1521,6 +1576,11 @@ def cmd_store_check(a):
     if feat.exists():
         for lv, msg in json.loads(feat.read_text()).get("checks", []):
             add(lv, "feature", msg)
+    if a.idea:
+        for lv, where, msg in _idea_check(d, build, rep, sb, a.model):
+            add(lv, where, msg)
+            if lv == "PASS":
+                print(f"  PASS {where}: {msg}")
     (build / "check.json").write_text(json.dumps(res, indent=1))
     fails = [x for x in res if x["level"] == "FAIL"]
     warns = [x for x in res if x["level"] == "WARN"]
@@ -1604,6 +1664,9 @@ def _store_parsers(sub):
     q = ssub.add_parser("check", help="store rules over the last build; exits 1 on a FAIL")
     q.add_argument("dir")
     q.add_argument("--locale")
+    q.add_argument("--idea", action="store_true", help="hide-the-copy test: can a viewer tell what the app does from "
+                                                       "the first three shots without their captions (2 text calls)")
+    q.add_argument("--model", default=None)
     q.set_defaults(fn=cmd_store_check)
     q = ssub.add_parser("feature", help="Google Play feature graphic 1024x500")
     q.add_argument("dir")

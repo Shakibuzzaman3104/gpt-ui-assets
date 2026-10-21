@@ -19,6 +19,7 @@ python3 $K store plan store --lint                         # after editing story
 python3 $K store art store --feature                       # plates (+ --lettering for display captions)
 python3 $K store build store                               # ios-phone + play-phone (+ tablets when captured)
 python3 $K store check store                               # store rules; exits 1 on a FAIL
+python3 $K store check store --idea                        # + can the pictures alone say what the app does?
 python3 $K store feature store --logo brand/logo.png       # Play feature graphic 1024x500
 ```
 
@@ -138,6 +139,12 @@ capture, so the palette, light and rendering match the app.
 - **Quality**: fidelity and headline contrast fail; subhead contrast warns; the iOS search headline should be 9 pt or
   more (CSS px × 0.261).
 - **Copy**: Play captions should cover under 20% of the image, plus the copy lint, privacy notes and the feature checks.
+- **Idea** (`--idea`, 2 text calls): the hide-the-copy test. One vision call sees only the captionless first three
+  shots (`build/bare/`, written by every build) at search size and says what the app does and what each shot shows. A
+  second, text-only call compares that reading with the storyboard's `promise` and captions, and WARNs on a mismatch:
+  people look before they read, so the pictures must carry the idea and the caption only sharpen it. On HushNest it
+  read "soothing sounds to relax or sleep" in 3 of 3 runs and flagged that nothing shows babies, the app's audience.
+  Told the app was a general sleep-sounds app, it passed 2 of 2.
 
 ## 7. Feature graphic
 

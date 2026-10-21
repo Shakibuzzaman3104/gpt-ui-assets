@@ -224,6 +224,38 @@ def test_art_rerolls_lettering_until_ocr_matches():
         assert art["plate_hero"]["flags"] == [] and (Path(d) / "art" / "plate_hero.png").exists()
 
 
+def test_idea_check_reads_the_shots_blind_then_compares():
+    with tempfile.TemporaryDirectory() as d:
+        slots = [{"id": f"s{i}", "capture": "home", "caption": cap, "sub": "", "alt": "x"}
+                 for i, cap in enumerate(("Sleep sounds for babies", "Forty-two sounds", "Mix your own"), 1)]
+        sb = _storyboard(d, slots)
+        sb["promise"] = "Baby sleep sounds that help little ones settle"
+        (Path(d) / "storyboard.json").write_text(json.dumps(sb))
+        shots = []
+        for i, s in enumerate(slots, 1):
+            f = Path(d) / "build" / "ios-phone" / f"{i:02d}_{s['id']}.png"
+            f.parent.mkdir(parents=True, exist_ok=True)
+            Image.new("RGB", (1206, 2622), (200, 210, 230)).save(f)
+            (Path(d) / "build" / "bare" / "ios-phone").mkdir(parents=True, exist_ok=True)
+            Image.new("RGB", (420, 913), (200, 210, 230)).save(Path(d) / "build" / "bare" / "ios-phone" / f"{i:02d}_{s['id']}.jpg")
+            shots.append({"file": str(f.relative_to(d)), "slot": s["id"], "size": [1206, 2622], "alt": "x"})
+        (Path(d) / "build" / "report.json").write_text(json.dumps({"targets": {"ios-phone": {"shots": shots}}, "notes": []}))
+        sent = []
+        answers = iter([{"app": "Rain sounds to relax", "audience": "adults", "unclear": False,
+                         "slots": [{"idea": "rain"}, {"idea": "a sound library"}, {"idea": "mixing"}]},
+                        {"app_match": False, "app_note": "misses babies",
+                         "slots": [{"match": False, "note": "no baby"}, {"match": True, "note": ""}, {"match": True, "note": ""}]}])
+        K.ask = lambda parts, schema=None, name="result", model=None: sent.append(parts) or next(answers)
+        _run(["check", d, "--idea"])
+        blind = " ".join(p for p in sent[0] if isinstance(p, str))
+        assert sum(not isinstance(p, str) for p in sent[0]) == 3            # the three captionless shots
+        assert not any(c["caption"].lower() in blind.lower() for c in slots) and "babies" not in blind  # blind
+        assert "Baby sleep sounds" in sent[1][0] and "Rain sounds to relax" in sent[1][0]
+        res = json.loads((Path(d) / "build" / "check.json").read_text())
+        ideas = [(x["level"], x["where"]) for x in res if x["where"].startswith("idea")]
+        assert ideas == [("WARN", "idea"), ("WARN", "idea s1")], ideas
+
+
 def test_research_downloads_and_sheets_without_ai():
     shot = _png(_screen(600, 1300).convert("RGB"))
 
