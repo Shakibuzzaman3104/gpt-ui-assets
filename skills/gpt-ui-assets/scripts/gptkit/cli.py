@@ -45,6 +45,7 @@ from .trace_rig import _add_trace_rig_parsers
 from .hybrid import _design_to_code_parsers, _hybrid_parsers
 from .doctor import _color_args, cmd_doctor, cmd_score
 from .research import DEPTHS, RESEARCH_MODEL, cmd_blueprint, cmd_research
+from .store import _store_parsers
 from .cost_status import cmd_cost, cmd_status
 
 def _color_arg(s):
@@ -370,6 +371,7 @@ def build_parser():
     _export_parsers(sub)
     _appicon_parsers(sub)
     _integration_parsers(sub, _backend_parsers)
+    _store_parsers(sub)
     return ap, sub
 
 def main(standalone=False, argv=None):
@@ -378,7 +380,7 @@ def main(standalone=False, argv=None):
     a = ap.parse_args(argv)
     from . import core  # the ledger reads these from core's globals
     core._LEDGER_CMD = ("sequence " + a.stage) if a.cmd == "sequence" else (
-        "appicon " + a.icmd if a.cmd == "appicon" else a.cmd)
+        "appicon " + a.icmd if a.cmd == "appicon" else "store " + a.scmd if a.cmd == "store" else a.cmd)
     dir_arg = getattr(a, "dir", None) or getattr(a, "out", None)
     core._LEDGER_DIR = str(Path(dir_arg).expanduser().resolve()) if dir_arg else None
     try:

@@ -2,6 +2,36 @@
 
 All notable changes to gpt-ui-assets. Versions follow [semantic versioning](https://semver.org).
 
+## 5.3.0 (2026-10-19)
+
+App Store and Google Play screenshots from the app's real screens.
+
+### Added
+- **`store`**: a store screenshot pipeline in seven stages (`references/store.md`).
+  - `capture` shoots a booted iOS simulator (`simctl`, 9:41 status bar override) or an adb device (demo mode), with no
+    argent or Maestro needed, and always restores the status bar. `--from` imports real captures and refuses
+    image-model sizes.
+  - `research` codes the top App Store listings for a term into a category playbook.
+  - `plan` writes a storyboard: captions per store, layout per slot, callout boxes, plate briefs, alt text and
+    privacy findings. Its copy lint catches prices, other platforms' names, Play's promo words and calls to action, and
+    unproven claims.
+  - `art` paints background plates as edits of each slot's own capture, flagged TEXT/BUSY-TOP. `--lettering` draws
+    display captions transparent and re-rolls them until OCR reads them back exactly.
+  - `build` composites the real captures pixel-exact in HTML through one Chrome. It renders an iPhone or iPad frame
+    for iOS and frameless cards for Play (never an iPhone on Play), for the required 1206x2622 iPhone slot
+    (`--iphone-large` adds 1320x2868), iPad 13", Play phone 1440x2560 and Play tablets. Each shot is checked for caption
+    contrast (moved onto a pill below 4.5:1) and UI fidelity against the capture, then written as 24-bit RGB with alt
+    text, review sheets and a search-result row.
+  - `check` enforces sizes, counts, no alpha, 8 MB, fidelity, contrast, search legibility and Play's 20% tagline rule.
+  - `feature` renders the 1024x500 Play feature graphic; `--icon` adds the app icon as a rounded tile.
+  - Floats: up to 3 pieces of the app's own art per slot, behind or in front of the screen, with warnings when one
+    touches the caption or hides more than 3% of the screen. Play reads `calls_play` / `cards_play` / `floats_play`
+    first for Android layouts.
+
+  On WordFight's captures: UI fidelity mean ΔE 0.5-1.2, captions 6.2:1 or better, and 6/6 lettering passed OCR on
+  the first try. In the probes, a GPT-redrawn store shot drifted to mean ΔE 15.3, which is why the UI is never sent
+  through an image model.
+
 ## 5.2.0 (2026-10-19)
 
 Design to code that keeps the design's geometry, and smoother animation.

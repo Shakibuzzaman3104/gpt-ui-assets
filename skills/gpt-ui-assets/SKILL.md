@@ -1,9 +1,9 @@
 ---
 name: gpt-ui-assets
-description: Design app, tablet, foldable, desktop-app and website screens with OpenAI's GPT image and vision models (API key or the local Codex CLI), then turn an approved design into production assets redrawn 1:1, never cropped: SVG/VectorDrawable icons, PNG/WebP illustrations, launcher icons, frame, Lottie and AVD animation, smoke/steam/rain loops, theme code and fonts measured from the pixels, and a screenshot diff of the built UI. Also writes GPT-researched feature blueprints. Use whenever the user wants GPT/ChatGPT to design screens, icons, illustrations or an app icon; approves a GPT design ("go ahead", "build it", "give me the assets"); wants assets used in the UI; wants an animated drawable, Lottie or AVD from existing art; or complains that GPT cropped assets out of a mockup. Not for go/no-go idea validation, or design direction without GPT.
+description: Design app, tablet, foldable, desktop-app and website screens with OpenAI's GPT image and vision models (API key or the local Codex CLI), then turn an approved design into production assets redrawn 1:1, never cropped: SVG/VectorDrawable icons, PNG/WebP illustrations, launcher icons, frame, Lottie and AVD animation, smoke/steam/rain loops, theme code and fonts measured from the pixels, a screenshot diff of the built UI, and App Store / Google Play screenshot sets composited from real captures. Also writes GPT-researched feature blueprints. Use whenever the user wants GPT/ChatGPT to design screens, icons, illustrations or an app icon; approves a GPT design ("go ahead", "build it", "give me the assets"); wants assets used in the UI; wants an animated drawable, Lottie or AVD from existing art; wants store screenshots or a Play feature graphic; or complains that GPT cropped assets out of a mockup. Not for go/no-go idea validation, or design direction without GPT.
 license: MIT
 metadata:
-  version: 5.2.0
+  version: 5.3.0
 ---
 
 # GPT UI assets
@@ -65,6 +65,7 @@ story.
 | 5. Animation | Art should move in place, pop, flicker or loop | `frames`, `vectorize`, `rig`, `animate` | `references/animation.md` |
 | 5. Sequences | Something travels: smoke, steam, drops, spray, embers | `sequence layout → plan → render → build → reroll` | `references/sequence.md` |
 | 6. Build 1:1 | Writing the UI code from the design | `fonts`, `redline`, `tokens`, then `compare` against a screenshot | `references/build-ui.md` |
+| 7. Store screenshots | App Store / Play screenshots or a feature graphic for a built app | `store capture`, `store research`, `store plan`, `store art`, `store build`, `store check`, `store feature` | `references/store.md` |
 
 A typical "design a screen and give me the assets" run:
 ```bash
@@ -139,8 +140,8 @@ python3 $K compare build/home shot.png               # also flags wrong corner r
 - An art-direction or design-reference skill before a `mockup`: put the chosen direction (palette, type, shape, style
   family) into the mockup brief.
 - An idea-validation or PRD skill before `research`, when the user needs a go/no-go verdict or a full specification.
-- A store-listing skill after `appicon build`: `android/play_store_512.png` is the listing icon, and the approved mockups
-  are the source for the feature graphic and screenshots.
+- A store-listing skill after `appicon build` and `store build`: `android/play_store_512.png` is the listing icon, and
+  `store` makes the screenshots and feature graphic from real captures; the listing text is the other skill's job.
 
 ## Reference files
 
@@ -156,4 +157,5 @@ python3 $K compare build/home shot.png               # also flags wrong corner r
 | `references/animation.md` | `frames`, `vectorize`, `rig`, `animate` |
 | `references/sequence.md` | `sequence` (layout-driven loops, EbSynth) |
 | `references/build-ui.md` | `fonts`, `redline`, `tokens`, `compare` |
+| `references/store.md` | `store` (capture, research, plan, art, build, check, feature) |
 | `references/api-findings.md` | The raw measurements behind every rule; read only to settle a doubt |
