@@ -45,6 +45,7 @@ from .trace_rig import _add_trace_rig_parsers
 from .hybrid import _design_to_code_parsers, _hybrid_parsers
 from .doctor import _color_args, cmd_doctor, cmd_score
 from .research import DEPTHS, RESEARCH_MODEL, cmd_blueprint, cmd_research
+from .store import _store_parsers
 from .cost_status import cmd_cost, cmd_status
 
 def _color_arg(s):
@@ -127,6 +128,8 @@ def _design_parsers(sub):
     p.add_argument("--apply", action="store_true", help="edit the issues' fixes into the mockup, verify, keep if better")
     p.add_argument("--min-severity", choices=["high", "medium", "low"], default="medium")
     p.add_argument("--rounds", type=_pos_int, default=1, help="max --apply rounds (each kept only if the weight drops)")
+    p.add_argument("--fit", action="store_true", help="phone screens: which single-line text runs out of room on a small "
+                   "phone or at large text sizes (one extra vision call; measured from the pixels)")
     p.add_argument("--model", default=None); p.set_defaults(fn=cmd_critique)
     p = sub.add_parser("manifest", help="inventory assets of an approved mockup -> DIR/assets.json")
     p.add_argument("mockup"); p.add_argument("--out", required=True)
@@ -370,6 +373,7 @@ def build_parser():
     _export_parsers(sub)
     _appicon_parsers(sub)
     _integration_parsers(sub, _backend_parsers)
+    _store_parsers(sub)
     return ap, sub
 
 def main(standalone=False, argv=None):
@@ -378,7 +382,7 @@ def main(standalone=False, argv=None):
     a = ap.parse_args(argv)
     from . import core  # the ledger reads these from core's globals
     core._LEDGER_CMD = ("sequence " + a.stage) if a.cmd == "sequence" else (
-        "appicon " + a.icmd if a.cmd == "appicon" else a.cmd)
+        "appicon " + a.icmd if a.cmd == "appicon" else "store " + a.scmd if a.cmd == "store" else a.cmd)
     dir_arg = getattr(a, "dir", None) or getattr(a, "out", None)
     core._LEDGER_DIR = str(Path(dir_arg).expanduser().resolve()) if dir_arg else None
     try:

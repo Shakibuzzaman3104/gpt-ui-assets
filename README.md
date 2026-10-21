@@ -63,7 +63,7 @@ kit itself (`fid` and ΔE, lower is closer).*
 | Phase | Commands | What you get |
 |---|---|---|
 | Research | `research`, `blueprint` | In-depth, web-searched, cited market report (competitors, pain points, pricing, gaps) and a feature blueprint (RICE, user stories, screens with mockup briefs, roadmap) using `gpt-6-sol` at high/xhigh reasoning |
-| Design | `mockup --platform android\|ios\|web\|macos\|windows\|linux --device phone\|tablet\|foldable\|desktop`, `--set`, `--style-ref`, `critique` | Native-component screens on each device's canvas and chrome, in a clean, decluttered house style; one approved screen carried to every form factor; further screens in the approved design language; automatic design QA with measured contrast and hinge, density and fold checks |
+| Design | `mockup --platform android\|ios\|web\|macos\|windows\|linux --device phone\|tablet\|foldable\|desktop`, `--set`, `--style-ref`, `critique` | Native-component screens on each device's canvas and chrome, in a clean, decluttered house style; one approved screen carried to every form factor; further screens in the approved design language; automatic design QA with measured contrast and hinge, density and fold checks, contradicting values, unclear state and weak copy; `critique --fit` for small phones and large text |
 | Inventory | `manifest`, `spec`, `iconspec` | Every asset with bbox, kind and format (native components and system UI excluded); tokens with the native widget per component |
 | Raster assets | `forge`, `pick`, `fix` | 1:1 redraws: parallel candidates, perceptual `fid` ranking, Lab colour match, copy/crop rejection |
 | Icons | `svg`, `icons`, `vd` | SVG icons scored against the design and retried when weak, on a 24-grid; new icons in the set's style; VectorDrawables validated by render round-trip + aapt2 |
@@ -72,6 +72,7 @@ kit itself (`fid` and ΔE, lower is closer).*
 | Animation | `frames`, `sequence`, `vectorize`, `rig`, `animate` | Procedural motion (no API calls), generated frames with QA, layout-driven sequences (code animates, GPT paints keys, EbSynth carries them to every frame of smoke, drops or spray when the plan says it can, else GPT paints every frame), WebP/APNG/Lottie, Lottie **and** AnimatedVectorDrawable, rigged 1:1 vector animation |
 | Hybrid screens | `material`, `state`, `stage` | Screens built in HTML/CSS/JS around GPT-painted materials; state variants pixel-identical outside the change; stills, a frame-exact motion clip and a presentation shot rendered through Chrome |
 | Build 1:1 | `fonts`, `redline`, `tokens`, `compare` | Google Fonts matched by rendering; measured radii and gaps; Compose/SwiftUI/CSS/Tailwind theme code; screenshot-vs-design heatmap with ranked fixes |
+| Store screenshots | `store capture`, `store research`, `store plan`, `store art`, `store build`, `store check`, `store feature` | App Store and Google Play sets from real simulator/device captures composited pixel-exact (the UI is never redrawn), with GPT-painted art plates in the app's own style and optional OCR-checked display lettering; per-store frames and copy rules, exact sizes with no alpha, measured caption contrast and UI fidelity, tablets, the Play feature graphic |
 | Export | `export`, `doctor` | Android densities, iOS imagesets, web 1x/2x; setup check |
 
 **Platform-native design.** The same brief, `--platform android` vs `--platform ios`: M3 top app bar, cards, navigation
@@ -88,6 +89,18 @@ chrome at pointer density, and `--platform web --page landing` composes above th
 **New screens in the approved design language** (`--style-ref`): same wordmark, palette, type and illustration
 style, with a new layout. Here the approved phone screen drives a web landing page.
 <p align="center"><img src="docs/images/18-style-ref.webp" width="760" alt="Approved phone screen and a web landing page designed from it with --style-ref"></p>
+
+**Design QA that reads the screen.** Every mockup is critiqued as it is made. Besides contrast, spacing and platform
+rules, the critique checks what the screen says: numbers that contradict each other, a selected item you can't
+see, two primary buttons, one action with two labels, and stock marketing filler. On 30 mockups with one planted
+defect each, it caught 51/60 critiques, up from 36/59. Below are three of those plants, flagged as the kit reports
+them.
+<p align="center"><img src="docs/images/23-critique.webp" width="780" alt="Critique flags a countdown that contradicts the status-bar time, two filled primary buttons, and a duplicated inbox row"></p>
+
+**Small phones and large text** (`critique --fit`). GPT finds the single-line texts, and the pixels decide whether
+each still fits on a 360 dp phone at Android's 130% and 200% text, or on an iPhone SE at Dynamic Type xxxLarge and
+AX2. Against Chrome renders it found 82-88% of the overflows, with no false alarms.
+<p align="center"><img src="docs/images/24-fit.webp" width="620" alt="Rows that run out of room at 200% text on Android and at Dynamic Type AX2 on iOS"></p>
 
 **Forge and icon review sheets.**
 <p align="center">

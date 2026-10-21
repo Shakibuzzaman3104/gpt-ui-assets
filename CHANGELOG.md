@@ -2,6 +2,66 @@
 
 All notable changes to gpt-ui-assets. Versions follow [semantic versioning](https://semver.org).
 
+## 5.3.0 (2026-10-21)
+
+App Store and Google Play screenshots from the app's real screens, a critique that checks what the screen says, a
+fit check for small phones and large text, and design checkpoints.
+
+### Added
+- **`store`**: a store screenshot pipeline in seven stages (`references/store.md`).
+  - `capture` shoots a booted iOS simulator (`simctl`, 9:41 status bar override) or an adb device (demo mode), with no
+    argent or Maestro needed, and always restores the status bar. `--from` imports real captures and refuses
+    image-model sizes.
+  - `research` codes the top App Store listings for a term into a category playbook.
+  - `plan` writes a storyboard: captions per store, layout per slot, callout boxes, plate briefs, alt text and
+    privacy findings, plus the set's `promise`: slot 1 states what the app does and the outcome, captions sell the
+    outcome in users' words, and slots 1-3 tell a story rather than a tutorial. Judged blind by another model on 7
+    apps, slot 1 alone conveyed the app 4.93/5 (4.57 before) and the new sets won 11 of 13 order-consistent install
+    picks with personality level. Its copy lint catches prices, other platforms' names, Play's promo words and calls
+    to action, tutorial copy ("tap the", "step 1") and unproven claims.
+  - `art` paints background plates as edits of each slot's own capture, flagged TEXT/BUSY-TOP. `--lettering` draws
+    display captions transparent and re-rolls them until OCR reads them back exactly.
+  - `build` composites the real captures pixel-exact in HTML through one Chrome. It renders an iPhone or iPad frame
+    for iOS and frameless cards for Play (never an iPhone on Play), for the required 1206x2622 iPhone slot
+    (`--iphone-large` adds 1320x2868), iPad 13", Play phone 1440x2560 and Play tablets. Each shot is checked for caption
+    contrast (moved onto a pill below 4.5:1) and UI fidelity against the capture, then written as 24-bit RGB with alt
+    text, review sheets and a search-result row.
+  - `check` enforces sizes, counts, no alpha, 8 MB, fidelity, contrast, search legibility and Play's 20% tagline rule.
+    `--idea` is the hide-the-copy test: one call reads the captionless first three shots blind, a second compares that
+    reading with the promise. On HushNest it flagged in 3 of 3 runs that no picture shows babies; given a matching
+    intent it passed 2 of 2. It runs on the Codex CLI too.
+  - Headlines share one size per set, the largest every caption fits in two lines above the screen (and under 18% of
+    the image on Play): HushNest's iPhone headlines went from 42 to 51 px.
+  - `feature` renders the 1024x500 Play feature graphic; `--icon` adds the app icon as a rounded tile.
+  - Floats: up to 3 pieces of the app's own art per slot, behind or in front of the screen, with warnings when one
+    touches the caption or hides more than 3% of the screen. Play reads `calls_play` / `cards_play` / `floats_play`
+    first for Android layouts.
+
+  On WordFight's captures: UI fidelity mean ΔE 0.5-1.2, captions 6.2:1 or better, and 6/6 lettering passed OCR on
+  the first try. In the probes, a GPT-redrawn store shot drifted to mean ΔE 15.3, which is why the UI is never sent
+  through an image model.
+- **Critique categories `coherence`, `state` and `copy`.**
+  - `coherence`: values that contradict each other (a total, a count against its list, a countdown against the
+    status-bar time, a weekday against its date or a second calendar), placeholder text, and repeated rows.
+  - `state`: two filled primary buttons, a selection that can't be seen, and status shown only by hue.
+  - `copy`: one action with two labels, and stock marketing filler.
+
+  On 30 GPT mockups with one planted defect each, critiqued twice each with `gpt-6-sol`, catches went from 36/59 to
+  51/60. Wrong numbers went from 18/22 to 22/22, state from 5/10 to 9/10, and copy from 0/8 to 6/8; the older
+  categories held. The wording was tuned against false flags on 39 real and 16 clean mockups: new-category flags on
+  the real ones fell from 17 to 1. Four patterns are now ruled out: timestamps later than the mockup's 9:41 clock,
+  bar fills estimated to a few percent, fact-checked quotes, and a tinted tab-bar item or a selected card called
+  "colour only". Typos are still missed.
+- **`critique --fit`** for phone screens. It measures which single-line text runs out of room on a 360 dp phone at
+  Android 14's 130%/200% text curve, or on an iPhone SE at Dynamic Type xxxLarge and AX2. iOS tab bars and segmented
+  controls stay fixed. GPT finds the lines (one extra call), and the pixels decide; it is kept out of the issue
+  weight and `--apply`. Against Chrome renders of 8 screens it found 0.82-0.86 of the Android and 0.88 of the iOS
+  overflows, with no false flags.
+- **Design checkpoints in `SKILL.md`:**
+  1. Ask how many variants and whether they take different directions.
+  2. Critique the locked design and offer its fixes.
+  3. After approval, let the user choose the next step.
+
 ## 5.2.0 (2026-10-19)
 
 Design to code that keeps the design's geometry, and smoother animation.

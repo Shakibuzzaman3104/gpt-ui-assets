@@ -41,7 +41,7 @@ def _flags_of(parser):
 
 
 def _subsubparsers(parser):
-    """{name: subparser} for a command with its own sub-subcommands (only `appicon` today), else {}."""
+    """{name: subparser} for a command with its own sub-subcommands (`appicon`, `store`), else {}."""
     for act in parser._actions:
         if isinstance(getattr(act, "choices", None), dict) and all(hasattr(v, "_actions") for v in act.choices.values()):
             return act.choices
@@ -73,8 +73,8 @@ def _recipes(text):
         if not m:
             continue
         cmd, maybe_sub = m.group(1), m.group(2)
-        if cmd == "appicon" and maybe_sub in _subsubparsers(SUB.choices["appicon"]):
-            yield f"appicon {maybe_sub}", line
+        if cmd in ("appicon", "store") and maybe_sub in _subsubparsers(SUB.choices[cmd]):
+            yield f"{cmd} {maybe_sub}", line
         else:
             yield cmd, line
 
@@ -88,7 +88,7 @@ def test_every_recipe_names_a_real_subcommand():
         assert base in SUB.choices, f"skill docs recipe names unknown subcommand {base!r}: {line.strip()!r}"
         if " " in cmd:
             sub_name = cmd.split(" ", 1)[1]
-            assert cmd in CMD_FLAGS, f"SKILL.md recipe names unknown appicon stage {sub_name!r}: {line.strip()!r}"
+            assert cmd in CMD_FLAGS, f"SKILL.md recipe names unknown {base} stage {sub_name!r}: {line.strip()!r}"
     assert seen >= 20, f"only found {seen} 'python3 $K <cmd>' recipes; the extraction regex may be broken"
 
 
