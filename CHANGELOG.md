@@ -2,9 +2,10 @@
 
 All notable changes to gpt-ui-assets. Versions follow [semantic versioning](https://semver.org).
 
-## 5.3.0 (2026-10-19)
+## 5.3.0 (2026-10-21)
 
-App Store and Google Play screenshots from the app's real screens.
+App Store and Google Play screenshots from the app's real screens, a critique that checks what the screen says, a
+fit check for small phones and large text, and design checkpoints.
 
 ### Added
 - **`store`**: a store screenshot pipeline in seven stages (`references/store.md`).
@@ -39,6 +40,27 @@ App Store and Google Play screenshots from the app's real screens.
   On WordFight's captures: UI fidelity mean ΔE 0.5-1.2, captions 6.2:1 or better, and 6/6 lettering passed OCR on
   the first try. In the probes, a GPT-redrawn store shot drifted to mean ΔE 15.3, which is why the UI is never sent
   through an image model.
+- **Critique categories `coherence`, `state` and `copy`.**
+  - `coherence`: values that contradict each other (a total, a count against its list, a countdown against the
+    status-bar time, a weekday against its date or a second calendar), placeholder text, and repeated rows.
+  - `state`: two filled primary buttons, a selection that can't be seen, and status shown only by hue.
+  - `copy`: one action with two labels, and stock marketing filler.
+
+  On 30 GPT mockups with one planted defect each, critiqued twice each with `gpt-6-sol`, catches went from 36/59 to
+  51/60. Wrong numbers went from 18/22 to 22/22, state from 5/10 to 9/10, and copy from 0/8 to 6/8; the older
+  categories held. The wording was tuned against false flags on 39 real and 16 clean mockups: new-category flags on
+  the real ones fell from 17 to 1. Four patterns are now ruled out: timestamps later than the mockup's 9:41 clock,
+  bar fills estimated to a few percent, fact-checked quotes, and a tinted tab-bar item or a selected card called
+  "colour only". Typos are still missed.
+- **`critique --fit`** for phone screens. It measures which single-line text runs out of room on a 360 dp phone at
+  Android 14's 130%/200% text curve, or on an iPhone SE at Dynamic Type xxxLarge and AX2. iOS tab bars and segmented
+  controls stay fixed. GPT finds the lines (one extra call), and the pixels decide; it is kept out of the issue
+  weight and `--apply`. Against Chrome renders of 8 screens it found 0.82-0.86 of the Android and 0.88 of the iOS
+  overflows, with no false flags.
+- **Design checkpoints in `SKILL.md`:**
+  1. Ask how many variants and whether they take different directions.
+  2. Critique the locked design and offer its fixes.
+  3. After approval, let the user choose the next step.
 
 ## 5.2.0 (2026-10-19)
 

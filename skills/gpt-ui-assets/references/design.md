@@ -70,6 +70,26 @@ position. A set render writes `<name>_<device>.png` for each device and records 
     It also checks spacing (content within 16 units of the screen's side edges, text/controls within 8 units of their
     container's edge, ambiguous grouping, uneven gaps) and shape (more than three radii, non-concentric nested corners,
     card inside a card). Issues marked screen-wide are not edited by `--apply`: re-run `mockup` with the fix in the brief.
+  - Three more categories:
+    - `coherence`: values that contradict each other (a total, a count against its list, a countdown against the
+      status-bar time, a weekday against its date), placeholder text, and a row repeated verbatim.
+    - `state`: two filled primary buttons, a selected item that can't be told from its siblings, and status shown only
+      by hue.
+    - `copy`: one action labelled two ways, and stock marketing filler.
+
+    On 30 mockups with one planted defect each, the catch rate went from 36/59 to 51/60 critiques, and the
+    older categories held. Both versions miss typos and a card stretched to the screen edges, so proofread the copy
+    yourself. A timestamp later than the mockup's 9:41 clock is not flagged, and quotes are not fact-checked.
+  - `--fit` (phone screens, one extra call): GPT lists the single-line texts and their containers, and the pixels
+    decide whether each still fits. It checks a 360 dp phone with Android 14's 130% and 200% text curve, or an
+    iPhone SE (375 pt) with Dynamic Type xxxLarge and AX2. iOS tab bars and segmented controls keep their size.
+    Against Chrome renders it found 0.82-0.88 of the overflows, with no false flags. It is not part of the issue
+    weight, `--apply` or the automatic critique.
+    - It skips text that may wrap, lettering drawn as artwork, and rows with a slider or progress bar.
+    - It doesn't check height.
+    - A flexible piece in a row, such as a flight's route line, is measured as fixed, so the shortfall it reports
+      there is larger than the real one.
+    - At AX2, most dense rows fail. Treat that as a reason to plan a stacked layout, not as a defect in the mockup.
   - A square-cornered card beside rounded cards of the same width is measured locally (vision QA misses it) and
     reported as a shape issue.
   - `--apply` edits the fixes in and keeps the revision only if the issue weight drops. The verifier is lenient and the
