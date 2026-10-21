@@ -857,7 +857,7 @@ fetch(q.get('data')||'data.json').then(r=>r.json()).then(D=>{
     const hero=S.cards[0], r=(hero.box[3]-hero.box[1])/(hero.box[2]-hero.box[0]);
     const wc=Math.min((card?58:62)*u,.62*H/r), base=H*(S.letter?.28:.30);
     const lay=S.cards.length>2?[[1,-23,-8,.8],[2,23,8,.8],[0,0,0,1]]:[[1,-16,-7,.85],[0,10,3,1]];
-    lay.forEach(([i,dx,rot,k])=>{const w=wc*k, dy=k<1?wc*r*.46:0;
+    lay.forEach(([i,dx,rot,k])=>{const w=wc*k, dy=k<1?wc*Math.min(r,1.2)*.46:0;
       html.push(`<div class="call fan" style="${crop(S.cards[i],w)};top:${base+dy}px;border-radius:${6*u}px;box-shadow:0 ${3*u}px ${5*u}px ${B.shadow},0 0 0 ${.7*u}px ${B.ring};transform:translateX(calc(-50% + ${dx*u}px)) rotate(${rot}deg)"></div>`);});
   } else {
     const sc=S.screen, cut=card?sc.status:0, asp=(sc.h-cut)/sc.w;
