@@ -157,7 +157,11 @@ def _perspective_note(p):
 def screen_quads(alpha, count=1):
     import cv2
     n, labels, stats, cents = cv2.connectedComponentsWithStats((alpha > 0.5).astype(np.uint8))
-    order = 1 + np.argsort(stats[1:, cv2.CC_STAT_AREA])[::-1][:count]
+    order = 1 + np.argsort(stats[1:, cv2.CC_STAT_AREA])[::-1]
+    if count and len(order) > count and stats[order[count], cv2.CC_STAT_AREA] >= 0.25 * stats[order[count - 1], cv2.CC_STAT_AREA]:
+        found = sum(stats[i, cv2.CC_STAT_AREA] >= 0.25 * stats[order[count - 1], cv2.CC_STAT_AREA] for i in order)
+        raise ValueError(f"found {found} screens, slot needs {count}")
+    order = order[:count]
     return [quad_from_mask(labels == i) for i in sorted(order, key=lambda i: cents[i][0])]
 
 
@@ -200,9 +204,15 @@ def key_capture(scene, captures, pad=3):
     quads = screen_quads(alpha, len(captures))
     if len(quads) != len(captures):
         raise ValueError(f"found {len(quads)} screens, slot needs {len(captures)}")
+    mask = np.zeros(alpha.shape, np.uint8)
+    for quad in quads:
+        centre = quad.mean(0)
+        cv2.fillConvexPoly(mask, (centre + (quad - centre) * 1.10).astype(np.int32), 1)
+    rad = round(0.02 * max(scene.size))
+    mask = cv2.dilate(mask, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * rad + 1,) * 2)).astype(bool)
     out = rgb.astype(np.float32)
     limit = np.maximum(out[..., 0], out[..., 2])
-    out[..., 1] = np.where(out[..., 1] - limit > 25, np.minimum(out[..., 1], limit + 6), out[..., 1])
+    out[..., 1] = np.where(mask & (out[..., 1] - limit > 25), np.minimum(out[..., 1], limit + 6), out[..., 1])
     for quad, capture in zip(quads, captures):
         c = np.asarray(capture.convert("RGB"))
         ch, cw = c.shape[:2]
@@ -238,7 +248,10 @@ def clear_status_bar(scene):
 
 
 def _names(slot):
-    return slot.get("scene_captures", [slot["capture"]])
+    names = slot["scene_captures"] if "scene_captures" in slot else [slot["capture"]]
+    if not names:
+        raise ValueError(f"{slot['id']}: scene_captures is empty")
+    return names
 
 
 def _slots(sb, arg):
@@ -246,6 +259,8 @@ def _slots(sb, arg):
     slots = [s for s in sb["slots"] if not want or s["id"] in want]
     if want and want - {s["id"] for s in slots}:
         raise ValueError(f"unknown slots: {', '.join(sorted(want - {s['id'] for s in slots}))}")
+    for slot in slots:
+        _names(slot)
     return slots
 
 
@@ -365,6 +380,9 @@ def cmd_store_scene(a):
             if not entry or file not in [v["file"] for v in entry["variants"]] or not (out / file).exists():
                 raise ValueError(f"{sid}: variant {num} does not exist")
             entry["pick"] = file
+        if a.dry_run:
+            print(f"store scene: would pick {a.pick}")
+            return
         out.mkdir(parents=True, exist_ok=True)
         (out / "scenes.json").write_text(json.dumps(manifest, indent=2))
         _review(d, sb, a.set, manifest, out)
@@ -424,9 +442,11 @@ def cmd_store_scene(a):
                 ref_im = ref_im.convert("RGB")
                 ref_size = ref_im.size
                 quads = screen_quads(green_alpha(np.asarray(ref_im)))
-                ref_quad = quads[0] if quads else None
-        except (OSError, ValueError):
-            pass
+                if not quads:
+                    raise ValueError("no green screen")
+                ref_quad = quads[0]
+        except (OSError, ValueError) as e:
+            print(f"store scene: COPIES-REF not checked: {e}")
     ref_slots = {slot["id"] for slot in slots if ref and
                  manifest["slots"].get(slot["id"], {}).get("pick") and
                  (out / manifest["slots"][slot["id"]]["pick"]).resolve() == ref.resolve()}
@@ -434,7 +454,14 @@ def cmd_store_scene(a):
         if a.force and any(w[0]["id"] == slot["id"] for w in work):
             for p in out.glob(f"{slot['id']}_v*.png"):
                 if re.fullmatch(re.escape(slot["id"]) + r"_v\d+\.png", p.name):
-                    p.unlink()
+                    replaced = out / "_replaced"
+                    replaced.mkdir(exist_ok=True)
+                    dest = replaced / p.name
+                    n = 2
+                    while dest.exists():
+                        dest = replaced / f"{p.stem}.{n}{p.suffix}"
+                        n += 1
+                    p.rename(dest)
             manifest["slots"].pop(slot["id"], None)
     def job(item):
         slot, n, source, prompt = item
@@ -520,7 +547,7 @@ def _font(family, weight, size, notes):
     return ImageFont.load_default(size)
 
 
-def _headline(canvas, slot, sb, notes):
+def _headline(canvas, slot, sb, notes, with_size=False):
     W, H = canvas.size
     settings = sb.get("scenes", {}).get("type", {})
     brand = sb.get("brand", {})
@@ -589,7 +616,8 @@ def _headline(canvas, slot, sb, notes):
     for text, font, x, yy, ink in items:
         dr.text((x + 0.03 * size, yy + 0.045 * size), text, font=font, fill=(*shadow, 255))
         dr.text((x, yy), text, font=font, fill=(*ink, 255))
-    return bottom, low
+    result = (bottom, low)
+    return (*result, size * max((line["size"] for line in lines), default=0)) if with_size else result
 
 
 def _flat(d, report, target, sid, size, head):
@@ -640,8 +668,11 @@ def cmd_store_compose(a):
     manifest = _load_manifest(source / "scenes.json", a.set)
     flat_dir = Path(a.flat) if a.flat else None
     flat_report = {}
-    if flat_dir and (flat_dir / "build" / "report.json").exists():
-        flat_report = json.loads((flat_dir / "build" / "report.json").read_text())
+    if flat_dir:
+        try:
+            flat_report = json.loads((flat_dir / "build" / "report.json").read_text())
+        except (OSError, ValueError) as e:
+            raise ValueError(f"store compose: flat report missing or unreadable; run `store build {flat_dir} --no-caption` first") from e
         if not flat_report.get("no_caption"):
             raise ValueError(f"store compose: flat build has captions; run `store build {flat_dir} --no-caption` first")
     out = Path(a.out) if a.out else source / "build"
@@ -650,6 +681,9 @@ def cmd_store_compose(a):
         W, H = SCENE_TARGETS[target]
         folder = out / target
         folder.mkdir(parents=True, exist_ok=True)
+        for p in folder.iterdir():
+            if p.is_file() and (re.fullmatch(r"\d\d_.+\.(png|jpg)", p.name) or p.name in ("sheet.jpg", "search_row.jpg")):
+                p.unlink()
         report[target] = {}
         files = []
         for slot in slots:
@@ -663,22 +697,27 @@ def cmd_store_compose(a):
                 im, phone_top, notes = flat
                 flags = []
                 canvas = im.convert("RGBA")
-                bottom, low = _headline(canvas, slot, sb, notes)
+                bottom, low, size_px = _headline(canvas, slot, sb, notes, with_size=True)
                 if bottom > phone_top - H * 0.01:
                     flags.append("OVERLAP")
                 if low:
                     flags.append("LOW-CONTRAST")
                 index = next(i for i, s in enumerate(sb["slots"], 1) if s["id"] == sid)
                 path = store._save_store_png(canvas, folder / f"{index:02d}_{sid}.png")
+                search_pt = size_px / 3 * store.SEARCH_SCALE
+                if len(files) < 3 and search_pt < store.SEARCH_MIN_PT:
+                    flags.append("SMALL-HEADLINE")
                 files.append(path)
                 report[target][sid] = {"file": str(path.relative_to(out)), "kind": "flat", "fit": None, "flags": flags, "notes": notes}
+                if "SMALL-HEADLINE" in flags:
+                    report[target][sid]["search_pt"] = round(search_pt, 1)
                 continue
             notes, flags = [], []
             im = Image.open(source / pick).convert("RGB")
-            caps = [_capture(d, sb, a.set, name, a.captures) for name in _names(slot)]
             scale = max(W / im.width, H / im.height)
             im = im.resize((round(im.width * scale), round(im.height * scale)), Image.LANCZOS)
             try:
+                caps = [_capture(d, sb, a.set, name, a.captures) for name in _names(slot)]
                 qs = screen_quads(green_alpha(np.asarray(im)), len(_names(slot)))
                 if len(qs) != len(_names(slot)):
                     raise ValueError(f"found {len(qs)} screens, slot needs {len(_names(slot))}")
@@ -709,7 +748,7 @@ def cmd_store_compose(a):
             if _occluded(occ):
                 flags.append("OCCLUDED")
             canvas = im.convert("RGBA")
-            bottom, low = _headline(canvas, slot, sb, notes)
+            bottom, low, size_px = _headline(canvas, slot, sb, notes, with_size=True)
             if bottom > min(q[:, 1].min() for q in qs) - H * 0.01:
                 flags.append("OVERLAP")
             if low:
@@ -718,9 +757,16 @@ def cmd_store_compose(a):
                 flags.append("LOW-FIT")
             index = next(i for i, s in enumerate(sb["slots"], 1) if s["id"] == sid)
             path = store._save_store_png(canvas, folder / f"{index:02d}_{sid}.png")
+            search_pt = size_px / 3 * store.SEARCH_SCALE
+            if len(files) < 3 and search_pt < store.SEARCH_MIN_PT:
+                flags.append("SMALL-HEADLINE")
             files.append(path)
             report[target][sid] = {"file": str(path.relative_to(out)), "kind": "painted", "fit": fit, "occluded": [round(v, 3) for v in occ], "flags": flags, "notes": notes}
+            if "SMALL-HEADLINE" in flags:
+                report[target][sid]["search_pt"] = round(search_pt, 1)
         store._set_sheet(files, folder / "sheet.jpg")
+        if files:
+            store._search_row(files[:3], folder / "search_row.jpg")
         print(f"store compose: {target}: {len(files)} shots -> {folder}")
     out.mkdir(parents=True, exist_ok=True)
     (out / "report.json").write_text(json.dumps(report, indent=2))

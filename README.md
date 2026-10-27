@@ -127,7 +127,7 @@ image model), and sets the headline in real type. A shot whose screen no camera 
 <p align="center"><img src="docs/images/25-store-scenes.webp" width="780" alt="A painted scene with a green screen, the fitted quad, the real capture keyed in, the final shot with its headline, and a rejected shot with impossible perspective"></p>
 
 **Every app its own listing.** Before designing, the kit asks for a style (full creative, flat, mixed, or something
-else) and shows reference sheets. Google Play gets frameless 9:16 shots of the interface alone, as its guidance asks.
+else) and shows reference sheets. Google Play gets frameless 9:16 shots that put the UI first, as its guidance asks.
 <p align="center"><img src="docs/images/26-store-sets.webp" width="780" alt="A full creative App Store set for a daily-quotes app, two mixed App Store sets for a sleep-sounds app, and its frameless Google Play set"></p>
 
 **Compare.** A screenshot of your build vs the design: a heatmap and a ranked list of fixes until it matches.

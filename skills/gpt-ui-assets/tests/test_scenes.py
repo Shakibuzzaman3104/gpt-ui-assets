@@ -290,6 +290,102 @@ def test_bad_view():
             assert "hero" in str(e) and "front" in str(e) and "angled" in str(e)
 
 
+def test_hardening():
+    with tempfile.TemporaryDirectory() as temp:
+        d = Path(temp)
+        slots = [{"id": s, "capture": "home", "caption": "A calm day", "scene_brief": "hills"} for s in ("hero", "next")]
+        sb = {"scenes": {"style": "painted"}, "slots": slots}
+        (d / "storyboard.json").write_text(json.dumps(sb))
+        caps = d / "caps"
+        caps.mkdir()
+        Image.new("RGB", (372, 1000), (130, 80, 170)).save(caps / "home.png")
+        (d / "captures.json").write_text(json.dumps({"captures": [{"name": "home", "platform": "ios", "device": "phone",
+            "orientation": "portrait", "file": "caps/home.png"}]}))
+        scene, _ = _scene(853, 1843)
+        K.generate = lambda prompt, **kw: (_png(scene), {})
+        K._gf_ttf = lambda *args: None
+        _run(["scene", temp, "--variants", "1"])
+        source = d / "scenes/main"
+        manifest_path = source / "scenes.json"
+        before = manifest_path.read_bytes()
+        review = (source / "review.jpg").read_bytes()
+        _run(["scene", temp, "--pick", "hero=1", "--dry-run"])
+        assert manifest_path.read_bytes() == before and (source / "review.jpg").read_bytes() == review
+        _run(["scene", temp, "--variants", "1", "--slots", "hero", "--force"])
+        assert (source / "_replaced/hero_v1.png").exists()
+        _run(["scene", temp, "--variants", "1", "--slots", "hero", "--force"])
+        assert (source / "_replaced/hero_v1.2.png").exists()
+        args = ["compose", temp, "--targets", "ios-phone", "--captures", str(caps)]
+        _run(args)
+        build = source / "build"
+        folder = build / "ios-phone"
+        report = json.loads((build / "report.json").read_text())["ios-phone"]
+        assert "SMALL-HEADLINE" not in report["hero"]["flags"] and (folder / "search_row.jpg").exists()
+        (folder / "keep.txt").write_text("keep")
+        manifest = json.loads(manifest_path.read_text())
+        manifest["slots"]["next"]["pick"] = None
+        manifest_path.write_text(json.dumps(manifest))
+        sb["scenes"]["type"] = {"size": 0.05}
+        (d / "storyboard.json").write_text(json.dumps(sb))
+        _run(args)
+        report = json.loads((build / "report.json").read_text())["ios-phone"]
+        assert not (folder / "02_next.png").exists() and (folder / "keep.txt").exists()
+        assert "SMALL-HEADLINE" in report["hero"]["flags"] and report["hero"]["search_pt"] < 9
+        slots[0]["capture"] = "missing"
+        (d / "storyboard.json").write_text(json.dumps(sb))
+        _run(args)
+        shot = json.loads((build / "report.json").read_text())["ios-phone"]["hero"]
+        assert shot == {"file": None, "kind": "painted", "fit": None, "flags": [], "notes": ["missing capture 'missing'"]}
+        try:
+            _run(args + ["--flat", temp])
+            raise AssertionError("missing report accepted")
+        except ValueError as e:
+            assert "--no-caption" in str(e)
+        slots[0]["scene_captures"] = []
+        (d / "storyboard.json").write_text(json.dumps(sb))
+        try:
+            _run(args)
+            raise AssertionError("empty captures accepted")
+        except ValueError as e:
+            assert str(e) == "hero: scene_captures is empty"
+
+
+def test_extra_screen_and_despill():
+    with tempfile.TemporaryDirectory() as temp:
+        d = Path(temp)
+        slot = {"id": "hero", "capture": "home", "caption": "A calm day"}
+        (d / "storyboard.json").write_text(json.dumps({"slots": [slot]}))
+        source = d / "scenes/main"
+        source.mkdir(parents=True)
+        pixels = np.full((1843, 853, 3), (70, 90, 120), np.uint8)
+        cv2.rectangle(pixels, (80, 500), (350, 1400), (0, 255, 0), -1)
+        cv2.rectangle(pixels, (500, 500), (770, 1400), (0, 255, 0), -1)
+        Image.fromarray(pixels).save(source / "hero_v1.png")
+        (source / "scenes.json").write_text(json.dumps({"slots": {"hero": {"pick": "hero_v1.png"}}}))
+        caps = d / "caps"
+        caps.mkdir()
+        Image.new("RGB", (372, 1000)).save(caps / "home.png")
+        _run(["compose", temp, "--targets", "ios-phone", "--captures", str(caps)])
+        shot = json.loads((source / "build/report.json").read_text())["ios-phone"]["hero"]
+        assert shot["file"] is None and shot["notes"] == ["found 2 screens, slot needs 1"]
+        scene, _ = _scene(853, 1843)
+        pixels = np.array(scene)
+        pixels[50:70, 20:40] = (40, 75, 40)
+        result, _, _ = K.key_capture(Image.fromarray(pixels), [Image.new("RGB", (372, 1000))])
+        assert tuple(np.asarray(result)[60, 30]) == (40, 75, 40)
+
+
+def test_bad_reference():
+    with tempfile.TemporaryDirectory() as temp:
+        d = Path(temp)
+        _ref_project(d)
+        Image.new("RGB", (853, 1843)).save(d / "ref.png")
+        scene, _ = _scene(853, 1843)
+        K.edit = lambda ref, prompt, **kw: (_png(scene), {})
+        _run(["scene", temp, "--variants", "1"])
+        assert (d / "scenes/main/scenes.json").exists()
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for test in tests:

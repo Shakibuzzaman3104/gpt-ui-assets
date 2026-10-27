@@ -124,8 +124,8 @@ python3 $K compare build/home shot.png               # also flags wrong corner r
 12. **Store listings get an art direction invented for that app.** There is no common template and no house look for
     store scenes: the world, audience and brand of the app decide the picture, and every example is an illustration,
     never a template. Never present a store shot with BAD-PERSPECTIVE, SMALL-PHONE, OCCLUDED or LOW-FIT; read every
-    shot at half size first. Painted scenes are App Store only: Play asks for the interface without device frames or
-    added scenery, so its set always comes from `store build` (frameless 9:16).
+    shot at half size first. Painted scenes are App Store only: Play wants 9:16 shots that put the UI first, so its
+    set always comes from `store build` (frameless 9:16).
 
 ## Working with the user
 

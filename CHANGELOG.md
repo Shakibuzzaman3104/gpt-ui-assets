@@ -5,7 +5,7 @@ All notable changes to gpt-ui-assets. Versions follow [semantic versioning](http
 ## 5.4.0 (2026-10-27)
 
 A second store screenshot route: GPT paints the whole App Store image around a chroma-green screen that the kit
-fills with the app's real capture, in true perspective. Play sets stay frameless, as Play's guidance asks.
+fills with the app's real capture, in true perspective. Play sets stay frameless at 9:16 with the UI first, as Play's guidance asks.
 
 ### Added
 - **`store scene`**: GPT paints each slot's whole listing image (the app's world, props, a big phone) with the
@@ -24,10 +24,17 @@ fills with the app's real capture, in true perspective. Play sets stay frameless
   - `OCCLUDED`: props hide over 6% of the screen, or over 10% of its bottom quarter where CTAs and tab bars sit;
   - `COPIES-REF`: a style-reference edit that repeats the reference's composition;
   - `GREEN-SPILL`, `BUSY-TOP` (a busy headline band), and in compose `OVERLAP` and `LOW-CONTRAST` (under 3:1).
+  - in compose, `SMALL-HEADLINE`: a headline in the first three shots under 9 pt at search-result size, with a
+    `search_row.jpg` per target to read them as a shopper would;
+  - a scene with more green screens than the slot has captures is rejected.
 - **`store compose`**: renders each picked scene per App Store target (`ios-phone` 1206x2622, `ios-phone-large`
   1320x2868, `ios-phone-65` 1242x2688) into `NN_slot.png`, `sheet.jpg` and `report.json`. A Play target is refused.
   `--captures` points a set at another capture folder, such as dark-mode captures for a night set, and `--clean-top`
-  inpaints status-bar glyphs a model painted into the top strip. Needs OpenCV; the rest of the kit does not.
+  inpaints status-bar glyphs a model painted into the top strip. Each run clears old shots, a missing capture fails
+  only its shot, green is despilled only around the screens, and shots over 8 MB are saved as JPEG. Needs OpenCV;
+  the rest of the kit does not.
+- **Safer re-rolls**: `store scene --force` moves old variants to `_replaced/` instead of deleting them, `--pick`
+  honours `--dry-run`, and an unreadable style reference prints `COPIES-REF not checked`.
 - **Mixed sets**: `store build --no-caption` renders flat slots with their captions hidden but their layout kept, and
   `store compose --flat DIR` fills unpainted slots from that build, in storyboard order, with one headline style
   across painted and flat shots.
@@ -37,6 +44,9 @@ fills with the app's real capture, in true perspective. Play sets stay frameless
   capture folder per set); per slot `scene_brief`, `scene_view` (`front` or `angled`), `scene_lines` (strings, or
   `{"text", "size", "color"}` for a hero number), `scene_sub` and `scene_captures`. Type defaults come from the brand
   block.
+- **What top listings do** (`references/store.md`, section 3): patterns from the first three shots of 680 top App
+  Store and Play listings across 17 app and game categories (frame-1 strategy, true hero numbers, set-level stories,
+  output as hero, game conventions) and what not to copy; Play's rules now note landscape sets for landscape games.
 - **Style checkpoint**: before any store design the driver shows the reference sheets in `references/store-styles/`
   (full creative, flat & normal, mixed) and asks which style the user wants, or something else they describe.
 - **Docs**: every app gets its own style of listing, with no common template and no house look; the platform rules for

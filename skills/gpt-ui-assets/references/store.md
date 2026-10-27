@@ -27,12 +27,30 @@ capture (`scene`, `compose`, section 5b).
 For a mixed set, `compose --flat` gives both routes the same headline and target size. Show the hero in the chosen
 style and get a yes before painting the rest.
 
-**Each store has its own rules, whatever the style.** Painted scenes and mixed sets are for the App Store, which
-accepts device frames and captions as long as the shots show the app in use ([screenshot specifications](https://developer.apple.com/help/app-store-connect/reference/app-information/screenshot-specifications/)).
-Google Play asks for screenshots of the interface alone: no device frames or added scenery, taglines under 20% of the
-image, no ranking or price words, and at least four 9:16 shots of 1080 px or more to qualify for promotion
-([preview assets](https://support.google.com/googleplay/android-developer/answer/9866151), [store listing best practices](https://support.google.com/googleplay/android-developer/answer/13393723)).
-So every style ships its Play set through `build` (frameless `play-phone`, 1440x2560), keeping the chosen style in the
+**Each store has its own rules, whatever the style.** Checked against the stores' own pages in October 2026:
+
+- **App Store** ([2.3.3](https://developer.apple.com/help/app-review/guideline-reference/2-3-3-screenshots),
+  [product page](https://developer.apple.com/app-store/product-page/),
+  [specifications](https://developer.apple.com/help/app-store-connect/reference/app-information/screenshot-specifications/)):
+  more than half of each device's shots must show the app in use, with its main functionality not obscured; marketing
+  text, art and device frames are allowed around it. The first one to three shots appear in search results when there
+  is no app preview, so they must carry the app's essence. Include a Dark Mode shot when the app has one. The 6.3"
+  1206x2622 size is required; 6.9" 1320x2868 is optional. iPhone Duo shots (1398x2034 outer, 2007x2853 inner) become
+  required in April 2027 for apps built with the iOS 27.1 SDK.
+- **Google Play** ([preview assets](https://support.google.com/googleplay/android-developer/answer/9866151),
+  [store listing best practices](https://support.google.com/googleplay/android-developer/answer/13393723)): phone
+  shots must show the actual in-app experience and put the UI first in the first three; taglines stay under 20% of the
+  image; no ranking, award, price or promo words ("Best", "#1", "Top", "New", "Free", "Sale") and no calls to action
+  ("Download now"); nothing skewed, stretched or blurry; no fingers on the device. At least four 9:16 shots of 1080 px
+  or more (three for games, 16:9 landscape or 9:16 portrait) make the listing eligible for Play's large
+  recommendation formats. Most action, sports, strategy and RPG games on Play lead with 16:9 landscape shots even
+  when their App Store set is portrait; puzzle, word, trivia and app listings stay 9:16. A game played in landscape
+  should ship landscape Play shots; the kit builds portrait phone sets only, so tell the user. Device frames are not
+  banned on phones (only Wear OS shots must be frameless), but Play discourages device imagery in the feature graphic.
+
+So painted scenes and mixed sets are for the App Store. Scenes are painted at iPhone proportions (about 1:2.17), so a
+9:16 crop would cut the phone or the headline, and an angled phone works against "UI first". Every style ships its Play
+set through `build` (frameless `play-phone`, 1440x2560, the UI as large as the card allows), keeping the chosen style's
 caption type and colours, and `compose` refuses Play targets.
 
 ```bash
@@ -101,6 +119,28 @@ The set is an ad, not a manual:
   the app does 4.93/5 (4.57 with the earlier wording), the judge would install from the new set in 11 of the 13 pairs
   it called the same way in both orders, and personality held (7 to 6).
 
+What top listings do. In October 2026 we read the first three shots of 680 listings: 20 top apps in each of 17 App
+Store and Play categories, apps and games. The rank reflects brand and spend, so treat these as options to offer, not
+proof of what converts; the app's own test (product page optimization, Play listing experiments) decides.
+- **Frame 1 does one job**: a promise (one line the user wants to be true), the product (straight into the UI), or
+  proof (awards, press, counts). Big brands spend it on proof. An app without proof leads with promise plus product.
+- **A true number beats an adjective** ("5000+ levels", "rent cars in 14,000+ cities"). It must be checkable in the
+  app; on Play a number is fine as a product fact, never as a ranking or download count.
+- **Set-level ideas**: one background or object running across frames 1-3, so the search row reads as one picture
+  (Play allows UI split across images); or a progression story (day 1 / day 7 / day 30, merge / cook / renovate)
+  instead of a feature list.
+- **Output as the hero**: photo, video, drawing and colouring apps show the result full-bleed, often before/after,
+  with no phone at all.
+- **Faces** for social, dating, language and party apps: the reaction is the product.
+- **Editorial restraint** (serif type, space, photography) reads as premium and stands out among saturated neighbours.
+  Small grey big-tech captions do not: they vanish at search size unless the brand carries the listing.
+- **Games**: the board full-bleed and frameless, with a 2-3 word imperative banner ("Clear the board!"); a VS frame
+  (two players, two scores) for competitive games; licensed games lead with the licence.
+- **Most listings stop at 7-8 shots** (games 6-7) of the 10 Apple allows, so the first three carry the decision.
+- **Don't copy what top brands get away with**: ranking, download and "free" claims or "Play now" on Play (they cost
+  recommendation placement), and mini-game or ad footage passed off as gameplay (neither store's "app in use" rule
+  allows it).
+
 Archetypes:
 - `framed`: the whole screen in a device (iOS) or a frameless card (Play).
 - `callout`: framed, plus 1-2 enlarged crops of the element that proves the caption. Each sits over its own place on
@@ -149,7 +189,8 @@ capture, so the palette, light and rendering match the app.
 
 - iOS sets use only iOS captures (2.3.10), in an iPhone frame with the Dynamic Island, or in an iPad frame.
   `--frame card` makes them frameless.
-- Play is always frameless (Play asks for no device imagery). It uses Android captures and falls back to iOS ones with
+- Play is always frameless: the UI fills the card, which Play asks for in the first three shots, and no iPhone ever
+  appears on an Android listing. It uses Android captures and falls back to iOS ones with
   a note, so capture Android for release.
 - Tablet sets appear when tablet captures exist (`--devices phone,tablet` to choose).
 - Headlines share one size per set: the largest at which every caption fits in two lines above the screen, up to 13%
@@ -193,21 +234,29 @@ for a fittable green screen: the fit is the IoU of the fitted quad against the g
 and an edge cut by the canvas is an error. It flags `GREEN-SPILL` (green outside the screen), `BUSY-TOP` (a busy
 headline band), `BAD-PERSPECTIVE` (an impossible screen view), `COPIES-REF` (a copied reference composition), `OCCLUDED` (props cover too much screen) and `SMALL-PHONE` (a screen that is too small), auto-picks the best passing variant, preferring one without occlusion or a small phone, and writes `scenes/<set>/scenes.json` and
 `scenes/<set>/review.jpg`, each variant shown with the real capture already keyed in. `--pick hero=2` overrides a pick
-with no API calls. `--slots a,b` narrows the run; `--jobs`, `--force`, `--model` and `--dry-run` work as elsewhere. A
+with no API calls (`--dry-run` shows the pick without saving it). `--slots a,b` narrows the run; `--jobs`, `--model` and
+`--dry-run` work as elsewhere, and `--force` moves a slot's old variants to `scenes/<set>/_replaced/` rather than
+deleting them. A painted scene with more green screens than the slot has captures is rejected. If the style reference
+has no readable green screen, the run says `COPIES-REF not checked` instead of passing it silently. A
 non-main set with `--look "<re-light prompt>"` (for example `--set night --look "moonlit night ..."`) edits each slot's
 picked main scene into a variant look with the same composition, and the look is saved in the storyboard.
 
 `store compose DIR` renders each picked scene per target: `ios-phone` 1206x2622, `ios-phone-large` 1320x2868,
-and `ios-phone-65` 1242x2688 (optional). Painted scenes are App Store only: a Play target is refused, because Play
-asks for the interface without device imagery or added backgrounds. `--targets` chooses them, and the crop keeps the top and every screen whole. It writes
-`scenes/<set>/build/<target>/NN_slot.png`, `sheet.jpg` and `report.json` with the fit and the flags `OVERLAP` (the
-headline runs into the phone), `LOW-FIT`, `LOW-CONTRAST` (under 3:1), `BAD-PERSPECTIVE`, `OCCLUDED` and `SMALL-PHONE`. `--captures` (or the storyboard's
+and `ios-phone-65` 1242x2688 (optional). Painted scenes are App Store only: a Play target is refused, because a 9:16 crop of
+a scene painted at iPhone proportions cuts the phone or the headline, and Play asks the first three shots to put the UI
+first. `--targets` chooses them, and the crop keeps the top and every screen whole. It writes
+`scenes/<set>/build/<target>/NN_slot.png`, `sheet.jpg`, `search_row.jpg` (the first three shots at search-result
+size) and `report.json` with the fit and the flags `OVERLAP` (the headline runs into the phone), `LOW-FIT`,
+`LOW-CONTRAST` (under 3:1), `BAD-PERSPECTIVE`, `OCCLUDED`, `SMALL-PHONE` and `SMALL-HEADLINE` (a first-three headline
+under 9 pt in search results). Each run clears the target folder's old shots first, a missing capture fails only
+its own shot, and green is despilled only around the screens, so green props elsewhere keep their colour. Shots
+over 8 MB are saved as JPEG. `--captures` (or the storyboard's
 `scenes.sets.<set>.captures`) points at another capture folder, for example dark-mode captures for a night set.
 `--slots` and `--out DIR` choose the slots and the output folder. `--clean-top` inpaints status-bar glyphs a model
 painted into the top strip. Scenes need OpenCV (`pip install opencv-python-headless`); the rest of the kit does not.
 
 For mixed sets, `store build DIR2 --no-caption --iphone-large` hides the caption, subhead and
-display lettering while keeping their layout. `store compose DIR --flat DIR2` uses picked scenes first and fills
+display lettering while keeping their layout. `store compose DIR --flat DIR2` (which needs that build's report) uses picked scenes first and fills
 other slots from that captionless build, in storyboard order, with the same `scenes.type` headline on both kinds.
 DIR2 may be DIR. Compose maps iOS 6.5-inch to the large build. The report records each shot's kind
 and how flat phone overlap was measured. A build report with captions is refused.
@@ -268,6 +317,10 @@ What a real app taught:
   sets match.
 - Copy honesty still applies: a caption must not claim "live" opponents over a screen that shows a labelled bot or a
   practice match.
+- Two worlds for one app are a ready-made test. Apple's [product page optimization](https://developer.apple.com/help/app-store-connect-analytics/acquisition/product-page-optimization/)
+  runs up to three alternate screenshot sets against the original and reports a winner at 90% confidence, and custom
+  product pages can give an ad or a link its own world. Paint the second world in its own project folder (same captures,
+  a new `scenes.style` and briefs), compose it, and suggest the test rather than guessing which world converts.
 - Play gets its own set from `build`: frameless 9:16 cards of the real interface, with the same captions in the
   scene set's type and colours so the two stores still look like one brand.
 - `store check` validates the HTML `build` route. The compose report covers scenes, whose sizes are exact by
