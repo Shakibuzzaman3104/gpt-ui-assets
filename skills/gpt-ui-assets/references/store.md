@@ -10,6 +10,25 @@ slot's own capture, so it keeps the app's style) and, optionally, the **display 
 read back by OCR and re-rolled until it spells the caption exactly). Captions, sizes, contrast and UI fidelity are
 checked locally.
 
+There are two routes to a listing. The first composites the captures in HTML behind GPT-painted art plates (`art`,
+`build`). The second has GPT paint the whole picture around a chroma-green screen that the kit fills with the real
+capture (`scene`, `compose`, section 5b).
+
+**Ask for the style first.** Before `plan`, `art` or `scene`, show the user the reference sheets in
+`references/store-styles/` and ask which style they want. Skip the question only when the request already says.
+
+| Style | Sheet | Route |
+|---|---|---|
+| Full creative | `full-creative.jpg` | `scene` + `compose` for every slot; mix front-facing and angled phones (`scene_view`) |
+| Flat & normal | `flat-normal.jpg` | `art` + `build`: upright phones on clean or plated backgrounds, headline above |
+| Mixed | `mixed.jpg`, `mixed-bedside.jpg` | Both in one set, alternating painted and flat slots (the hero is usually painted) |
+| Something else | none | Whatever the user describes; the two routes combine freely |
+
+For a mixed set, render both routes at the same size per store. `compose` makes Play shots at 1080x2160, because a
+9:16 crop cuts a painted phone; fit the flat Play shots to 1080x2160 as well (for example by extending the plain
+band above the headline) so the carousel does not jump between aspect ratios. Show the hero in the chosen style
+and get a yes before painting the rest.
+
 ```bash
 python3 $K store capture store --name hunt                # current screen of the booted simulator / device
 python3 $K store capture store --from ~/Desktop/shots      # or import real captures (stems become names)
@@ -21,6 +40,8 @@ python3 $K store build store                               # ios-phone + play-ph
 python3 $K store check store                               # store rules; exits 1 on a FAIL
 python3 $K store check store --idea                        # + can the pictures alone say what the app does?
 python3 $K store feature store --logo brand/logo.png       # Play feature graphic 1024x500
+python3 $K store scene store                               # painted scenes, one per slot with a scene_brief
+python3 $K store compose store                             # scenes per target, with fit and overlap checks
 ```
 
 ## 1. Capture
@@ -138,6 +159,106 @@ capture, so the palette, light and rendering match the app.
 - Output is 24-bit RGB with no alpha, as PNG, or JPEG above Play's 8 MB. Each target also gets `alt.txt` (Play alt
   text), `sheet.jpg` and, for `ios-phone`, `search_row.jpg`: the first three shots at search-result size. **Read the
   sheets and the search row before handing the set over.**
+
+## 5b. Painted scenes (green screen)
+
+The second route paints the whole picture. `store scene DIR` has GPT paint each slot's listing image as one scene: the
+app's world, props and a big tilted phone whose display is flat chroma green (`#00FF00`) and carries no text. Locally
+the kit finds the green screen, fits its four edges in true perspective (sides may converge; each edge is its own
+fitted line and the corners are where they meet), warps the app's real capture into the fitted quad so objects painted
+in front of the phone stay in front, removes green spill, and sets the headline in real type from Google Fonts. The
+screen is still the app's own pixels and is never sent through the image model, so the rule at the top of this file
+holds.
+
+```bash
+python3 $K store scene store --variants 2 --style-ref art/scene_hero_v1.png
+python3 $K store scene store --slots hero,duel --pick hero=2   # re-pick without API calls
+python3 $K store scene store --set night --look "moonlit night, cool rim light, wet stone"
+python3 $K store compose store                                 # ios-phone, ios-phone-large, play-phone
+python3 $K store compose store --targets ios-phone,play-phone
+python3 $K store compose store --set night --captures captures/ios-phone-dark
+python3 $K store compose store --clean-top                     # inpaint painted status-bar glyphs
+```
+
+`store scene DIR` paints `scenes/<set>/<slot>_v<n>.png` for every slot with a `scene_brief`. Each variant is checked
+for a fittable green screen: the fit is the IoU of the fitted quad against the green area and must be at least 0.85,
+and an edge cut by the canvas is an error. It flags `GREEN-SPILL` (green outside the screen), `BUSY-TOP` (a busy
+headline band), `BAD-PERSPECTIVE` (an impossible screen view), `COPIES-REF` (a copied reference composition) and `SMALL-PHONE` (a screen that is too small), auto-picks the best passing variant, and writes `scenes/<set>/scenes.json` and
+`scenes/<set>/review.jpg`, each variant shown with the real capture already keyed in. `--pick hero=2` overrides a pick
+with no API calls. `--slots a,b` narrows the run; `--jobs`, `--force`, `--model` and `--dry-run` work as elsewhere. A
+non-main set with `--look "<re-light prompt>"` (for example `--set night --look "moonlit night ..."`) edits each slot's
+picked main scene into a variant look with the same composition, and the look is saved in the storyboard.
+
+`store compose DIR` renders each picked scene per target: `ios-phone` 1206x2622, `ios-phone-large` 1320x2868,
+`ios-phone-65` 1242x2688 (optional) and `play-phone` 1080x2160 (Play's 2:1 limit; a 9:16 crop cuts the painted
+phone). `--targets` chooses them, and the crop keeps the top and every screen whole. It writes
+`scenes/<set>/build/<target>/NN_slot.png`, `sheet.jpg` and `report.json` with the fit and the flags `OVERLAP` (the
+headline runs into the phone), `LOW-FIT`, `LOW-CONTRAST` (under 3:1), `BAD-PERSPECTIVE` and `SMALL-PHONE`. `--captures` (or the storyboard's
+`scenes.sets.<set>.captures`) points at another capture folder, for example dark-mode captures for a night set.
+`--slots` and `--out DIR` choose the slots and the output folder. `--clean-top` inpaints status-bar glyphs a model
+painted into the top strip. Scenes need OpenCV (`pip install opencv-python-headless`); the rest of the kit does not.
+
+`storyboard.json` gains a `scenes` block:
+
+```json
+"scenes": {
+  "style": "<this app's own art direction for the whole set>",
+  "headroom": 0.22,
+  "style_ref": "optional/path.png",
+  "type": {"font": "Outfit", "weight": 900, "sub_font": "DM Sans", "sub_weight": 700, "color": "#FFFFFF",
+           "accent": "#FFC23D", "accent_from": 1, "shadow": "#1F1B24", "glow": true, "align": "left",
+           "size": 0.127, "sub_size": 0.041, "top": 0.042, "margin": 0.064, "line_gap": 0.94, "case": "none"},
+  "sets": {"night": {"look": "...", "captures": "captures/ios-phone-dark"}}
+}
+```
+
+Per slot: `scene_brief`, `scene_view` (`"front"` or `"angled"`), `scene_lines`, `scene_sub` and `scene_captures` (2+
+screens, keyed left to right).
+`scene_lines` holds strings, or `{"text", "size", "color"}` where `size` is a multiplier and `color` is `accent`,
+`color` or a `#hex`, for a hero number such as a big "4,500" over "solo levels". Every `type` key is optional: the
+numbers above are the defaults, and fonts and colours default to the brand block. Sizes are fractions of the width,
+`top` of the height, and lines from index `accent_from` on take the accent colour.
+
+**Every app gets its own style of listing.** There is no common template and no house look for scenes. The driver
+invents the art direction per app from what the app is: its world, its audience and its brand. A word duel game might
+get sandstone letter cubes tumbling through a painted canyon with a VS medal; a sleep app gets something entirely
+different that fits it. Vary the composition between slots (tilt, scale, props, one or two screens, a hero number
+slot), choose headline typography per app, and treat every example here as an illustration, never a template. There is
+always room for creativity.
+
+What a real app taught:
+
+- No impossible perspective. The fit only says the quad matches the green; it does not say a camera could see a rectangle that way. The kit recovers the screen's true shape from the four corners (Zhang-He rectangle recovery) and fails a variant whose implied aspect is off by more than ~15% or that no camera can produce (BAD-PERSPECTIVE); compose refuses such a shot. Before presenting any set, also look at each shot at half size: the UI's rows and the phone's edges must agree.
+- A style reference carries the look, not the layout. Edits of a reference tend to repeat its composition, so the kit tells the model to paint a new camera and pose and fails variants whose screen sits where the reference's does (COPIES-REF). Still read the review: two slots that look alike waste a slot.
+- Props may cover a corner, never a whole screen edge. A prop across an edge becomes that edge for the fitter and skews the UI; the prompt says so, and the perspective check catches what slips through.
+- The phone is big. Its screen should span about 55-60% of the image height (about a quarter of the image area);
+  the world frames it, never shrinks it. Briefs that say a size are not enough, the model still shrinks the phone,
+  so the kit asks for a big phone in every prompt and flags `SMALL-PHONE` (screen under 42% of the height or 16%
+  of the area) and never auto-picks a small one when a big one passed. For slots with two or more screens, the
+  height threshold is 40%. Re-roll small ones.
+- Mix front-facing and angled shots. A set of only tilted phones reads as decoration; give two or more slots
+  `"scene_view": "front"` (the phone square to the camera, screen flat and fully readable) and keep the angled ones for
+  energy. The hero may be either.
+- Write `scene_brief` per slot as a scene: the phone, props that echo that slot's caption, the background and the
+  light. Say "whole phone inside the frame" and keep the headroom clear. It is in the prompt, but briefs that crowd the
+  top fail `BUSY-TOP`.
+- Paint with `--style-ref` (the first approved scene, or a concept image the user liked) so the set keeps one look.
+  Describing a style in words drifts.
+- Read `review.jpg` before composing. Re-roll a slot whose fit fails (a cut edge, a screen covered by props) rather
+  than forcing it. A prop may overlap a corner; the fitter tolerates that.
+- Prefer the app's real moments in the captures (mid-action, a win, a staged letter about to score) and stage them
+  deliberately. A dull capture undoes a beautiful scene.
+- Dark mode: capture the app in dark appearance into its own folder, then `store scene DIR --set night --look "..."`
+  and `store compose DIR --set night --captures <folder>`. The night scenes keep the composition, so the light and dark
+  sets match.
+- Copy honesty still applies: a caption must not claim "live" opponents over a screen that shows a labelled bot or a
+  practice match.
+- Play: frameless cards remain the safest route for Play, which asks for no device imagery in screenshots.
+  Painted-phone scenes are a creative choice, and the 1080x2160 output stays within Play's 2:1 limit.
+- `store check` validates the HTML `build` route. The compose report covers scenes, whose sizes are exact by
+  construction.
+- The route was proven on WordFight: perspective fit IoU 0.94-0.98 on 8 scenes, and a light set and a moonlit dark set
+  from one composition.
 
 ## 6. Check
 

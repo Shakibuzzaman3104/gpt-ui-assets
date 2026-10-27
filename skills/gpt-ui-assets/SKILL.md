@@ -3,7 +3,7 @@ name: gpt-ui-assets
 description: Design app, tablet, foldable, desktop-app and website screens with OpenAI's GPT image and vision models (API key or the local Codex CLI), then turn an approved design into production assets redrawn 1:1, never cropped: SVG/VectorDrawable icons, PNG/WebP illustrations, launcher icons, frame, Lottie and AVD animation, smoke/steam/rain loops, theme code and fonts measured from the pixels, a screenshot diff of the built UI, and App Store / Google Play screenshot sets composited from real captures. Also writes GPT-researched feature blueprints. Use whenever the user wants GPT/ChatGPT to design screens, icons, illustrations or an app icon; approves a GPT design ("go ahead", "build it", "give me the assets"); wants assets used in the UI; wants an animated drawable, Lottie or AVD from existing art; wants store screenshots or a Play feature graphic; or complains that GPT cropped assets out of a mockup. Not for go/no-go idea validation, or design direction without GPT.
 license: MIT
 metadata:
-  version: 5.3.0
+  version: 5.4.0
 ---
 
 # GPT UI assets
@@ -65,7 +65,7 @@ story.
 | 5. Animation | Art should move in place, pop, flicker or loop | `frames`, `vectorize`, `rig`, `animate` | `references/animation.md` |
 | 5. Sequences | Something travels: smoke, steam, drops, spray, embers | `sequence layout → plan → render → build → reroll` | `references/sequence.md` |
 | 6. Build 1:1 | Writing the UI code from the design | `fonts`, `redline`, `tokens`, then `compare` against a screenshot | `references/build-ui.md` |
-| 7. Store screenshots | App Store / Play screenshots or a feature graphic for a built app | `store capture`, `store research`, `store plan`, `store art`, `store build`, `store check`, `store feature` | `references/store.md` |
+| 7. Store screenshots | App Store / Play screenshots or a feature graphic for a built app | `store capture`, `store research`, `store plan`, `store art`, `store build`, `store check`, `store feature`, `store scene`, `store compose` | `references/store.md` |
 
 A typical "design a screen and give me the assets" run:
 ```bash
@@ -121,6 +121,9 @@ python3 $K compare build/home shot.png               # also flags wrong corner r
    region back. Never ship a raw edit as a state frame.
 11. **GPT renders; it does not animate.** Code or the kit decides motion (`--procedural`, `sequence` layouts, `rig`),
     and GPT paints only the moving layer.
+12. **Store listings get an art direction invented for that app.** There is no common template and no house look for
+    store scenes: the world, audience and brand of the app decide the picture, and every example is an illustration,
+    never a template. Never present a store shot with BAD-PERSPECTIVE, SMALL-PHONE or LOW-FIT; read every shot at half size first.
 
 ## Working with the user
 
@@ -143,6 +146,11 @@ python3 $K compare build/home shot.png               # also flags wrong corner r
   4. **After the user approves**, list the next steps and let them choose: the next screens (`--style-ref`), other
      form factors (`--set ... --anchor`), the assets (phases 2–4), the app icon, the 1:1 build, or, once the app
      runs, the store screenshots (phase 7).
+- **Store listing style checkpoint.** Before planning or painting any store shot, show the reference sheets in
+  `references/store-styles/` (`full-creative.jpg`, `flat-normal.jpg`, `mixed.jpg`, `mixed-bedside.jpg`) and ask which style the user wants:
+  **full creative** (every slot a painted scene), **flat & normal** (upright phones on clean backgrounds), **mixed**
+  (both in one set), or **something else** they describe. Skip it only when the request already says. Then show the
+  hero in the chosen style before painting the rest of the set.
 - Walk the user through `blueprint.md`, especially the MVP cut, before designing every screen.
 - App-icon concepts, animation routes and whether to ship platform icons (Material Symbols / SF Symbols) instead of the
   generated SVGs are the user's call. Present the options with the review sheet.
@@ -171,5 +179,5 @@ python3 $K compare build/home shot.png               # also flags wrong corner r
 | `references/animation.md` | `frames`, `vectorize`, `rig`, `animate` |
 | `references/sequence.md` | `sequence` (layout-driven loops, EbSynth) |
 | `references/build-ui.md` | `fonts`, `redline`, `tokens`, `compare` |
-| `references/store.md` | `store` (capture, research, plan, art, build, check, feature) |
+| `references/store.md` | `store` (capture, research, plan, art, build, check, feature, scene, compose) |
 | `references/api-findings.md` | The raw measurements behind every rule; read only to settle a doubt |

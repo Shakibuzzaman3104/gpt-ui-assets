@@ -1608,7 +1608,7 @@ def cmd_store_check(a):
 
 def _store_parsers(sub):
     p = sub.add_parser("store", help="App Store / Google Play screenshots from real captures "
-                                     "(stages: capture, research, plan, art, build, check, feature)")
+                                     "(stages: capture, research, plan, art, build, check, feature, scene, compose)")
     ssub = p.add_subparsers(dest="scmd", required=True)
     q = ssub.add_parser("capture", help="capture the booted simulator/device with a clean status bar, or import a folder")
     q.add_argument("dir", help="store project dir (captures/, captures.json)")
@@ -1689,3 +1689,5 @@ def _store_parsers(sub):
     q.add_argument("--no-webfonts", dest="webfonts", action="store_false")
     q.add_argument("--timeout", type=_pos_float, default=60)
     q.set_defaults(fn=cmd_store_feature)
+    from .scenes import _scene_parsers
+    _scene_parsers(ssub)
