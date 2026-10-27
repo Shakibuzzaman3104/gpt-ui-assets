@@ -658,7 +658,7 @@ def cmd_store_compose(a):
     for target in targets:
         if target not in SCENE_TARGETS:
             if target.startswith("play"):
-                raise ValueError("store compose: painted scenes are for the App Store only; Google Play asks for interface-only screenshots without device frames or added backgrounds. Build Play shots with `store build` (frameless play-phone, 9:16).")
+                raise ValueError("store compose: painted scenes are for the App Store only; scenes are painted at iPhone proportions, and Google Play wants 9:16 shots that put the UI first. Build Play shots with `store build` (frameless play-phone, 9:16).")
             raise ValueError(f"unknown scene target {target}; available targets: {', '.join(SCENE_TARGETS)}")
     _need_cv()
     d = Path(a.dir)
