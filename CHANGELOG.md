@@ -4,44 +4,47 @@ All notable changes to gpt-ui-assets. Versions follow [semantic versioning](http
 
 ## 5.4.0 (2026-10-27)
 
-A second store screenshot route: GPT paints the whole listing image around a chroma-green screen that the kit fills
-with the app's real capture, in true perspective.
+A second store screenshot route: GPT paints the whole App Store image around a chroma-green screen that the kit
+fills with the app's real capture, in true perspective. Play sets stay frameless, as Play's guidance asks.
 
 ### Added
-- **Scene references and props:** reference edits request new compositions and flag copies `COPIES-REF`; prompts keep screen edges visible to prevent props skewing the fit.
-- **Perspective check:** scene validates the recovered screen shape against the capture, and compose refuses shots flagged `BAD-PERSPECTIVE`.
-- **Big phones:** scene prompts demand a dominant phone, and scene and compose flag `SMALL-PHONE` using screen height
-  and area. Auto-pick prefers a big passing variant.
-- **`store scene`**: GPT paints each slot's whole listing image (the app's world, props, a big tilted phone) with the
+- **`store scene`**: GPT paints each slot's whole listing image (the app's world, props, a big phone) with the
   phone's display flat chroma green (`#00FF00`) and no text. Locally the kit finds the green screen, fits its four
   edges in true perspective (each edge a fitted line, the corners their intersections), warps the real capture into it
   so props painted in front of the phone stay in front, removes green spill, and sets the headline in real type from
-  Google Fonts. The UI is never sent through the image model. Each variant is checked for a fittable screen (IoU of
-  the fitted quad against the green area ≥ 0.85; an edge cut by the canvas is an error) and flagged `GREEN-SPILL` and
-  `BUSY-TOP`; the best passing variant is picked and `scenes.json` and `review.jpg` are written, each variant shown
-  with the real capture already keyed in. `--pick` overrides a pick without API calls, and `--style-ref` keeps one look
-  across the set.
-- **`store compose`**: renders each picked scene per target (`ios-phone` 1206x2622, `ios-phone-large` 1320x2868,
-  `ios-phone-65` 1242x2688, `play-phone` 1080x2160) and writes `NN_slot.png`, `sheet.jpg` and `report.json` with the
-  fit and the flags `OVERLAP` (the headline runs into the phone), `LOW-FIT` and `LOW-CONTRAST` (under 3:1).
+  Google Fonts. The UI is never sent through the image model. The best passing variant is picked and `scenes.json`
+  and `review.jpg` are written, each variant shown with the real capture already keyed in. `--pick` overrides a pick
+  without API calls, and `--style-ref` keeps one look across the set.
+- **Scene checks**, each a flag on the variant and in the compose report:
+  - fit: the IoU of the fitted quad against the green area must be at least 0.85, and an edge cut by the canvas is
+    an error (`LOW-FIT`);
+  - `BAD-PERSPECTIVE`: the screen's true shape is recovered from its corners (Zhang-He rectangle recovery), and a view
+    no camera could take, or an implied aspect more than ~15% off the capture's, fails; compose refuses the shot;
+  - `SMALL-PHONE`: the screen under 42% of the image height or 16% of its area (40% for two or more screens);
+  - `OCCLUDED`: props hide over 6% of the screen, or over 10% of its bottom quarter where CTAs and tab bars sit;
+  - `COPIES-REF`: a style-reference edit that repeats the reference's composition;
+  - `GREEN-SPILL`, `BUSY-TOP` (a busy headline band), and in compose `OVERLAP` and `LOW-CONTRAST` (under 3:1).
+- **`store compose`**: renders each picked scene per App Store target (`ios-phone` 1206x2622, `ios-phone-large`
+  1320x2868, `ios-phone-65` 1242x2688) into `NN_slot.png`, `sheet.jpg` and `report.json`. A Play target is refused.
   `--captures` points a set at another capture folder, such as dark-mode captures for a night set, and `--clean-top`
   inpaints status-bar glyphs a model painted into the top strip. Needs OpenCV; the rest of the kit does not.
-- **Look sets.** `store scene --set night --look "<re-light prompt>"` edits each slot's picked main scene into a
-  variant look with the same composition, and saves the look in the storyboard, so a light set and a moonlit dark set
-  come from one set of scenes.
+- **Mixed sets**: `store build --no-caption` renders flat slots with their captions hidden but their layout kept, and
+  `store compose --flat DIR` fills unpainted slots from that build, in storyboard order, with one headline style
+  across painted and flat shots.
+- **Look sets**: `store scene --set night --look "<re-light prompt>"` edits each slot's picked main scene into a
+  variant look with the same composition, so a light set and a moonlit dark set come from one set of scenes.
 - **Storyboard `scenes` block**: `style`, `headroom`, `style_ref`, the `type` block and `sets` (a look prompt and a
-  capture folder per set); per slot `scene_brief`, `scene_lines` (strings, or `{"text", "size", "color"}` for a hero
-  number), `scene_sub` and `scene_captures`. Type defaults come from the brand block.
-- **Style checkpoint:** before any store design the driver shows the reference sheets in
-  `references/store-styles/` (full creative, flat & normal, mixed) and asks which style the user wants, or something
-  else they describe.
-- `scene_view` per slot (`front` or `angled`); the docs ask for a mix of front-facing and angled shots.
-- **Docs:** the creative principle in `store.md` and `SKILL.md`. Every app gets its own style of listing, with no
-  common template and no house look for scenes, and every example is an illustration rather than a template.
-  `store.md` also records the rules learned on the first real app.
+  capture folder per set); per slot `scene_brief`, `scene_view` (`front` or `angled`), `scene_lines` (strings, or
+  `{"text", "size", "color"}` for a hero number), `scene_sub` and `scene_captures`. Type defaults come from the brand
+  block.
+- **Style checkpoint**: before any store design the driver shows the reference sheets in `references/store-styles/`
+  (full creative, flat & normal, mixed) and asks which style the user wants, or something else they describe.
+- **Docs**: every app gets its own style of listing, with no common template and no house look; the platform rules for
+  each store, with sources; and the lessons from three real apps (big phones, front and angled shots mixed, props on
+  a corner only, honest captions).
 
-Proven on WordFight: perspective fit IoU 0.94-0.98 on 8 scenes, and a light set and a moonlit dark set from one
-composition.
+Proven on a word duel game (perspective fit IoU 0.94-0.98 on 8 scenes, a light and a moonlit dark set from one
+composition), a sleep-sounds app (two mixed sets) and a daily-quotes app (a full creative set).
 
 ## 5.3.0 (2026-10-21)
 
@@ -78,7 +81,7 @@ fit check for small phones and large text, and design checkpoints.
     touches the caption or hides more than 3% of the screen. Play reads `calls_play` / `cards_play` / `floats_play`
     first for Android layouts.
 
-  On WordFight's captures: UI fidelity mean ΔE 0.5-1.2, captions 6.2:1 or better, and 6/6 lettering passed OCR on
+  On a word game's captures: UI fidelity mean ΔE 0.5-1.2, captions 6.2:1 or better, and 6/6 lettering passed OCR on
   the first try. In the probes, a GPT-redrawn store shot drifted to mean ΔE 15.3, which is why the UI is never sent
   through an image model.
 - **Critique categories `coherence`, `state` and `copy`.**

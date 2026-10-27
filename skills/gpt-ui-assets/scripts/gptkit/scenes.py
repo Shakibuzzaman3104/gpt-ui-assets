@@ -14,9 +14,11 @@ from .fonts import _gf_ttf
 from . import store
 
 SCENE_TARGETS = {"ios-phone": (1206, 2622), "ios-phone-large": (1320, 2868),
-                 "ios-phone-65": (1242, 2688), "play-phone": (1080, 2160)}
+                 "ios-phone-65": (1242, 2688)}
 MIN_SCREEN_AREA = 0.16
 MIN_SCREEN_HEIGHT = 0.42
+MAX_OCCLUDED = 0.06
+MAX_OCCLUDED_BOTTOM = 0.10
 PERSPECTIVE_RATIO = (0.85, 1.18)
 AFFINE_RATIO = (0.88, 1.14)
 MIN_FOCAL = 0.6
@@ -175,6 +177,22 @@ def _fits(alpha, quads):
     return [quad_fit((lab == i).astype(np.float32), q) for i, q in zip(ids, quads)]
 
 
+def _occlusion(alpha, quads):
+    import cv2
+    values = []
+    for q in quads:
+        region = np.zeros(alpha.shape, np.uint8)
+        cv2.fillConvexPoly(region, q.astype(np.int32), 1)
+        mask = region.astype(bool)
+        bottom = mask & (np.arange(alpha.shape[0])[:, None] >= q[:, 1].min() + 0.75 * np.ptp(q[:, 1]))
+        values.append((1 - float((alpha[mask] > 0.3).mean()), 1 - float((alpha[bottom] > 0.3).mean())))
+    return [max(v[i] for v in values) for i in range(2)]
+
+
+def _occluded(values):
+    return values[0] > MAX_OCCLUDED or values[1] > MAX_OCCLUDED_BOTTOM
+
+
 def key_capture(scene, captures, pad=3):
     import cv2
     rgb = np.asarray(scene.convert("RGB"))
@@ -231,21 +249,15 @@ def _slots(sb, arg):
     return slots
 
 
-def _capture(d, sb, setname, name, target, folder=None):
+def _capture(d, sb, setname, name, folder=None):
     folder = folder or sb.get("scenes", {}).get("sets", {}).get(setname, {}).get("captures")
     if folder:
         p = Path(folder)
         p = (p if p.is_absolute() else d / p) / (name + ".png")
     else:
         caps = store._captures(d)
-        def find(platform):
-            return next((c for c in caps if c["name"] == name and c["platform"] == platform and
-                         c["device"] == "phone" and c["orientation"] == "portrait"), None)
-        c = find("android") if target == "play-phone" else find("ios")
-        if c is None and target == "play-phone":
-            c = find("ios")
-            if c:
-                print(f"store compose: {name}: using iOS capture for Play")
+        c = next((c for c in caps if c["name"] == name and c["platform"] == "ios" and
+                  c["device"] == "phone" and c["orientation"] == "portrait"), None)
         p = d / c["file"] if c else None
     if p is None or not p.is_file():
         raise ValueError(f"missing capture {name!r}")
@@ -279,6 +291,8 @@ def _check(scene, count, head, aspects=None):
         cv2.fillConvexPoly(region, (c + (q - c) * 1.04).astype(np.int32), 1)
     screen, small = _screen_size(quads, scene.width, scene.height)
     flags = ["SMALL-PHONE"] if small else []
+    if _occluded(_occlusion(alpha, quads)):
+        flags.append("OCCLUDED")
     perspectives = _perspectives(quads, scene.width, scene.height, aspects if aspects is not None else [DEFAULT_ASPECT] * count)
     bad = [p for p in perspectives if not p["ok"]]
     if bad:
@@ -317,13 +331,15 @@ def _review(d, sb, setname, manifest, out):
             im = Image.open(p).convert("RGB")
             if v["error"] is None:
                 try:
-                    caps = [_capture(d, sb, setname, n, "ios-phone") for n in _names(slot)]
+                    caps = [_capture(d, sb, setname, n) for n in _names(slot)]
                     im = key_capture(im, caps)[0]
                 except ValueError:
                     pass
             ims.append(im)
             persp = v.get("perspective")
             label = f" persp {persp['ratio']:.2f}" if persp and persp["ratio"] is not None else ""
+            occ = v.get("occluded")
+            label += f" occ {occ[0]:.2f}/{occ[1]:.2f}" if occ else ""
             labels.append(f"{v['file']}{'*' if entry.get('pick') == v['file'] else ''}: "
                           f"{v['error'] or v['fit']} screen {v.get('screen')}{label} {' '.join(v['flags'])}")
         if ims:
@@ -433,26 +449,28 @@ def cmd_store_scene(a):
             im = _decode_result(raw, f"scene {slot['id']}").convert("RGB")
         except Exception as e:  # one failed call must not lose the other variants
             return slot["id"], {"file": file, "fit": None, "error": f"image call failed: {e}", "flags": [],
-                                "screen": None, "perspective": None}
+                                "screen": None, "perspective": None, "occluded": None}
         im.save(out / file)
         aspects = []
         for name in _names(slot):
             try:
-                cap = _capture(d, sb, a.set, name, "ios-phone")
+                cap = _capture(d, sb, a.set, name)
                 aspects.append(cap.width / cap.height)
             except ValueError:
                 aspects.append(DEFAULT_ASPECT)
         fit, error, flags, screen = _check(im, len(aspects), head, aspects)
         perspective = None
+        occluded = None
         if fit is not None:
             quads = screen_quads(green_alpha(np.asarray(im)), len(aspects))
+            occluded = [round(v, 3) for v in _occlusion(green_alpha(np.asarray(im)), quads)]
             if ref_quad is not None and slot["id"] not in ref_slots and _copies_ref(quads, im.size, ref_quad, ref_size):
                 error = "copies the style reference's composition"
                 flags.append("COPIES-REF")
             p = _worst_perspective(_perspectives(quads, im.width, im.height, aspects))
             perspective = {"ratio": p["aspect"], "skew": p["skew"], "focal": p["focal"]}
         return slot["id"], {"file": file, "fit": fit, "error": error, "flags": flags, "screen": screen,
-                            "perspective": perspective}
+                            "perspective": perspective, "occluded": occluded}
     with cf.ThreadPoolExecutor(max_workers=a.jobs) as ex:
         for sid, v in ex.map(job, work):
             entry = manifest["slots"].setdefault(sid, {"variants": [], "pick": None})
@@ -460,11 +478,13 @@ def cmd_store_scene(a):
             status = f"FAIL {v['error']}" if v["error"] else f"fit {v['fit']:.2f} screen {v['screen']:.2f}"
             p = v.get("perspective")
             label = f" persp {p['ratio']:.2f}" if p and p["ratio"] is not None else ""
+            occ = v.get("occluded")
+            label += f" occ {occ[0]:.2f}/{occ[1]:.2f}" if occ else ""
             print(f"{a.set}/{v['file']} {status}{label} {' '.join(v['flags'])}".rstrip())
     for entry in manifest["slots"].values():
         if not entry.get("pick") or not (out / entry["pick"]).is_file():
             passing = [v for v in entry["variants"] if v["error"] is None and v["fit"] >= 0.85 and (out / v["file"]).exists()]
-            entry["pick"] = max(passing, key=lambda v: ("SMALL-PHONE" not in v["flags"], v["fit"]))["file"] if passing else None
+            entry["pick"] = max(passing, key=lambda v: (not any(f in v["flags"] for f in ("SMALL-PHONE", "OCCLUDED")), v["fit"]))["file"] if passing else None
     (out / "scenes.json").write_text(json.dumps(manifest, indent=2))
     _review(d, sb, a.set, manifest, out)
 
@@ -572,18 +592,59 @@ def _headline(canvas, slot, sb, notes):
     return bottom, low
 
 
+def _flat(d, report, target, sid, size, head):
+    mapped = {"ios-phone": "ios-phone", "ios-phone-large": "ios-phone-large",
+              "ios-phone-65": "ios-phone-large"}[target]
+    def find(key):
+        shots = report.get("targets", {}).get(key, {}).get("shots", [])
+        entry = next((s for s in shots if s.get("slot") == sid), None)
+        path = d / entry["file"] if entry and entry.get("file") else None
+        if not path or not path.is_file():
+            path = next(iter(sorted((d / "build" / key).glob(f"[0-9][0-9]_{sid}.png"))), None)
+        return path, entry
+    path, entry = find(mapped)
+    notes = []
+    if not path:
+        return None
+    im = Image.open(path).convert("RGB")
+    scale = max(size[0] / im.width, size[1] / im.height)
+    im = im.resize((round(im.width * scale), round(im.height * scale)), Image.LANCZOS)
+    left, top = (im.width - size[0]) // 2, (im.height - size[1]) // 2
+    im = im.crop((left, top, left + size[0], top + size[1]))
+    box = entry.get("screen_box") if entry else None
+    if box:
+        phone_top = box["y"] * scale - top
+        notes.append("phone top from build screen box")
+    else:
+        a = np.asarray(im, dtype=np.int16)
+        bg = np.median(a[0], axis=0)
+        diff = np.max(np.abs(a - bg), axis=2)
+        rows = np.flatnonzero((diff > 35).mean(axis=1)[int(head * size[1]):] > 0.05)
+        phone_top = int(head * size[1]) + int(rows[0]) if len(rows) else size[1]
+        notes.append("phone top detected from background difference" if len(rows) else "phone top not detected")
+    return im, phone_top, notes
+
+
 def cmd_store_compose(a):
+    targets = a.targets.split(",")
+    for target in targets:
+        if target not in SCENE_TARGETS:
+            if target.startswith("play"):
+                raise ValueError("store compose: painted scenes are for the App Store only; Google Play asks for interface-only screenshots without device frames or added backgrounds. Build Play shots with `store build` (frameless play-phone, 9:16).")
+            raise ValueError(f"unknown scene target {target}; available targets: {', '.join(SCENE_TARGETS)}")
     _need_cv()
     d = Path(a.dir)
     sb = store._storyboard(d)
     slots = _slots(sb, a.slots)
     source = d / "scenes" / a.set
     manifest = _load_manifest(source / "scenes.json", a.set)
+    flat_dir = Path(a.flat) if a.flat else None
+    flat_report = {}
+    if flat_dir and (flat_dir / "build" / "report.json").exists():
+        flat_report = json.loads((flat_dir / "build" / "report.json").read_text())
+        if not flat_report.get("no_caption"):
+            raise ValueError(f"store compose: flat build has captions; run `store build {flat_dir} --no-caption` first")
     out = Path(a.out) if a.out else source / "build"
-    targets = a.targets.split(",")
-    for target in targets:
-        if target not in SCENE_TARGETS:
-            raise ValueError(f"unknown scene target {target}")
     report = {}
     for target in targets:
         W, H = SCENE_TARGETS[target]
@@ -595,11 +656,26 @@ def cmd_store_compose(a):
             sid = slot["id"]
             pick = manifest["slots"].get(sid, {}).get("pick")
             if not pick or not (source / pick).exists():
-                print(f"store compose: {target}/{sid}: no picked scene")
+                flat = _flat(flat_dir, flat_report, target, sid, (W, H), sb.get("scenes", {}).get("headroom", 0.22)) if flat_dir else None
+                if not flat:
+                    print(f"store compose: {target}/{sid}: no picked scene or flat build render; skipped")
+                    continue
+                im, phone_top, notes = flat
+                flags = []
+                canvas = im.convert("RGBA")
+                bottom, low = _headline(canvas, slot, sb, notes)
+                if bottom > phone_top - H * 0.01:
+                    flags.append("OVERLAP")
+                if low:
+                    flags.append("LOW-CONTRAST")
+                index = next(i for i, s in enumerate(sb["slots"], 1) if s["id"] == sid)
+                path = store._save_store_png(canvas, folder / f"{index:02d}_{sid}.png")
+                files.append(path)
+                report[target][sid] = {"file": str(path.relative_to(out)), "kind": "flat", "fit": None, "flags": flags, "notes": notes}
                 continue
             notes, flags = [], []
             im = Image.open(source / pick).convert("RGB")
-            caps = [_capture(d, sb, a.set, name, target, a.captures) for name in _names(slot)]
+            caps = [_capture(d, sb, a.set, name, a.captures) for name in _names(slot)]
             scale = max(W / im.width, H / im.height)
             im = im.resize((round(im.width * scale), round(im.height * scale)), Image.LANCZOS)
             try:
@@ -613,9 +689,11 @@ def cmd_store_compose(a):
                 im = im.crop((left, offset, left + W, offset + H))
                 if a.clean_top:
                     im = clear_status_bar(im)
+                alpha = green_alpha(np.asarray(im))
+                occ = _occlusion(alpha, screen_quads(alpha, len(caps)))
                 im, qs, fits = key_capture(im, caps)
             except ValueError as e:
-                report[target][sid] = {"file": None, "fit": None, "flags": [], "notes": [str(e)]}
+                report[target][sid] = {"file": None, "kind": "painted", "fit": None, "flags": [], "notes": [str(e)]}
                 print(f"store compose: {target}/{sid}: {e}")
                 continue
             fit = round(min(fits), 3)
@@ -623,11 +701,13 @@ def cmd_store_compose(a):
             bad = [p for p in perspectives if not p["ok"]]
             if bad:
                 note = _perspective_note(_worst_perspective(bad))
-                report[target][sid] = {"file": None, "fit": fit, "flags": ["BAD-PERSPECTIVE"], "notes": [note]}
+                report[target][sid] = {"file": None, "kind": "painted", "fit": fit, "flags": ["BAD-PERSPECTIVE"] + (["OCCLUDED"] if _occluded(occ) else []), "occluded": [round(v, 3) for v in occ], "notes": [note]}
                 print(f"store compose: {target}/{sid}: {note} BAD-PERSPECTIVE")
                 continue
             if _screen_size(qs, W, H)[1]:
                 flags.append("SMALL-PHONE")
+            if _occluded(occ):
+                flags.append("OCCLUDED")
             canvas = im.convert("RGBA")
             bottom, low = _headline(canvas, slot, sb, notes)
             if bottom > min(q[:, 1].min() for q in qs) - H * 0.01:
@@ -639,7 +719,7 @@ def cmd_store_compose(a):
             index = next(i for i, s in enumerate(sb["slots"], 1) if s["id"] == sid)
             path = store._save_store_png(canvas, folder / f"{index:02d}_{sid}.png")
             files.append(path)
-            report[target][sid] = {"file": str(path.relative_to(out)), "fit": fit, "flags": flags, "notes": notes}
+            report[target][sid] = {"file": str(path.relative_to(out)), "kind": "painted", "fit": fit, "occluded": [round(v, 3) for v in occ], "flags": flags, "notes": notes}
         store._set_sheet(files, folder / "sheet.jpg")
         print(f"store compose: {target}: {len(files)} shots -> {folder}")
     out.mkdir(parents=True, exist_ok=True)
@@ -664,8 +744,9 @@ def _scene_parsers(sub):
     q.add_argument("dir")
     q.add_argument("--set", default="main")
     q.add_argument("--slots")
-    q.add_argument("--targets", default="ios-phone,ios-phone-large,play-phone")
+    q.add_argument("--targets", default="ios-phone,ios-phone-large")
     q.add_argument("--captures")
+    q.add_argument("--flat", help="store project with captionless build renders for unpainted slots")
     q.add_argument("--clean-top", action="store_true")
     q.add_argument("--out")
     q.set_defaults(fn=cmd_store_compose)

@@ -123,7 +123,9 @@ python3 $K compare build/home shot.png               # also flags wrong corner r
     and GPT paints only the moving layer.
 12. **Store listings get an art direction invented for that app.** There is no common template and no house look for
     store scenes: the world, audience and brand of the app decide the picture, and every example is an illustration,
-    never a template. Never present a store shot with BAD-PERSPECTIVE, SMALL-PHONE or LOW-FIT; read every shot at half size first.
+    never a template. Never present a store shot with BAD-PERSPECTIVE, SMALL-PHONE, OCCLUDED or LOW-FIT; read every
+    shot at half size first. Painted scenes are App Store only: Play asks for the interface without device frames or
+    added scenery, so its set always comes from `store build` (frameless 9:16).
 
 ## Working with the user
 
@@ -149,7 +151,8 @@ python3 $K compare build/home shot.png               # also flags wrong corner r
 - **Store listing style checkpoint.** Before planning or painting any store shot, show the reference sheets in
   `references/store-styles/` (`full-creative.jpg`, `flat-normal.jpg`, `mixed.jpg`, `mixed-bedside.jpg`) and ask which style the user wants:
   **full creative** (every slot a painted scene), **flat & normal** (upright phones on clean backgrounds), **mixed**
-  (both in one set), or **something else** they describe. Skip it only when the request already says. Then show the
+  (both in one set), or **something else** they describe. Skip it only when the request already says. The style
+  shapes the App Store set; the Play set stays frameless in the same type and colours. Then show the
   hero in the chosen style before painting the rest of the set.
 - Walk the user through `blueprint.md`, especially the MVP cut, before designing every screen.
 - App-icon concepts, animation routes and whether to ship platform icons (Material Symbols / SF Symbols) instead of the

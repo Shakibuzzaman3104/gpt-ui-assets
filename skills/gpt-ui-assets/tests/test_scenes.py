@@ -73,6 +73,62 @@ def test_small_phone():
     assert error is None and "SMALL-PHONE" in flags and 0.25 < screen < 0.35
 
 
+def test_occlusion():
+    im, _ = _scene()
+    assert "OCCLUDED" not in K.scenes._check(im, 1, 0.22, [0.372])[2]
+    pixels = np.array(im)
+    cv2.rectangle(pixels, (400, 2200), (900, 2400), (240, 110, 20), -1)
+    assert "OCCLUDED" in K.scenes._check(Image.fromarray(pixels), 1, 0.22, [0.372])[2]
+
+
+def test_mixed_compose():
+    with tempfile.TemporaryDirectory() as temp:
+        d = Path(temp)
+        slots = [{"id": sid, "capture": "home", "caption": "A calm day", **({"scene_brief": "hills"} if sid != "flat" else {})}
+                 for sid in ("hero", "flat", "last")]
+        (d / "storyboard.json").write_text(json.dumps({"scenes": {"style": "painted"}, "slots": slots}))
+        cap = d / "captures/ios-phone/home.png"
+        cap.parent.mkdir(parents=True)
+        Image.new("RGB", (372, 1000), (130, 80, 170)).save(cap)
+        (d / "captures.json").write_text(json.dumps({"captures": [{"name": "home", "platform": "ios", "device": "phone",
+            "orientation": "portrait", "file": str(cap.relative_to(d))}]}))
+        scene, _ = _scene(853, 1843)
+        K.generate = lambda prompt, **kw: (_png(scene), {})
+        K._gf_ttf = lambda *args: None
+        _run(["scene", temp, "--variants", "1"])
+        targets = {}
+        for key, size in (("ios-phone", (1206, 2622)), ("ios-phone-large", (1320, 2868))):
+            path = d / "build" / key / "02_flat.png"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            Image.new("RGB", size, (70, 90, 120)).save(path)
+            targets[key] = {"shots": [{"slot": "flat", "file": str(path.relative_to(d)), "screen_box": {"x": 100, "y": 800, "w": 600, "h": 1200}}]}
+        report = d / "build/report.json"
+        report.write_text(json.dumps({"no_caption": True, "targets": targets}))
+        _run(["compose", temp, "--flat", temp, "--targets", "ios-phone,ios-phone-large"])
+        base = d / "scenes/main/build"
+        result = json.loads((base / "report.json").read_text())
+        for key in ("ios-phone", "ios-phone-large"):
+            shots = result[key]
+            assert list(shots) == ["hero", "flat", "last"]
+            assert [shots[s["id"]]["kind"] for s in slots] == ["painted", "flat", "painted"]
+            assert [Path(shots[s["id"]]["file"]).name for s in slots] == ["01_hero.png", "02_flat.png", "03_last.png"]
+            assert all(Image.open(base / shots[s["id"]]["file"]).size == K.SCENE_TARGETS[key] for s in slots)
+            assert (base / key / "sheet.jpg").exists()
+        try:
+            _run(["compose", temp, "--targets", "play-phone"])
+            raise AssertionError("Play scene accepted")
+        except ValueError as e:
+            assert "App Store only" in str(e)
+        _run(["compose", temp, "--flat", temp])
+        assert set(json.loads((base / "report.json").read_text())) == {"ios-phone", "ios-phone-large"}
+        report.write_text(json.dumps({"no_caption": False, "targets": targets}))
+        try:
+            _run(["compose", temp, "--flat", temp])
+            raise AssertionError("captioned build accepted")
+        except ValueError as e:
+            assert "--no-caption" in str(e)
+
+
 def test_perspective():
     _, quad = _scene()
     check = K.scenes.screen_perspective
@@ -207,7 +263,7 @@ def test_end_to_end():
         assert json.loads((d / "storyboard.json").read_text())["scenes"]["sets"]["night"]["look"] == "moonlit"
         _run(["compose", temp])
         _run(["compose", temp, "--set", "night", "--targets", "ios-phone-65"])
-        for setname, targets in (("main", ("ios-phone", "ios-phone-large", "play-phone")), ("night", ("ios-phone-65",))):
+        for setname, targets in (("main", ("ios-phone", "ios-phone-large")), ("night", ("ios-phone-65",))):
             base = d / "scenes" / setname / "build"
             report = json.loads((base / "report.json").read_text())
             for target in targets:

@@ -72,7 +72,7 @@ kit itself (`fid` and ΔE, lower is closer).*
 | Animation | `frames`, `sequence`, `vectorize`, `rig`, `animate` | Procedural motion (no API calls), generated frames with QA, layout-driven sequences (code animates, GPT paints keys, EbSynth carries them to every frame of smoke, drops or spray when the plan says it can, else GPT paints every frame), WebP/APNG/Lottie, Lottie **and** AnimatedVectorDrawable, rigged 1:1 vector animation |
 | Hybrid screens | `material`, `state`, `stage` | Screens built in HTML/CSS/JS around GPT-painted materials; state variants pixel-identical outside the change; stills, a frame-exact motion clip and a presentation shot rendered through Chrome |
 | Build 1:1 | `fonts`, `redline`, `tokens`, `compare` | Google Fonts matched by rendering; measured radii and gaps; Compose/SwiftUI/CSS/Tailwind theme code; screenshot-vs-design heatmap with ranked fixes |
-| Store screenshots | `store capture`, `store research`, `store plan`, `store art`, `store build`, `store check`, `store feature` | App Store and Google Play sets from real simulator/device captures composited pixel-exact (the UI is never redrawn), with GPT-painted art plates in the app's own style and optional OCR-checked display lettering; per-store frames and copy rules, exact sizes with no alpha, measured caption contrast and UI fidelity, tablets, the Play feature graphic |
+| Store screenshots | `store capture`, `store research`, `store plan`, `store art`, `store build`, `store check`, `store feature`, `store scene`, `store compose` | App Store and Google Play sets from real simulator/device captures composited pixel-exact (the UI is never redrawn): GPT-painted art plates in the app's own style, or whole painted App Store scenes around a green screen that the kit fills with the real capture in true perspective; a style checkpoint (full creative, flat, mixed or your own); each store's rules, exact sizes with no alpha, measured caption contrast, UI fidelity, perspective and occlusion, tablets, the Play feature graphic |
 | Export | `export`, `doctor` | Android densities, iOS imagesets, web 1x/2x; setup check |
 
 **Platform-native design.** The same brief, `--platform android` vs `--platform ios`: M3 top app bar, cards, navigation
@@ -120,6 +120,15 @@ AX2. Against Chrome renders it found 82-88% of the overflows, with no false alar
 
 **In-between frames.** `frames --tween 2` doubles the frame rate of a painted loop without another paid call: optical-flow in-betweens of the moving layer only, the loop length unchanged. Left: the 8 painted keys. Right: the same keys with 8 in-betweens.
 <p align="center"><img src="docs/images/22-tween.webp" width="520" alt="A campfire loop at 12 fps and with --tween 2 at 24 fps"></p>
+
+**Store scenes.** For the App Store, GPT paints the whole listing image with the phone's display left flat green.
+The kit fits the screen's four edges in perspective, keys the app's real capture in (the UI never goes through the
+image model), and sets the headline in real type. A shot whose screen no camera could see that way is refused.
+<p align="center"><img src="docs/images/25-store-scenes.webp" width="780" alt="A painted scene with a green screen, the fitted quad, the real capture keyed in, the final shot with its headline, and a rejected shot with impossible perspective"></p>
+
+**Every app its own listing.** Before designing, the kit asks for a style (full creative, flat, mixed, or something
+else) and shows reference sheets. Google Play gets frameless 9:16 shots of the interface alone, as its guidance asks.
+<p align="center"><img src="docs/images/26-store-sets.webp" width="780" alt="A full creative App Store set for a daily-quotes app, two mixed App Store sets for a sleep-sounds app, and its frameless Google Play set"></p>
 
 **Compare.** A screenshot of your build vs the design: a heatmap and a ranked list of fixes until it matches.
 
