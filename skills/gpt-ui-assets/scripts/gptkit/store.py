@@ -859,7 +859,7 @@ fetch(q.get('data')||'data.json').then(r=>r.json()).then(D=>{
     const wc=Math.min((card?58:62)*u,.62*H/r), base=H*(S.letter?.28:.30);
     const lay=S.cards.length>2?[[1,-23,-8,.8],[2,23,8,.8],[0,0,0,1]]:[[1,-16,-7,.85],[0,10,3,1]];
     lay.forEach(([i,dx,rot,k])=>{const w=wc*k, dy=k<1?wc*Math.min(r,1.2)*.46:0;
-      html.push(`<div class="call fan" style="${crop(S.cards[i],w)};top:${base+dy}px;border-radius:${6*u}px;box-shadow:0 ${3*u}px ${5*u}px ${B.shadow},0 0 0 ${.7*u}px ${B.ring};transform:translateX(calc(-50% + ${dx*u}px)) rotate(${rot}deg)"></div>`);});
+      html.push(`<div class="call fan" style="${crop(S.cards[i],w)};top:${base+dy}px;border-radius:${6*u}px;box-shadow:0 ${3*u}px ${5*u}px ${B.shadow},0 0 0 ${.7*u}px ${B.ring};transform:translateX(calc(-50% + ${dx*u}px)) rotate(${rot}deg)">${S.screen?.island&&S.cards[i].box[1]===0&&S.cards[i].box[2]-S.cards[i].box[0]===S.cards[i].w?'<div class="isle"></div>':''}</div>`);});
   } else {
     const sc=S.screen, cut=card?sc.status:0, asp=(sc.h-cut)/sc.w;
     const fr=card?null:(phone?{p:.0325,r:'16.5%/7.6%',s:'14%/6.5%'}:{p:.03,r:'6.2%/4.6%',s:'3.8%/2.8%'}), p=fr?fr.p:0;

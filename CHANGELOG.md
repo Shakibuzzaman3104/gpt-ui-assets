@@ -56,6 +56,16 @@ fills with the app's real capture, in true perspective. Play sets stay frameless
 Proven on a word duel game (perspective fit IoU 0.94-0.98 on 8 scenes, a light and a moonlit dark set from one
 composition), a sleep-sounds app (two mixed sets) and a daily-quotes app (a full creative set).
 
+### Fixed
+- **Every phone gets the same Dynamic Island.** Simulator captures carry no island, so painted phones kept whatever
+  cutout the model drew: a notch on some, an island on others. Compose now draws the flat frame's island into each
+  capture before keying it in and fills any painted notch or island with the screen; full-screen fan cards get the
+  island too.
+- **Screen fit on notched phones.** Edges are fitted on the screen's filled hull, so a painted notch no longer pulls
+  the top edge down (the capture used to sit low, under the notch).
+- **Compose reuses the quad that passed the variant check**, fitted at the painted size and carried through the
+  resize and crop, instead of refitting per target; one 6.9" shot had failed with an impossible perspective.
+
 ## 5.3.0 (2026-10-21)
 
 App Store and Google Play screenshots from the app's real screens, a critique that checks what the screen says, a

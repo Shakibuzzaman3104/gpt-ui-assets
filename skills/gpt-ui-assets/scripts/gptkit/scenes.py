@@ -68,6 +68,11 @@ def quad_from_mask(m):
         raise ValueError("no green screen")
     cnt = max(cnts, key=cv2.contourArea).reshape(-1, 2).astype(np.float32)
     hull = cv2.convexHull(cnt)
+    # Fit edges on the filled hull so a painted notch or a prop's dent cannot pull an edge inward.
+    filled = np.zeros(m.shape, np.uint8)
+    cv2.fillConvexPoly(filled, hull.astype(np.int32), 1)
+    cnts, _ = cv2.findContours(filled, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+    cnt = max(cnts, key=cv2.contourArea).reshape(-1, 2).astype(np.float32)
     ap = cv2.approxPolyDP(hull, 0.01 * cv2.arcLength(hull, True), True).reshape(-1, 2)
     if len(ap) < 4:
         raise ValueError("could not find four screen edges")
@@ -197,11 +202,25 @@ def _occluded(values):
     return values[0] > MAX_OCCLUDED or values[1] > MAX_OCCLUDED_BOTTOM
 
 
-def key_capture(scene, captures, pad=3):
+ISLAND = (0.29, 3.4, 0.024)  # width of the screen, aspect, top of the screen: the flat frame's .isle
+
+
+def with_island(capture):
+    from PIL import ImageDraw
+    im = capture.convert("RGB").copy()
+    w = im.width * ISLAND[0]
+    h, top = w / ISLAND[1], im.height * ISLAND[2]
+    box = ((im.width - w) / 2, top, (im.width + w) / 2, top + h)
+    ImageDraw.Draw(im).rounded_rectangle(box, radius=h / 2, fill=(5, 5, 5))
+    return im
+
+
+def key_capture(scene, captures, pad=3, quads=None, island=False):
     import cv2
     rgb = np.asarray(scene.convert("RGB"))
     alpha = green_alpha(rgb)
-    quads = screen_quads(alpha, len(captures))
+    if quads is None:
+        quads = screen_quads(alpha, len(captures))
     if len(quads) != len(captures):
         raise ValueError(f"found {len(quads)} screens, slot needs {len(captures)}")
     mask = np.zeros(alpha.shape, np.uint8)
@@ -214,7 +233,7 @@ def key_capture(scene, captures, pad=3):
     limit = np.maximum(out[..., 0], out[..., 2])
     out[..., 1] = np.where(mask & (out[..., 1] - limit > 25), np.minimum(out[..., 1], limit + 6), out[..., 1])
     for quad, capture in zip(quads, captures):
-        c = np.asarray(capture.convert("RGB"))
+        c = np.asarray((with_island(capture) if island else capture).convert("RGB"))
         ch, cw = c.shape[:2]
         centre = quad.mean(0)
         grown = centre + (quad - centre) * (1 + pad / max(scene.size))
@@ -228,6 +247,13 @@ def key_capture(scene, captures, pad=3):
         n, lab, st, _ = cv2.connectedComponentsWithStats((r & (keyed == 0)).astype(np.uint8))
         specks = np.isin(lab, 1 + np.flatnonzero(st[1:, cv2.CC_STAT_AREA] < 400 * (scene.width / 1320) ** 2))
         keyed = np.where(specks, 1, keyed)
+        if island:
+            # A painted notch or island is dark and unkeyed; show the screen there so every phone gets the same island.
+            band = np.zeros(alpha.shape, np.uint8)
+            top = cv2.perspectiveTransform(np.float32([[[cw * .12, ch * .002], [cw * .88, ch * .002], [cw * .88, ch * .075], [cw * .12, ch * .075]]]), M)[0]
+            cv2.fillConvexPoly(band, top.astype(np.int32), 1)
+            dark = rgb.astype(np.float32).mean(2) < 70
+            keyed = np.where(band.astype(bool) & dark, 1, keyed)
         ra = cv2.GaussianBlur(np.where(r, keyed, 0).astype(np.float32), (0, 0), 1.2)[..., None]
         out[..., 1] = np.where(r, np.minimum(out[..., 1], np.maximum(out[..., 0], out[..., 2])), out[..., 1])
         out = out * (1 - ra) + warped.astype(np.float32) * ra
@@ -347,7 +373,7 @@ def _review(d, sb, setname, manifest, out):
             if v["error"] is None:
                 try:
                     caps = [_capture(d, sb, setname, n) for n in _names(slot)]
-                    im = key_capture(im, caps)[0]
+                    im = key_capture(im, caps, island=True)[0]
                 except ValueError:
                     pass
             ims.append(im)
@@ -715,10 +741,11 @@ def cmd_store_compose(a):
             notes, flags = [], []
             im = Image.open(source / pick).convert("RGB")
             scale = max(W / im.width, H / im.height)
-            im = im.resize((round(im.width * scale), round(im.height * scale)), Image.LANCZOS)
             try:
                 caps = [_capture(d, sb, a.set, name, a.captures) for name in _names(slot)]
-                qs = screen_quads(green_alpha(np.asarray(im)), len(_names(slot)))
+                # Fit at the painted size, where the variant passed its checks, and carry the quads through the resize.
+                qs = [q * scale for q in screen_quads(green_alpha(np.asarray(im)), len(_names(slot)))]
+                im = im.resize((round(im.width * scale), round(im.height * scale)), Image.LANCZOS)
                 if len(qs) != len(_names(slot)):
                     raise ValueError(f"found {len(qs)} screens, slot needs {len(_names(slot))}")
                 offset = max(0, int(np.ceil(max(q[:, 1].max() for q in qs) - H * 0.98)))
@@ -726,11 +753,12 @@ def cmd_store_compose(a):
                     raise ValueError("screen does not fit target crop")
                 left = (im.width - W) // 2
                 im = im.crop((left, offset, left + W, offset + H))
+                qs = [(q - np.array([left, offset])).astype(np.float32) for q in qs]
                 if a.clean_top:
                     im = clear_status_bar(im)
                 alpha = green_alpha(np.asarray(im))
-                occ = _occlusion(alpha, screen_quads(alpha, len(caps)))
-                im, qs, fits = key_capture(im, caps)
+                occ = _occlusion(alpha, qs)
+                im, qs, fits = key_capture(im, caps, quads=qs, island=True)
             except ValueError as e:
                 report[target][sid] = {"file": None, "kind": "painted", "fit": None, "flags": [], "notes": [str(e)]}
                 print(f"store compose: {target}/{sid}: {e}")
