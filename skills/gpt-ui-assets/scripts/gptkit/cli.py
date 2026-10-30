@@ -12,6 +12,8 @@ Config (environment variables win over the config file ~/.config/gptkit/env, KEY
   GPTKIT_QUALITY                      low | medium | high (default high): image quality; low for cheap drafts
   GPTKIT_HOUSE_STYLE                  default art direction added to every new design; "off" drops it
   GPTKIT_BUDGET_USD                   refuse a command whose plan estimate exceeds this
+  GPTKIT_GALLERY                      on | off: force the ui-assets gallery for every project (default: per project,
+                                      set with `gallery on|off`; undecided behaves as on)
   GPTKIT_LEDGER                       cost ledger path, default ~/.cache/gptkit/ledger.jsonl
   GPTKIT_CONFIG                       config file path, default ~/.config/gptkit/env
   GPTKIT_RETRIES                      retries per API call on 408/429/5xx and transport errors, default 2
@@ -47,6 +49,7 @@ from .doctor import _color_args, cmd_doctor, cmd_score
 from .research import DEPTHS, RESEARCH_MODEL, cmd_blueprint, cmd_research
 from .store import _store_parsers
 from .cost_status import cmd_cost, cmd_status
+from .gallery import _gallery_parsers, after_command, before_command
 
 def _color_arg(s):
     """argparse type: a colour PIL and CSS both read (#RGB, #RRGGBB, #RRGGBBAA or a CSS colour name)."""
@@ -374,10 +377,12 @@ def build_parser():
     _appicon_parsers(sub)
     _integration_parsers(sub, _backend_parsers)
     _store_parsers(sub)
+    _gallery_parsers(sub)
     return ap, sub
 
-def main(standalone=False, argv=None):
-    """The CLI. `standalone` is True when run as a script (gptkit.py), False when called from Python."""
+def main(standalone=False, argv=None, gallery=True):
+    """The CLI. `standalone` is True when run as a script (gptkit.py), False when called from Python. `gallery` False
+    skips the ui-assets dashboard update (a command the gallery itself runs)."""
     ap, _ = build_parser()
     a = ap.parse_args(argv)
     from . import core  # the ledger reads these from core's globals
@@ -385,6 +390,7 @@ def main(standalone=False, argv=None):
         "appicon " + a.icmd if a.cmd == "appicon" else "store " + a.scmd if a.cmd == "store" else a.cmd)
     dir_arg = getattr(a, "dir", None) or getattr(a, "out", None)
     core._LEDGER_DIR = str(Path(dir_arg).expanduser().resolve()) if dir_arg else None
+    run = before_command(a, core._LEDGER_CMD) if gallery else None
     try:
         a.fn(a)
     except KeyboardInterrupt:
@@ -418,3 +424,5 @@ def main(standalone=False, argv=None):
             msg = (f"unexpected {type(e).__name__}: {msg} (a hand-edited or older JSON file in the project? re-create it; "
                    "else re-run with GPTKIT_DEBUG=1 and report the traceback)")
         sys.exit(f"gptkit {a.cmd}: {msg}")
+    finally:
+        after_command(run)

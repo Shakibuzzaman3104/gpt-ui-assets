@@ -2,6 +2,99 @@
 
 All notable changes to gpt-ui-assets. Versions follow [semantic versioning](https://semver.org).
 
+## 5.5.0 (2026-10-30)
+
+A gallery for everything the kit makes: outputs live under `ui-assets/` in the project, and `ui-assets/index.html`
+shows them all, with picks and discards that Claude reads back.
+
+### Added
+- **`ui-assets/` gallery.** After every command whose output is under a `ui-assets/` folder, the kit indexes the
+  project into `ui-assets/manifest.json` and rewrites `ui-assets/index.html`, a static page with the data inline,
+  so it opens straight from disk. Mockup variants and their `critique --apply` revisions (a rejected revision starts
+  out discarded), forge candidates, SVG icons, app icon concepts and finals, store shots, hybrid materials and
+  `frames`/`sequence` animations are grouped by unit and run. Review sheets, critique overlays, raw and
+  intermediate frames are left out. Each image carries its prompt, command, parent design, size, critique issues,
+  `fid` and flags, and where `export` or `vd` shipped it (an exported `assets/<name>.png` counts for its picked candidate). WebP thumbnails go to `ui-assets/.thumbs/`, made in parallel (800 phone screens index in about 6 s; a run that changes nothing re-indexes in well under a second). A damaged `manifest.json` is moved aside, not overwritten.
+- **History.** Before `mockup`, `appicon concepts`, `forge --force`, `critique --apply` or `material` writes over variants already in the
+  gallery, copies go to `ui-assets/.history/`. Earlier rounds stay visible next to the new ones.
+- **`gallery` command**: `on`, `off`, `index`, `add` (index an older output folder), `set PATH picked|discarded|new
+  [--note]`, `picks` (the user's decisions, newest first) and `serve` (127.0.0.1 only; files outside the gallery
+  are not served, and writes need a custom header that cross-site pages can't send). A pick is exclusive within a
+  variant group. Picking a forge candidate runs `pick` and picking a painted store scene runs `store scene --pick`, so the
+  kit's own records agree with the page; the kit's current choice can't be discarded until another is picked.
+- **Page**: filters by kind and state, search, checker, light or dark backdrop, three thumbnail sizes, a viewer with
+  details and a note, compare mode for a whole group, and keyboard keys (arrows, `1` pick, `x` discard, `u` undecided,
+  `c` compare). Opened from disk, Pick and Discard copy a `gallery set` line to paste into the chat.
+- **Git**: `ui-assets/.gitignore` holds a generated block that ignores thumbnails, history, review sheets, discards
+  and unpicked variants, so the manifest plus the picked and final files are what gets committed. Lines outside the
+  block are kept.
+- **Opt-out per project.** Undecided behaves as on and prints one line asking Claude to check with the user;
+  `gallery on|off` stores the answer in `~/.config/gptkit/gallery.json`. `GPTKIT_GALLERY=on|off` overrides it.
+
+## 5.4.0 (2026-10-27)
+
+A second store screenshot route: GPT paints the whole App Store image around a chroma-green screen that the kit
+fills with the app's real capture, in true perspective. Play sets stay frameless at 9:16 with the UI first, as Play's guidance asks.
+
+### Added
+- **`store scene`**: GPT paints each slot's whole listing image (the app's world, props, a big phone) with the
+  phone's display flat chroma green (`#00FF00`) and no text. Locally the kit finds the green screen, fits its four
+  edges in true perspective (each edge a fitted line, the corners their intersections), warps the real capture into it
+  so props painted in front of the phone stay in front, removes green spill, and sets the headline in real type from
+  Google Fonts. The UI is never sent through the image model. The best passing variant is picked and `scenes.json`
+  and `review.jpg` are written, each variant shown with the real capture already keyed in. `--pick` overrides a pick
+  without API calls, and `--style-ref` keeps one look across the set.
+- **Scene checks**, each a flag on the variant and in the compose report:
+  - fit: the IoU of the fitted quad against the green area must be at least 0.85, and an edge cut by the canvas is
+    an error (`LOW-FIT`);
+  - `BAD-PERSPECTIVE`: the screen's true shape is recovered from its corners (Zhang-He rectangle recovery), and a view
+    no camera could take, or an implied aspect more than ~15% off the capture's, fails; compose refuses the shot;
+  - `SMALL-PHONE`: the screen under 42% of the image height or 16% of its area (40% for two or more screens);
+  - `OCCLUDED`: props hide over 6% of the screen, or over 10% of its bottom quarter where CTAs and tab bars sit;
+  - `COPIES-REF`: a style-reference edit that repeats the reference's composition;
+  - `GREEN-SPILL`, `BUSY-TOP` (a busy headline band), and in compose `OVERLAP` and `LOW-CONTRAST` (under 3:1).
+  - in compose, `SMALL-HEADLINE`: a headline in the first three shots under 9 pt at search-result size, with a
+    `search_row.jpg` per target to read them as a shopper would;
+  - a scene with more green screens than the slot has captures is rejected.
+- **`store compose`**: renders each picked scene per App Store target (`ios-phone` 1206x2622, `ios-phone-large`
+  1320x2868, `ios-phone-65` 1242x2688) into `NN_slot.png`, `sheet.jpg` and `report.json`. A Play target is refused.
+  `--captures` points a set at another capture folder, such as dark-mode captures for a night set, and `--clean-top`
+  inpaints status-bar glyphs a model painted into the top strip. Each run clears old shots, a missing capture fails
+  only its shot, green is despilled only around the screens, and shots over 8 MB are saved as JPEG. Needs OpenCV;
+  the rest of the kit does not.
+- **Safer re-rolls**: `store scene --force` moves old variants to `_replaced/` instead of deleting them, `--pick`
+  honours `--dry-run`, and an unreadable style reference prints `COPIES-REF not checked`.
+- **Mixed sets**: `store build --no-caption` renders flat slots with their captions hidden but their layout kept, and
+  `store compose --flat DIR` fills unpainted slots from that build, in storyboard order, with one headline style
+  across painted and flat shots.
+- **Look sets**: `store scene --set night --look "<re-light prompt>"` edits each slot's picked main scene into a
+  variant look with the same composition, so a light set and a moonlit dark set come from one set of scenes.
+- **Storyboard `scenes` block**: `style`, `headroom`, `style_ref`, the `type` block and `sets` (a look prompt and a
+  capture folder per set); per slot `scene_brief`, `scene_view` (`front` or `angled`), `scene_lines` (strings, or
+  `{"text", "size", "color"}` for a hero number), `scene_sub` and `scene_captures`. Type defaults come from the brand
+  block.
+- **What top listings do** (`references/store.md`, section 3): patterns from the first three shots of 680 top App
+  Store and Play listings across 17 app and game categories (frame-1 strategy, true hero numbers, set-level stories,
+  output as hero, game conventions) and what not to copy; Play's rules now note landscape sets for landscape games.
+- **Style checkpoint**: before any store design the driver shows the reference sheets in `references/store-styles/`
+  (full creative, flat & normal, mixed) and asks which style the user wants, or something else they describe.
+- **Docs**: every app gets its own style of listing, with no common template and no house look; the platform rules for
+  each store, with sources; and the lessons from three real apps (big phones, front and angled shots mixed, props on
+  a corner only, honest captions).
+
+Proven on a word duel game (perspective fit IoU 0.94-0.98 on 8 scenes, a light and a moonlit dark set from one
+composition), a sleep-sounds app (two mixed sets) and a daily-quotes app (a full creative set).
+
+### Fixed
+- **Every phone gets the same Dynamic Island.** Simulator captures carry no island, so painted phones kept whatever
+  cutout the model drew: a notch on some, an island on others. Compose now draws the flat frame's island into each
+  capture before keying it in and fills any painted notch or island with the screen; full-screen fan cards get the
+  island too.
+- **Screen fit on notched phones.** Edges are fitted on the screen's filled hull, so a painted notch no longer pulls
+  the top edge down (the capture used to sit low, under the notch).
+- **Compose reuses the quad that passed the variant check**, fitted at the painted size and carried through the
+  resize and crop, instead of refitting per target; one 6.9" shot had failed with an impossible perspective.
+
 ## 5.3.0 (2026-10-21)
 
 App Store and Google Play screenshots from the app's real screens, a critique that checks what the screen says, a
@@ -37,7 +130,7 @@ fit check for small phones and large text, and design checkpoints.
     touches the caption or hides more than 3% of the screen. Play reads `calls_play` / `cards_play` / `floats_play`
     first for Android layouts.
 
-  On WordFight's captures: UI fidelity mean ΔE 0.5-1.2, captions 6.2:1 or better, and 6/6 lettering passed OCR on
+  On a word game's captures: UI fidelity mean ΔE 0.5-1.2, captions 6.2:1 or better, and 6/6 lettering passed OCR on
   the first try. In the probes, a GPT-redrawn store shot drifted to mean ΔE 15.3, which is why the UI is never sent
   through an image model.
 - **Critique categories `coherence`, `state` and `copy`.**

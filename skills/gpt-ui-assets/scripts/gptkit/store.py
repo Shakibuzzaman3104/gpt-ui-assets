@@ -829,6 +829,7 @@ body{position:relative;-webkit-font-smoothing:antialiased}
 .call{position:absolute;left:50%;transform:translateX(-50%);background-repeat:no-repeat}
 body.bare .cap h1,body.bare .cap p{color:transparent!important;text-shadow:none!important}
 body.bare .cap img{visibility:hidden}
+body.no-caption .cap{visibility:hidden}
 body.fid .over{visibility:hidden}
 </style></head>
 <body>
@@ -858,7 +859,7 @@ fetch(q.get('data')||'data.json').then(r=>r.json()).then(D=>{
     const wc=Math.min((card?58:62)*u,.62*H/r), base=H*(S.letter?.28:.30);
     const lay=S.cards.length>2?[[1,-23,-8,.8],[2,23,8,.8],[0,0,0,1]]:[[1,-16,-7,.85],[0,10,3,1]];
     lay.forEach(([i,dx,rot,k])=>{const w=wc*k, dy=k<1?wc*Math.min(r,1.2)*.46:0;
-      html.push(`<div class="call fan" style="${crop(S.cards[i],w)};top:${base+dy}px;border-radius:${6*u}px;box-shadow:0 ${3*u}px ${5*u}px ${B.shadow},0 0 0 ${.7*u}px ${B.ring};transform:translateX(calc(-50% + ${dx*u}px)) rotate(${rot}deg)"></div>`);});
+      html.push(`<div class="call fan" style="${crop(S.cards[i],w)};top:${base+dy}px;border-radius:${6*u}px;box-shadow:0 ${3*u}px ${5*u}px ${B.shadow},0 0 0 ${.7*u}px ${B.ring};transform:translateX(calc(-50% + ${dx*u}px)) rotate(${rot}deg)">${S.screen?.island&&S.cards[i].box[1]===0&&S.cards[i].box[2]-S.cards[i].box[0]===S.cards[i].w?'<div class="isle"></div>':''}</div>`);});
   } else {
     const sc=S.screen, cut=card?sc.status:0, asp=(sc.h-cut)/sc.w;
     const fr=card?null:(phone?{p:.0325,r:'16.5%/7.6%',s:'14%/6.5%'}:{p:.03,r:'6.2%/4.6%',s:'3.8%/2.8%'}), p=fr?fr.p:0;
@@ -1300,7 +1301,7 @@ def cmd_store_build(a):
         data_file.write_text(json.dumps(data, indent=1))
 
     write_data()
-    report = {"storyboard": str(_storyboard_path(d, a.locale)), "variant": a.variant, "targets": {}}
+    report = {"storyboard": str(_storyboard_path(d, a.locale)), "variant": a.variant, "no_caption": a.no_caption, "targets": {}}
     r = _Renderer(d, a.timeout)
     try:
         for key in targets:
@@ -1341,7 +1342,7 @@ def cmd_store_build(a):
                 (build / "bare" / key).mkdir(parents=True, exist_ok=True)
                 bare.resize((BARE_W, round(bare.height * BARE_W / bare.width)), Image.LANCZOS).save(
                     build / "bare" / key / f"{i:02d}_{sid}.jpg", quality=88)
-                img, rep = r.shot(pname, q, size, dpr)
+                img, rep = r.shot(pname, q + ("&mode=no-caption" if a.no_caption else ""), size, dpr)
                 fid = None
                 if sd["arch"] != "fan":
                     fimg, frep = r.shot(pname, q + "&mode=fid", size, dpr)
@@ -1352,7 +1353,8 @@ def cmd_store_build(a):
                 tag, sr, fl = rep.get("tagline"), rep.get("screen"), rep.get("floats") or []
                 cover = sum(_rect_overlap(x, sr) for x in fl if x["front"]) / (sr["w"] * sr["h"]) if fl and sr else 0
                 entries.append({"file": str(f.relative_to(d)), "slot": sid, "size": list(img.size), "bytes": f.stat().st_size,
-                                "mode": "RGB", "arch": sd["arch"], "lettering": bool(sd["letter"]), "contrast": contrast,
+                                "mode": "RGB", "screen_box": {k: v * dpr for k, v in rep["screen"].items()} if rep.get("screen") else None,
+                                "arch": sd["arch"], "lettering": bool(sd["letter"]), "contrast": contrast,
                                 "fidelity": fid, "h1_px": (rep.get("h1") or {}).get("font"),
                                 "tagline_share": round(tag["w"] * tag["h"] / (size[0] * size[1]), 3) if tag else None,
                                 "alt": slot.get("alt", ""), "pill": sd["pill"], "floats": len(fl),
@@ -1608,7 +1610,7 @@ def cmd_store_check(a):
 
 def _store_parsers(sub):
     p = sub.add_parser("store", help="App Store / Google Play screenshots from real captures "
-                                     "(stages: capture, research, plan, art, build, check, feature)")
+                                     "(stages: capture, research, plan, art, build, check, feature, scene, compose)")
     ssub = p.add_subparsers(dest="scmd", required=True)
     q = ssub.add_parser("capture", help="capture the booted simulator/device with a clean status bar, or import a folder")
     q.add_argument("dir", help="store project dir (captures/, captures.json)")
@@ -1667,6 +1669,7 @@ def _store_parsers(sub):
                    help="iOS: device frame or frameless card (Play is always frameless)")
     q.add_argument("--iphone-large", action="store_true", help="also the optional 1320x2868 large-display iPhone set "
                                                                   "(the required slot is 1206x2622)")
+    q.add_argument("--no-caption", action="store_true", help="hide captions and lettering while keeping their layout")
     q.add_argument("--slots", help="comma list of slot ids (default: all, in storyboard order)")
     q.add_argument("--locale", help="build from storyboard.LOCALE.json into build-LOCALE/")
     q.add_argument("--no-pill", dest="pill", action="store_false", help="don't put a low-contrast caption on a pill")
@@ -1689,3 +1692,5 @@ def _store_parsers(sub):
     q.add_argument("--no-webfonts", dest="webfonts", action="store_false")
     q.add_argument("--timeout", type=_pos_float, default=60)
     q.set_defaults(fn=cmd_store_feature)
+    from .scenes import _scene_parsers
+    _scene_parsers(ssub)

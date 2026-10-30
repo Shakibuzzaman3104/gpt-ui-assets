@@ -45,12 +45,14 @@ from . import (  # noqa: E402  (order matters: each module imports from the ones
     doctor,
     research,
     store,
+    scenes,
     cost_status,
+    gallery,
     cli,
     codex_cli,
 )
 
-MODULES = (core, imaging, prompts, design, forge, vectordrawable, svg_icons, tween, frames, sequence, vectorize, previews, export, appicon, trace_rig, measure, fit, tokens, fonts, redline, compare, hybrid, doctor, research, store, cost_status, cli, codex_cli)
+MODULES = (core, imaging, prompts, design, forge, vectordrawable, svg_icons, tween, frames, sequence, vectorize, previews, export, appicon, trace_rig, measure, fit, tokens, fonts, redline, compare, hybrid, doctor, research, store, scenes, cost_status, gallery, cli, codex_cli)
 
 # Module state a function rebinds with `global` (warn-once flags, cached probe results). A copy here would go stale,
 # so these are not re-exported: reading gptkit.<name> falls through to __getattr__ and reads the owning module.
