@@ -3,7 +3,7 @@ name: gpt-ui-assets
 description: Design app, tablet, foldable, desktop-app and website screens with OpenAI's GPT image and vision models (API key or the local Codex CLI), then turn an approved design into production assets redrawn 1:1, never cropped: SVG/VectorDrawable icons, PNG/WebP illustrations, launcher icons, frame, Lottie and AVD animation, smoke/steam/rain loops, theme code and fonts measured from the pixels, a screenshot diff of the built UI, and App Store / Google Play screenshot sets composited from real captures. Also writes GPT-researched feature blueprints. Use whenever the user wants GPT/ChatGPT to design screens, icons, illustrations or an app icon; approves a GPT design ("go ahead", "build it", "give me the assets"); wants assets used in the UI; wants an animated drawable, Lottie or AVD from existing art; wants store screenshots or a Play feature graphic; or complains that GPT cropped assets out of a mockup. Not for go/no-go idea validation, or design direction without GPT.
 license: MIT
 metadata:
-  version: 5.4.0
+  version: 5.5.0
 ---
 
 # GPT UI assets
@@ -39,6 +39,11 @@ K="<this skill's base directory>/scripts/gptkit.py"
   control). Then run `setup --backend api|cli`; for a key, have the user pipe it into `setup --api-key-stdin` themselves
   rather than pasting it into the chat. The setup also covers gateways and optional tools (Chrome, Playwright, aapt2,
   EbSynth).
+- **Where outputs go.** Every output folder lives under `ui-assets/` at the project root: `ui-assets/research/<idea>`,
+  `ui-assets/design/<screen>`, `ui-assets/build/<screen>`, `ui-assets/icon`, `ui-assets/store`. A folder such as
+  `design/home` or `build/home` in the reference files means that folder under `ui-assets/`. Only `vd --out` and `export
+  --res` write into the app itself; `appicon build --out ui-assets/icon/build` stays in the gallery, and its
+  `android/`, `ios/` and `web/` folders are copied into the app from there. Folders outside `ui-assets/` get no gallery.
 - **Resuming a project** (after a break, a context reset or in a new session): run `python3 $K status <dir>`. It lists
   each unit's finished, missing and stale steps, the problems the kit's reports recorded, and the exact next command.
   No API calls.
@@ -70,23 +75,23 @@ story.
 A typical "design a screen and give me the assets" run:
 ```bash
 python3 $K mockup "habit tracker home: date, progress, 5 habits with check + streak, 4-tab nav; mint + warm white" \
-  --platform android --out design/home --variants 2    # 9:19.5 phone canvas, house style, aspect-checked, auto-critiqued
+  --platform android --out ui-assets/design/home --variants 2    # 9:19.5 phone canvas, house style, aspect-checked, auto-critiqued
 # first screen of a new app: add --directions so the variants differ in palette, type and signature, not just details
-# Read each mockup_v*_critique.png, then show the user the variants
+# Read each mockup_v*_critique.png, then show the user the variants (and the gallery page)
 # ...iterate with --edit until the user locks one; screen 2 onward uses --style-ref <approved screen>
-python3 $K critique design/home/mockup_v1.png --fit     # on the locked design: offer its fixes, apply the accepted ones
-python3 $K manifest design/home/mockup_v1.png --out build/home   # Read manifest_overlay.png; fix assets.json by hand
-python3 $K spec build/home                              # calibrated scale, palette, type, native widget per component
-python3 $K forge build/home --candidates 3 &         # forge and svg in parallel (each image call takes 35-80 s)
-python3 $K svg build/home & wait                      # then Read review/forge_*.png and review/svg_*.png
-python3 $K vd build/home/svg/*.svg --out app/src/main/res/drawable
-python3 $K export build/home/assets/hero.png --dp 240 --res app/src/main/res --name hero
-python3 $K fonts build/home
-python3 $K redline build/home
-python3 $K tokens build/home --package com.acme.ui.theme --verify
+python3 $K critique ui-assets/design/home/mockup_v1.png --fit     # on the locked design: offer its fixes, apply the accepted ones
+python3 $K manifest ui-assets/design/home/mockup_v1.png --out ui-assets/build/home   # Read manifest_overlay.png; fix assets.json by hand
+python3 $K spec ui-assets/build/home                              # calibrated scale, palette, type, native widget per component
+python3 $K forge ui-assets/build/home --candidates 3 &         # forge and svg in parallel (each image call takes 35-80 s)
+python3 $K svg ui-assets/build/home & wait                      # then Read review/forge_*.png and review/svg_*.png
+python3 $K vd ui-assets/build/home/svg/*.svg --out app/src/main/res/drawable
+python3 $K export ui-assets/build/home/assets/hero.png --dp 240 --res app/src/main/res --name hero
+python3 $K fonts ui-assets/build/home
+python3 $K redline ui-assets/build/home
+python3 $K tokens ui-assets/build/home --package com.acme.ui.theme --verify
 # build the screen with spec's native widgets and the tokens' padding, gaps and radii (never default ones),
 # screenshot it at the design's effective width, then:
-python3 $K compare build/home shot.png               # also flags wrong corner radii, padding and gaps, with the token
+python3 $K compare ui-assets/build/home shot.png               # also flags wrong corner radii, padding and gaps, with the token
 ```
 
 ## Rules that hold in every phase
@@ -134,12 +139,24 @@ python3 $K compare build/home shot.png               # also flags wrong corner r
   light or dark backdrop, icons as a contact sheet, with aspect and QA per picture. Point the user at it
   (`/attachments`) when showing variants; `/attachments add <folder>` shows a whole output folder.
 
+- **Gallery.** Every command with output under `ui-assets/` updates `ui-assets/index.html`: all images of the
+  project, earlier variants included, with picks, discards and notes.
+  - The first time a command prints `gallery: undecided for this project`, ask the user once with AskUserQuestion
+    whether to keep the gallery: **On (Recommended)**, a page with every generated image to browse and pick from, or
+    **Off**. Run `python3 $K gallery on` or `python3 $K gallery off` from the project root and don't ask again for
+    that project. The answer is stored per project, so it survives new sessions.
+  - When the gallery is on, give the user the page's path with every set of variants. If they want to pick on the
+    page, start `python3 $K gallery serve` in the background and give them its URL.
+  - Before acting on a variant group, run `python3 $K gallery picks` and follow the picks and notes it lists. When the
+    user picks in the chat instead, record it with `python3 $K gallery set <file> picked` (and `discarded` for any
+    they reject), so the page stays the record. Picking a forge candidate this way runs `pick` for you.
+  - An older project with outputs outside `ui-assets/`: `python3 $K gallery add <dir>` indexes that folder too.
 - **Design checkpoints.** Stop at each one and wait for the user's answer:
   1. **Before a new design**, ask how many variants they want (default 2) and whether the variants should take
      different directions (`--directions`: palette, type, shape and signature differ) or stay close to one idea. Skip
      the question when the request already says, and for screen 2 onward, which follows the approved screen with
      `--style-ref`.
-  2. **Show the variants** with what their critiques found, let the user pick one, and iterate with `--edit` until
+  2. **Show the variants** (and point to the gallery when it is on) with what their critiques found, let the user pick one, and iterate with `--edit` until
      they lock it.
   3. **When the user locks a design, critique the locked file**: `critique <file>`, plus `--fit` on a phone screen and
      `--style-ref <approved screen>` for screen 2 onward. Read the sheet, drop the issues you judge wrong, and present

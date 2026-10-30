@@ -2,6 +2,35 @@
 
 All notable changes to gpt-ui-assets. Versions follow [semantic versioning](https://semver.org).
 
+## 5.5.0 (2026-10-30)
+
+A gallery for everything the kit makes: outputs live under `ui-assets/` in the project, and `ui-assets/index.html`
+shows them all, with picks and discards that Claude reads back.
+
+### Added
+- **`ui-assets/` gallery.** After every command whose output is under a `ui-assets/` folder, the kit indexes the
+  project into `ui-assets/manifest.json` and rewrites `ui-assets/index.html`, a static page with the data inline,
+  so it opens straight from disk. Mockup variants and their `critique --apply` revisions (a rejected revision starts
+  out discarded), forge candidates, SVG icons, app icon concepts and finals, store shots, hybrid materials and
+  `frames`/`sequence` animations are grouped by unit and run. Review sheets, critique overlays, raw and
+  intermediate frames are left out. Each image carries its prompt, command, parent design, size, critique issues,
+  `fid` and flags, and where `export` or `vd` shipped it (an exported `assets/<name>.png` counts for its picked candidate). WebP thumbnails go to `ui-assets/.thumbs/`, made in parallel (800 phone screens index in about 6 s; a run that changes nothing re-indexes in well under a second). A damaged `manifest.json` is moved aside, not overwritten.
+- **History.** Before `mockup`, `appicon concepts`, `forge --force`, `critique --apply` or `material` writes over variants already in the
+  gallery, copies go to `ui-assets/.history/`. Earlier rounds stay visible next to the new ones.
+- **`gallery` command**: `on`, `off`, `index`, `add` (index an older output folder), `set PATH picked|discarded|new
+  [--note]`, `picks` (the user's decisions, newest first) and `serve` (127.0.0.1 only; files outside the gallery
+  are not served, and writes need a custom header that cross-site pages can't send). A pick is exclusive within a
+  variant group. Picking a forge candidate runs `pick` and picking a painted store scene runs `store scene --pick`, so the
+  kit's own records agree with the page; the kit's current choice can't be discarded until another is picked.
+- **Page**: filters by kind and state, search, checker, light or dark backdrop, three thumbnail sizes, a viewer with
+  details and a note, compare mode for a whole group, and keyboard keys (arrows, `1` pick, `x` discard, `u` undecided,
+  `c` compare). Opened from disk, Pick and Discard copy a `gallery set` line to paste into the chat.
+- **Git**: `ui-assets/.gitignore` holds a generated block that ignores thumbnails, history, review sheets, discards
+  and unpicked variants, so the manifest plus the picked and final files are what gets committed. Lines outside the
+  block are kept.
+- **Opt-out per project.** Undecided behaves as on and prints one line asking Claude to check with the user;
+  `gallery on|off` stores the answer in `~/.config/gptkit/gallery.json`. `GPTKIT_GALLERY=on|off` overrides it.
+
 ## 5.4.0 (2026-10-27)
 
 A second store screenshot route: GPT paints the whole App Store image around a chroma-green screen that the kit

@@ -198,6 +198,13 @@ variant grids, up to four picks side by side, transparent assets on checker, lig
 sheets, and the aspect and design QA of each picture. Install it with
 `/plugin install attachment-preview@gpt-ui-assets`.
 
+**Gallery.** Everything the kit makes goes under `ui-assets/` in your project, and `ui-assets/index.html` shows all of
+it on one page: every variant, candidate, icon and store shot, grouped by screen and run, with the prompt, the
+checks the kit ran and any earlier variants a re-run wrote over. Pick, discard or leave a note on any image, and Claude
+reads your choices before the next step. Open the file directly to browse, or run `gptkit.py gallery serve` to save
+picks from the page. Picked and final files are committed; candidates, discards and thumbnails are gitignored. Claude
+asks once per project whether you want it (it's on by default), and `gallery off` turns it off.
+
 ## Use
 
 Just talk to Claude:
@@ -254,6 +261,7 @@ The measurements behind every rule are in [`references/api-findings.md`](skills/
 - `skills/gpt-ui-assets/scripts/gptkit.py` is the CLI (`python3 gptkit.py <cmd> -h`); the code is the
   `scripts/gptkit/` package, one module per area.
 - `mods/attachment-preview/` is the optional viewer mod.
+- `ui-assets/` in your project holds the outputs and the gallery (`index.html`, `manifest.json`).
 - `python3 gptkit.py status <dir>` shows where a project stands and the next command, with no API calls.
 - `CONTRIBUTING.md` has the rules for changing the kit and how to run the tests.
 

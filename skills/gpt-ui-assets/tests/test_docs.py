@@ -73,7 +73,7 @@ def _recipes(text):
         if not m:
             continue
         cmd, maybe_sub = m.group(1), m.group(2)
-        if cmd in ("appicon", "store") and maybe_sub in _subsubparsers(SUB.choices[cmd]):
+        if cmd in ("appicon", "store", "gallery") and maybe_sub in _subsubparsers(SUB.choices[cmd]):
             yield f"{cmd} {maybe_sub}", line
         else:
             yield cmd, line
