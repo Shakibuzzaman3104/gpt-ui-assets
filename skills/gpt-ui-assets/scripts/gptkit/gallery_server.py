@@ -82,10 +82,15 @@ class _Handler(SimpleHTTPRequestHandler):
         self.send_error(405)
 
 
+class _Server(ThreadingHTTPServer):
+    request_queue_size = 128  # the default 5 resets a page's burst of thumbnail requests
+    daemon_threads = True
+
+
 def serve(gdir, port=8765, open_browser=False):
     gdir = Path(gdir).resolve()
     handler = type("GalleryHandler", (_Handler,), {"gdir": gdir, "port": port})
-    httpd = ThreadingHTTPServer(("127.0.0.1", port), partial(handler, directory=str(gdir.parent)))
+    httpd = _Server(("127.0.0.1", port), partial(handler, directory=str(gdir.parent)))
     url = f"http://127.0.0.1:{port}/{GALLERY_DIR}/index.html"
     print(f"gallery: {url}  (Ctrl-C stops it; picks and notes are saved to {gdir / 'manifest.json'})", flush=True)
     if open_browser:

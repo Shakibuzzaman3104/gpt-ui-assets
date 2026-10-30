@@ -362,6 +362,7 @@ def test_retries_material_stage_and_store_layouts():
         for t in ("ios-phone", "play-phone"):
             png(s / "build" / t / "01_hero.png"); png(s / "build" / t / "02_shop.png")
             (s / "build" / t / "sheet.jpg").write_bytes(b"x")
+        png(s / "build" / ".previous" / "ios-phone-20261027-201936" / "01_hero.png")
         sc = s / "scenes" / "main"
         png(sc / "hero_v1.png"); png(sc / "hero_v2.png"); png(sc / "_replaced" / "hero_v1.png")
         (sc / "scenes.json").write_text(json.dumps({"slots": {"hero": {"pick": "hero_v2.png", "variants": [

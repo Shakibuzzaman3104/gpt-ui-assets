@@ -320,7 +320,7 @@ def _kit_chosen(p, c, cache):
 
 def _gallery_walk(top):
     for here, dirs, files in os.walk(top):
-        dirs[:] = sorted(x for x in dirs if x not in SKIP_DIRS and not x.startswith(("mipmap-", "drawable")))
+        dirs[:] = sorted(x for x in dirs if x not in SKIP_DIRS and not x.startswith((".", "mipmap-", "drawable")))
         for f in sorted(files):
             yield Path(here) / f
 
