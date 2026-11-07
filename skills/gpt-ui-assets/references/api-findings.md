@@ -665,6 +665,31 @@ The main result: every GPT estimate I measured was usable as a starting point bu
   gateway that accepts but ignores `strict: true` returns shorter objects; `report.md`/`blueprint.md` table cells escape `|`.
   `url_citation` annotations keep `start_index`/`end_index` in `sources.json` when the endpoint sends them.
 
+## GPT Image 2.6 through a ChatGPT-account gateway (2026-11-07)
+
+Measured through sub2api 0.2.20 on a ChatGPT OAuth account. Say so when quoting: an API-key account behaves differently.
+
+- **Model names:** only `gpt-image-2.6-flare` and `-sunburst` exist. A bare `gpt-image-2.6` is `model_not_found`.
+- **Routing:** sub2api sends 2.6 to the Codex images endpoint with the requested model and refuses to fall back to the
+  Responses bridge, which binds an internal `gpt-image-2-codex`. `data[0].model` reports the requested name, which is
+  weaker evidence than that routing.
+- **GIF:** `GIF output is not enabled for this request.` on generations and edits, on 2.5 and 2.6, in about 1 s and at
+  no cost. The Responses route says `not enabled for the model 'gpt-image-2-codex'`. The text is not in sub2api's source;
+  OpenAI's reference says GIF "requires access to the GIF preview". **Not yet measured on an endpoint with access:**
+  the kit's GIF path has only been exercised against mocks built from OpenAI's documented response.
+- **Frame limit:** an OpenAI forum report (2026-11-05) got HTTP 400 for 17 frames and above. The guide now says 2–16.
+- **Parameters ignored without an error:** `size` (`1024x1024` returned 1536x1024 or 1254x1254, following the prompt or
+  reference), `quality: xhigh` (answered `low`), `complexity: ultra` (200, no rejection), `output_format: svg` (a PNG).
+  So the effect of `complexity` can't be measured here, and native SVG is not adopted: `svg` stays on the vision route.
+- **Transparency:** real on 2.6. Generate: 73% of pixels alpha 0. Edit: 93%. Corners clear on both.
+- **Existing parameters:** `input_fidelity` and transparent edits are accepted on 2.6, so no kit call changed.
+- **Quality, one sample:** the same text-heavy budget screen on 2.5 and 2.6 Sunburst at a capped `medium`: all labels and
+  amounts correct on both, 2.6 slightly richer, 601 vs 1,372 output tokens and 30 vs 36 s. Low-quality calls at one size
+  all report 343 tokens, so equal counts there do not mean one backend.
+- **GIF decoding:** OpenAI's published 2.6 sample (512x512, 9 frames, 200 ms, loop 0) went through a local stub over HTTP
+  and the full `frames --native-gif` path: QA, WebP, APNG, Lottie, and `aapt2 compile+link` on the Android output.
+- **Sprite-sheet route on 2.6:** a real campfire with `--static` gave 8 frames, dE 4.1, seam 0.69, IoU 0.83.
+
 ## Verification on macOS (2026-09-29)
 
 - `appicon build` on a synthetic concept: `actool` compiled the AppIcon set and `aapt2` compile+link passed against `android-37.0` (build-tools 36.0.0).

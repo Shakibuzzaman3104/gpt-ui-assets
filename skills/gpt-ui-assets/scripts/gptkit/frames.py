@@ -8,9 +8,9 @@ import sys
 from pathlib import Path
 
 import numpy as np
-from PIL import Image, ImageChops, ImageFilter
+from PIL import Image, ImageChops, ImageFilter, ImageSequence
 
-from .core import ApiError, _config, _open_image, _plan, _png_bytes, _res_name, _size_for, edit, pick_image_model
+from .core import ApiError, _config, _open_image, _plan, _png_bytes, _res_name, _size_for, edit, edit_gif, pick_gif_model, pick_image_model
 from .imaging import _lab, _rgba, content_box, sheet
 from .tween import _rife_bin, tween
 from .vectordrawable import _aapt2_tree
@@ -882,6 +882,92 @@ def _reroll(a, crops, qa, bad, ref, ref_mask, motion, out):
 FRAME_FORMATS = ("gif", "webp", "apng", "lottie")
 
 
+def _frames_native_gif(a, src, out):
+    from .codex_cli import _selected_backend  # deferred: codex_cli imports this module
+    if a.procedural or a.static or a.reroll or a.reuse == "static":
+        sys.exit("frames: --native-gif cannot be combined with --procedural, --static, --reroll or --reuse static")
+    if _selected_backend() == "cli":
+        sys.exit("frames: the Codex CLI backend does not support native GIF output")
+    reuse = a.reuse == "all"
+    count, fps = a.count or (None if reuse else 9), a.fps or (None if reuse else 12)
+    if count is not None and not 2 <= count <= 16:
+        sys.exit("frames: --native-gif requires --count 2-16")
+    frame_ms = round(1000 / fps / 10) * 10 if fps else None
+    if frame_ms is not None and not 20 <= frame_ms <= 2000:
+        sys.exit("frames: --fps must yield a frame duration between 20 and 2000 ms")
+    if not (a.motion or a.moving or reuse):
+        sys.exit("frames: --native-gif requires --motion or --moving")
+    if a.px < 16:
+        sys.exit("frames: --native-gif requires --px at least 16")
+    model = pick_gif_model(a.model) if not reuse or a.model else None
+    raw_path = out / "native_raw.gif"
+    if reuse:
+        if not raw_path.exists():
+            sys.exit(f"frames: --reuse all needs {raw_path}")
+        if model is None and (out / "qa.json").exists():
+            try:
+                model = json.loads((out / "qa.json").read_text()).get("model")
+            except (ValueError, OSError, AttributeError):
+                pass
+    else:
+        limit = max(16, a.px // 16 * 16)
+        size = tuple(max(16, min(limit, round(v / max(src.size) * limit / 16) * 16)) for v in src.size)
+        size = f"{size[0]}x{size[1]}"
+        share, _ = _opaque_share(src)
+        background = "transparent" if share < 0.9 else "auto"
+        if background == "transparent":
+            print("  ! GIF has 256 colours and on/off alpha, so edges are harder than PNG; use the sprite-sheet route for soft glows")
+        motion = a.motion or f"{a.moving} moving naturally"
+        prompt = (f"The attached image is an APPROVED asset. Animate it as a seamless loop: {motion}. The last frame "
+                  "flows into the first; same style, colours, size and anchor point in every frame; no text, borders, "
+                  "labels or added objects.")
+        print("  (budget estimate prices the GIF as one image per frame; real cost may differ)")
+        _plan(count, image_model=model, task="precise", background=background, size=size, edits=True)
+        try:
+            raw, _ = edit_gif(_png_bytes(src), prompt, count, frame_ms, size, background, model)
+        except ApiError as e:
+            sys.exit(f"frames: {e}")
+        raw_path.write_bytes(raw)
+    try:
+        im = Image.open(raw_path)
+        if im.format != "GIF" or getattr(im, "n_frames", 1) < 2:
+            raise ValueError("not an animated GIF")
+        frames, durations = [], []
+        for frame in ImageSequence.Iterator(im):
+            frames.append(frame.convert("RGBA"))
+            durations.append(frame.info.get("duration") or frame_ms or 80)
+    except (OSError, ValueError):
+        raw_path.replace(out / "native_raw.notgif")
+        sys.exit("frames: endpoint ignored output_format=gif or returned an invalid animated GIF")
+    for pat in ("frame_*.png", "moving_f*.png") + (() if reuse else ("reroll_f*.png", "static.png", "qa.json")):
+        for old in out.glob(pat):
+            old.unlink()
+    mean_ms = sum(durations) / len(durations)
+    if frame_ms is not None and abs(mean_ms - frame_ms) > 10:
+        print(f"  ! GIF frame duration is {mean_ms:g} ms; requested {frame_ms} ms")
+    fps = 1000 / mean_ms
+    frames = _align_frames(frames, a.anchor)
+    qa = _frame_qa(frames, src)
+    if count is not None and len(frames) != count:
+        qa["sequence"]["flags"].append("frame-count")
+        print(f"  ! GIF returned {len(frames)} frames; requested {count}")
+    _qa_report(qa)
+    if a.match_colors:
+        frames = _match_colors(frames, src)
+        flags = qa["sequence"]["flags"]
+        qa = _frame_qa(frames, src)
+        qa["sequence"]["flags"] += [f for f in flags if f == "frame-count"]
+        _qa_report(qa, " after colour match")
+    labels = [f"f{r['frame']} {' '.join(r['flags'])}".strip() for r in qa["frames"]]
+    if a.tween > 1:
+        frames, labels, fps = _tween_frames(a, frames, labels, fps, src, None, qa)
+    qa.update({"route": "native-gif", "model": model})
+    (out / "qa.json").write_text(json.dumps(qa, indent=1))
+    for i, frame in enumerate(frames):
+        frame.save(out / f"frame_{i + 1:02d}.png")
+    _write_anim(out, a.name, frames, fps, a, labels)
+
+
 def cmd_frames(a):
     d = Path(a.dir)
     src = _open_image(d / "assets" / f"{a.name}.png", "asset", "run forge first, or check the name")
@@ -890,20 +976,21 @@ def cmd_frames(a):
         sys.exit(f"frames: --formats takes a comma list of {','.join(FRAME_FORMATS)}, got {a.formats!r}")
     if a.count is not None and a.count > 240:
         sys.exit(f"frames: --count {a.count} is more than 240 frames (10 s at 24 fps); a loop needs far fewer")
-    if a.fps is not None and not 1 <= a.fps <= 120:
+    if a.fps is not None and not getattr(a, "native_gif", False) and not 1 <= a.fps <= 120:
         sys.exit(f"frames: --fps {a.fps:g} must be between 1 and 120")
     if a.amount > 10:
         sys.exit(f"frames: --amount {a.amount:g} is a strength multiplier around 1 (at most 10)")
     if not np.asarray(src.getchannel("A")).any():
         sys.exit(f"frames: assets/{a.name}.png is fully transparent: there is nothing to animate")
     share, corners = _opaque_share(src)
-    if share > 0.9 and corners:
+    native = getattr(a, "native_gif", False)
+    if share > 0.9 and corners and not native:
         print(f"  ! assets/{a.name}.png has no transparent background ({share:.0%} opaque): the whole rectangle will "
               "move; forge it with transparent=true or cut the backdrop out first")
     out = d / "frames" / (f"{a.name}_{a.procedural}" if a.procedural else a.name)
     out.mkdir(parents=True, exist_ok=True)
     stale = ["frame_*.png", "moving_f*.png"] + ([] if a.reuse else ["reroll_f*.png", "static.png", "qa.json"])
-    for pat in stale:
+    for pat in [] if native else stale:  # the native route clears them only once it holds a valid GIF
         for old in out.glob(pat):
             old.unlink()
     if a.count is not None and a.count < 2:
@@ -915,6 +1002,8 @@ def cmd_frames(a):
         sys.exit(f"frames: --tween {a.tween}: at most 8 (7 in-betweens per pair)")
     if a.tween > 1 and a.tween_engine == "rife":
         _rife_bin(a.rife)                             # before any paid call
+    if native:
+        return _frames_native_gif(a, src, out)
     if a.procedural:
         return _frames_procedural(a, src, out)
     if not a.moving:

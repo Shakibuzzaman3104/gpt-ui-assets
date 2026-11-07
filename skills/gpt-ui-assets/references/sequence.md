@@ -17,7 +17,7 @@ python3 $K sequence build/player train_smoke layout --base train_body.png --spri
 #    `render` and refused by `build`/`propagate`, never reused silently
 # 2. render what the plan asks for: the keys only (every 6th of 72 frames = 12 calls), or every frame
 python3 $K sequence build/player train_smoke render --moving "The smoke" --locked "The toy steam train" \
-  --model gpt-image-2.5-sunburst
+  --model gpt-image-2.6-sunburst
 # 3. build: keys only -> EbSynth propagates them to all 72 frames; every frame rendered -> built directly
 python3 $K sequence build/player train_smoke build --ref drawn_smoke.png --below 175
 ```

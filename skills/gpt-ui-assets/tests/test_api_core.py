@@ -589,6 +589,10 @@ def test_image_model_routing():
             K._config.cache_clear()
             assert K.pick_image_model(task="concept") == "gpt-image-2.5-flare"
             assert K.pick_image_model(task="precise", background="transparent") == "gpt-image-2.5-sunburst"
+            ids["data"] += [{"id": "gpt-image-2.6-flare"}, {"id": "gpt-image-2.6-sunburst"}]
+            K._listed_models.cache_clear()
+            assert K.pick_image_model(task="concept") == "gpt-image-2.6-flare"
+            assert K.pick_image_model(task="precise") == "gpt-image-2.6-sunburst"
             assert K.pick_image_model("mine", "precise") == "mine"
             assert K.image_chain("precise", "transparent")[-1] == "gpt-image-2"
             ids["data"] = [{"id": "gpt-image-2"}, {"id": "gpt-image-1.5"}]
@@ -602,6 +606,50 @@ def test_image_model_routing():
         K.requests.get = saved
         K._listed_models.cache_clear()
         K._config.cache_clear()
+
+
+def test_edit_gif_request_and_fallback():
+    images = [Image.new("RGB", (16, 16), (i * 30, 0, 0)) for i in range(6)]
+    buf = io.BytesIO()
+    images[0].save(buf, "GIF", save_all=True, append_images=images[1:], duration=80)
+    raw = buf.getvalue()
+    response = R(200, {"data": [{"b64_json": b64(raw)}]})
+    with api([response]) as calls:
+        got, meta = K.edit_gif(png_bytes(), "move", 6, 80, "32x16", model="gpt-image-2.6-flare")
+        assert got == raw and Image.open(io.BytesIO(got)).n_frames == 6 and meta["source_format"] == "GIF"
+        data = calls[0]["data"]
+        assert (data["output_format"], data["frame_count"], data["frame_duration_ms"], data["size"], data["model"]) == (
+            "gif", 6, 80, "32x16", "gpt-image-2.6-flare")
+    def bad(param, message="unsupported"):
+        return R(400, {"error": {"message": message, "param": param, "type": "invalid_request_error"}})
+    with api([bad("output_format")]) as calls:
+        assert raises(lambda: K.edit_gif(png_bytes(), "move", 6, 80, "32x16", model="gpt-image-2.6-flare")).status == 400
+        assert len(calls) == 1 and calls[0]["data"]["output_format"] == "gif"
+    with api([bad("background"), response]) as calls, contextlib.redirect_stderr(io.StringIO()):
+        K.edit_gif(png_bytes(), "move", 6, 80, "32x16", background="transparent", model="gpt-image-2.6-flare")
+        assert len(calls) == 2 and "background" not in calls[1]["data"] and calls[1]["data"]["output_format"] == "gif"
+    with api([bad(None, "GIF output is not enabled for this request.")]) as calls:
+        e = raises(lambda: K.edit_gif(png_bytes(), "move", 6, 80, "32x16", model="gpt-image-2.6-flare"))
+        assert e.code == "gif_not_enabled" and len(calls) == 1
+    with tempfile.TemporaryDirectory() as d, env(GPTKIT_LEDGER=str(Path(d) / "ledger")):
+        K._ledger_record("/images/edits", "gpt-image-2.6-sunburst", {"usage": {"output_tokens": 100}}, image=True)
+        entry = json.loads((Path(d) / "ledger").read_text())
+        assert not entry["estimated"] and entry["est_usd"] == 0.003
+
+
+def test_gif_model_selection():
+    saved = K._listed_models
+    try:
+        with env(GPTKIT_API_KEY="sk-test", GPTKIT_CONFIG="/nonexistent/env", GPTKIT_IMAGE_MODEL=None):
+            K._listed_models = lambda *a: frozenset(["gpt-image-2.5-flare"])
+            assert "requires" in str(raises(lambda: K.pick_gif_model(), SystemExit))
+            assert "2.6" in str(raises(lambda: K.pick_gif_model("gpt-image-2.5-flare"), SystemExit))
+            K._listed_models = lambda *a: frozenset(["gpt-image-2.6-flare"])
+            assert K.pick_gif_model() == "gpt-image-2.6-flare"
+            K._listed_models = lambda *a: None
+            assert K.pick_gif_model() == "gpt-image-2.6-sunburst"
+    finally:
+        K._listed_models = saved
 
 
 def test_model_retirement_warnings():
@@ -621,7 +669,7 @@ def test_model_retirement_warnings():
         with env(GPTKIT_API_KEY="sk-test", GPTKIT_CONFIG="/nonexistent/env", GPTKIT_IMAGE_MODEL="gpt-image-1"):
             with contextlib.redirect_stderr(io.StringIO()) as err:
                 assert K.pick_image_model() == "gpt-image-1"
-            assert "replacement: gpt-image-2.5-sunburst or gpt-image-2.5-flare" in err.getvalue()
+            assert "replacement: gpt-image-2.6-sunburst or gpt-image-2.6-flare" in err.getvalue()
         K._NOTED.clear()
         K._today = lambda: "2027-04-02"  # gpt-5.1 shuts down 2027-04-01
         with api([R(200, message("ok"))]):

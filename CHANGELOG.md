@@ -2,6 +2,20 @@
 
 All notable changes to gpt-ui-assets. Versions follow [semantic versioning](https://semver.org).
 
+## 5.6.0 (2026-11-07)
+
+GPT Image 2.6 becomes the default, and `frames` gains a native GIF route.
+
+### Added
+- **`frames --native-gif`.** One `gpt-image-2.6-*` edit animates an approved asset into a GIF of 2–16 frames. The frames
+  then go through the usual QA and export, so WebP, APNG, Lottie and the Android `animation-list` still come out, and
+  `--reuse all` rebuilds them for free. GIF output is an OpenAI preview: an endpoint without access stops with one clear
+  line at no cost, and the sprite-sheet route remains the way to make a GIF there.
+
+### Changed
+- **Image routing** now tries `gpt-image-2.6-flare` (new art) and `gpt-image-2.6-sunburst` (edits) first, then the 2.5
+  pair. Prices are unchanged, and retirement notices now point at 2.6.
+
 ## 5.5.0 (2026-10-30)
 
 A gallery for everything the kit makes: outputs live under `ui-assets/` in the project, and `ui-assets/index.html`

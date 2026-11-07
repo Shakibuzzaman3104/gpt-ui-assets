@@ -447,6 +447,162 @@ def test_argv_table():
     shutil.rmtree(tmp)
 
 
+def test_native_gif_route():
+    tmp = _asset_dir(Path(tempfile.mkdtemp()))
+    out = tmp / "frames" / "flame"
+    calls = []
+    saved = g.edit_gif, g._plan, g._selected_backend, g.pick_gif_model
+    def fake(ref, prompt, count, ms, size, background, model):
+        calls.append((count, ms, size, model))
+        images = [Image.new("RGB", (48, 32), (i * 30, 40, 60)) for i in range(6)]
+        buf = io.BytesIO()
+        images[0].save(buf, "GIF", save_all=True, append_images=images[1:], duration=ms, loop=0)
+        return buf.getvalue(), {}
+    try:
+        g.edit_gif, g._plan = fake, lambda *a, **k: None
+        g._selected_backend = lambda: "api"
+        g.pick_gif_model = lambda m=None: m or "gpt-image-2.6-sunburst"
+        base = ["frames", str(tmp), "flame", "--native-gif", "--motion", "sway", "--count", "6"]
+        for fps, ms in ((12, 80), (7, 140)):
+            assert _main_exit(base + ["--fps", str(fps), "--px", "96"])[0] == 0
+            assert calls[-1][1] == ms
+            w, h = map(int, calls[-1][2].split("x"))
+            assert w % 16 == h % 16 == 0 and max(w, h) <= 96
+            assert len(list(out.glob("frame_*.png"))) == 6
+            assert json.loads((out / "qa.json").read_text())["route"] == "native-gif"
+            assert Image.open(out / "native_raw.gif").info["duration"] == ms
+            for name in ("preview.gif", "flame.webp", "flame.apng", "flame.json", "frames_review.png",
+                         "android/drawable/flame_anim.xml"):
+                assert (out / name).exists(), name
+        n = len(calls)
+        assert _main_exit(["frames", str(tmp), "flame", "--native-gif", "--reuse", "all", "--count", "6"])[0] == 0
+        assert len(calls) == n
+        for name in ("preview.gif", "flame.webp", "flame.apng", "flame.json"):
+            (out / name).unlink()
+        assert _main_exit(["frames", str(tmp), "flame", "--native-gif", "--reuse", "all", "--count", "6",
+                           "--formats", "webp"])[0] == 0
+        assert (out / "flame.webp").exists() and not (out / "preview.gif").exists()
+        assert not (out / "flame.apng").exists() and not (out / "flame.json").exists()
+        for extra in (["--count", "1"], ["--count", "17"], ["--procedural", "pulse"],
+                      ["--static", "body"], ["--reroll"], ["--reuse", "static"]):
+            assert _main_exit(base + extra)[0] != 0 and len(calls) == n
+        g._selected_backend = lambda: "cli"
+        assert _main_exit(base)[0] != 0 and len(calls) == n
+        g._selected_backend = lambda: "api"
+        g.pick_gif_model = saved[3]
+        assert _main_exit(base + ["--model", "gpt-image-2.5-flare"])[0] != 0 and len(calls) == n
+        g.pick_gif_model = lambda m=None: m or "gpt-image-2.6-sunburst"
+        g.edit_gif = lambda *a, **k: (g._png_bytes(Image.new("RGB", (16, 16))), {})
+        kept = sorted(out.glob("frame_*.png"))
+        assert _main_exit(base)[0] != 0 and (out / "native_raw.notgif").exists()
+        assert sorted(out.glob("frame_*.png")) == kept and kept, "a bad reply must not wipe the previous run"
+    finally:
+        g.edit_gif, g._plan, g._selected_backend, g.pick_gif_model = saved
+        shutil.rmtree(tmp)
+
+
+def _gif_bytes(n=6, ms=100, size=(48, 32), alpha=False):
+    images = []
+    for i in range(n):
+        im = Image.new("RGBA", size, (0, 0, 0, 0) if alpha else (20, 40, 60, 255))
+        ImageDraw.Draw(im).ellipse([4 + i * 3, 6, 20 + i * 3, 22], fill=(255, 120, 30, 255))
+        images.append(im)
+    buf = io.BytesIO()
+    images[0].save(buf, "GIF", save_all=True, append_images=images[1:], duration=ms, loop=0, disposal=2)
+    return buf.getvalue()
+
+
+def _with_native(fn):
+    tmp = _asset_dir(Path(tempfile.mkdtemp()))
+    saved = g.edit_gif, g._plan, g._selected_backend, g.pick_gif_model
+    try:
+        g._plan, g._selected_backend = (lambda *a, **k: None), (lambda: "api")
+        g.pick_gif_model = lambda m=None: m or "gpt-image-2.6-sunburst"
+        fn(tmp, tmp / "frames" / "flame", ["frames", str(tmp), "flame", "--native-gif", "--motion", "sway"])
+    finally:
+        g.edit_gif, g._plan, g._selected_backend, g.pick_gif_model = saved
+        shutil.rmtree(tmp)
+
+
+def test_native_gif_refusal_keeps_previous_run():
+    def run(tmp, out, base):
+        out.mkdir(parents=True)
+        for name in ("frame_01.png", "moving_f01.png", "qa.json", "static.png"):
+            (out / name).write_text("previous run")
+        def refused(*a, **k):
+            raise g.ApiError(400, "this endpoint has no GIF preview access", code="gif_not_enabled")
+        g.edit_gif = refused
+        code, err = _main_exit(base)
+        assert code == 1 and "no GIF preview access" in err and len(err.strip().splitlines()) == 1
+        for extra in (["--count", "17"], ["--fps", "200"]):
+            assert _main_exit(base + extra)[0] != 0
+        for name in ("frame_01.png", "moving_f01.png", "qa.json", "static.png"):
+            assert (out / name).read_text() == "previous run", name
+    _with_native(run)
+
+
+def test_native_gif_reuse_reads_count_and_timing_from_the_file():
+    def run(tmp, out, base):
+        g.edit_gif = lambda *a, **k: (_gif_bytes(12, 100), {})
+        assert _main_exit(base + ["--count", "12", "--fps", "10"])[0] == 0
+        qa = json.loads((out / "qa.json").read_text())
+        assert "frame-count" not in qa["sequence"]["flags"]
+        g.edit_gif = None
+        assert _main_exit(["frames", str(tmp), "flame", "--native-gif", "--reuse", "all"])[0] == 0
+        assert "frame-count" not in json.loads((out / "qa.json").read_text())["sequence"]["flags"]
+        assert len(list(out.glob("frame_*.png"))) == 12
+    _with_native(run)
+
+
+def test_native_gif_short_count_is_flagged_not_lost():
+    def run(tmp, out, base):
+        g.edit_gif = lambda *a, **k: (_gif_bytes(5, 80), {})
+        assert _main_exit(base + ["--count", "9"])[0] == 0
+        assert "frame-count" in json.loads((out / "qa.json").read_text())["sequence"]["flags"]
+        assert len(list(out.glob("frame_*.png"))) == 5
+    _with_native(run)
+
+
+def test_native_gif_zero_delay_and_transparent_frames_decode():
+    def run(tmp, out, base):
+        g.edit_gif = lambda *a, **k: (_gif_bytes(6, 0, alpha=True), {})
+        assert _main_exit(base + ["--count", "6"])[0] == 0
+        assert not (out / "native_raw.notgif").exists()
+        first = Image.open(out / "frame_01.png").convert("RGBA")
+        assert first.getchannel("A").getextrema() == (0, 255)
+        ghost = [np.asarray(Image.open(f).convert("RGBA").getchannel("A")).mean() for f in sorted(out.glob("frame_*.png"))]
+        assert max(ghost) - min(ghost) < 8, "disposal must not pile earlier frames up"
+    _with_native(run)
+
+
+def test_native_gif_tween_and_match_colors():
+    def run(tmp, out, base):
+        g.edit_gif = lambda *a, **k: (_gif_bytes(4, 100), {})
+        assert _main_exit(base + ["--count", "4", "--fps", "10", "--match-colors", "--tween", "2", "--tween-engine", "blend"])[0] == 0
+        assert len(list(out.glob("frame_*.png"))) == 8
+    _with_native(run)
+
+
+def test_native_gif_request_size_budget_and_background():
+    def run(tmp, out, base):
+        seen = {}
+        def fake(ref, prompt, count, ms, size, background, model):
+            seen.update(prompt=prompt, size=size, background=background)
+            return _gif_bytes(9, 80), {}
+        plans = []
+        g.edit_gif, g._plan = fake, (lambda *a, **k: plans.append(a))
+        assert _main_exit(["frames", str(tmp), "flame", "--native-gif", "--moving", "the flame"])[0] == 0
+        assert "the flame moving naturally" in seen["prompt"] and plans[0][0] == 9
+        assert seen["background"] == "transparent"
+        opaque = Image.new("RGBA", (300, 200), (10, 90, 60, 255))
+        ImageDraw.Draw(opaque).ellipse([60, 40, 200, 160], fill=(240, 240, 240, 255))
+        opaque.save(tmp / "assets" / "flame.png")
+        assert _main_exit(base)[0] == 0 and seen["background"] == "auto"
+        w, h = map(int, seen["size"].split("x"))
+        assert (w, h) == (480, 320)
+    _with_native(run)
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):
