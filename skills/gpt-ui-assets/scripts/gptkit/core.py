@@ -696,7 +696,8 @@ def edit(ref_png: bytes, prompt, size="1024x1024", background="auto", model=None
         try:
             resp = _with_fallback(lambda d: _call("/images/edits", data=d, files=files), data)
         except ApiError as e:
-            if not extra_refs or e.status != 400:
+            if (not extra_refs or e.status != 400 or e.code == "moderation_blocked"
+                    or e.etype == "image_generation_user_error"):
                 raise
             print("  (the endpoint refused several reference images; sent only the first)")
             files = [("image", ("ref.png", ref_png, "image/png"))]
@@ -756,7 +757,7 @@ def edit_gif(ref_png, prompt, frames, frame_ms, size, background="auto", model=N
         err = (e.body or {}).get("error", {}) if isinstance(e.body, dict) else {}
         message = err.get("message", str(e)) if isinstance(err, dict) else str(e)
         if e.status == 400 and "not enabled" in message.lower() and "gif" in message.lower():
-            raise ApiError(400, "this endpoint has no GIF preview access; drop --native-gif to use the sprite-sheet route (which needs --moving)", code="gif_not_enabled")
+            raise ApiError(400, "this endpoint has no GIF preview access", code="gif_not_enabled")
         e.prompt = e.prompt or prompt[:200]
         raise
 

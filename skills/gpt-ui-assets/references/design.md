@@ -28,7 +28,7 @@ python3 $K critique design/profile/mockup_v1.png --style-ref design/home/mockup_
     shared chrome the screen has. `layout_diff < 10` means GPT copied the reference; the kit retries once.
   - `--edit` / `--style-ref` images are sent downsized to a 1536 px long side.
   - `--edit` with `--style-ref` sends both images in one edit: the screen being revised first, the approved screen as
-    a style reference. Anything added is drawn in the reference's components: on Hearth, a new refill card reused the
+    a style reference. Anything added is drawn in the reference's components: in a medicine-reminder test, a new refill card reused the
     reference's cart icon and Restock button, where the edit alone invented a refresh icon.
 - **Canvas and validation:**
   - New phone screens render at `1152x2496`, the 9:19.5 proportion of current iPhones (and close to most Android

@@ -623,6 +623,11 @@ def test_edit_multiple_references():
         K.edit(b"one", "edit", model="test", extra_refs=[b"two"])
         assert len(calls) == 2 and calls[1]["files"] == [("image", ("ref.png", b"one", "image/png"))]
         assert out.getvalue().count("the endpoint refused several reference images; sent only the first") == 1
+    for err in ({"code": "moderation_blocked", "message": "blocked"},
+                {"type": "image_generation_user_error", "message": "change the request"}):
+        with api([R(400, {"error": err})]) as calls:
+            assert raises(lambda: K.edit(b"one", "edit", model="test", extra_refs=[b"two"])).status == 400
+            assert len(calls) == 1
     with api([server_error]) as calls, env(GPTKIT_RETRIES="0"):
         assert raises(lambda: K.edit(b"one", "edit", model="test", extra_refs=[b"two"])).status == 500
         assert len(calls) == 1
