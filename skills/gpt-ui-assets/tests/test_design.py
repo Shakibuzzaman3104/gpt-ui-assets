@@ -670,6 +670,23 @@ def test_mockup_edit_keeps_its_canvas():
         assert code == 0 and sizes[-1][0] == K.PHONE_SIZE and "9:19.5" in sizes[-1][1], (out, sizes)
 
 
+def test_mockup_edit_with_style_reference():
+    calls = []
+    def fake_edit(ref, prompt, size="1024x1024", **kw):
+        calls.append((ref, prompt, kw))
+        return _png((1024, 1536)), {"quality": "high", "size": size}
+    with tempfile.TemporaryDirectory() as td, patched(edit=fake_edit):
+        first, second = Path(td) / "first.png", Path(td) / "second.png"
+        Image.new("RGB", (1024, 1536), "red").save(first)
+        Image.new("RGB", (100, 150), "blue").save(second)
+        code, out = run(K.cmd_mockup, _mockup_args(td, edit=str(first), style_ref=str(second)))
+        assert code == 0, out
+        assert len(calls[-1][2]["extra_refs"]) == 1 and "second attached image" in calls[-1][1]
+        assert calls[-1][2]["extra_refs"][0] == K._prep_ref(second)
+        code, out = run(K.cmd_mockup, _mockup_args(td, edit=str(first), name="single"))
+        assert code == 0 and "extra_refs" not in calls[-1][2], out
+
+
 def test_mockup_fits_an_off_aspect_render():
     calls = []
 

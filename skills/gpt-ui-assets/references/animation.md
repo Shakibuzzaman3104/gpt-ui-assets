@@ -71,10 +71,15 @@ python3 $K vectorize build/home campfire --rebuild      # after YOU edit layers.
   - **Limits:** `--count` is 2–16 (default 9). The API rejects 17 and up, whatever older copies of OpenAI's guide say.
     Frame delay is `1000/fps` rounded to 10 ms, 20–2000 ms. `--px` sets the frame's long side, snapped to multiples of
     16.
-  - **Access:** it is a preview. An endpoint without access answers `GIF output is not enabled`; the kit stops on
-    that line and costs nothing. ChatGPT or Codex subscription routes refused it on 2026-11-07, including through
-    sub2api. The Codex CLI backend is refused before any call. Drop the flag and use `--moving`: the sprite-sheet route
-    needs no preview and also exports a GIF.
+  - **Access:** it is a preview. An endpoint without access answers `GIF output is not enabled` at no cost, and the
+    kit then runs the sprite-sheet route on the same asset: one edit draws the frames on a sheet and the kit builds the
+    GIF. The moving part is `--moving` if given, else "the whole subject: <motion>"; `--count` carries over, else the
+    sheet's default of 8. The same happens on the Codex CLI backend and on an endpoint that lists no 2.6 model.
+    ChatGPT and Codex sign-ins refused GIF on 2026-11-07, including through sub2api; an OpenAI API key is the route
+    one user reported working.
+  - **Sheet size:** a gateway vendor measured that 2.6 draws GIF frames on one sheet of the next power of two cells
+    (8 cells for 5–8 frames, 16 for 9–16), at most 3840 px a side and 8,294,400 px in all. The kit shrinks the frame
+    size to fit before the call and says so: about 960 px for 5–8 square frames, 720 px for 9–16.
   - **Quality:** GIF has 256 colours and on/off alpha, so soft glows and smoke edges come out hard. Keep the sprite-sheet
     route for those, and for anything that must hold a still layer exactly (`--static` is refused here).
   - **Re-export:** `--reuse all` rebuilds every output from `native_raw.gif` with no API call. `--tween` and

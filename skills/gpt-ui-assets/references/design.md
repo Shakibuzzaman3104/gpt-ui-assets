@@ -12,6 +12,9 @@ python3 $K mockup "habit tracker home: date, progress summary, 5 habits with che
   --platform android --out design/home --variants 2          # 1152x2496 (9:19.5) phone canvas; web defaults to 1536x1024
 # each variant is aspect-checked and critiqued automatically -> mockup_v1_critique.png/json (--no-critique skips)
 python3 $K mockup "make the summary card taller" --edit design/home/mockup_v1.png --out design/home --name mockup_r2
+# an edit that adds something new, drawn in the approved screen's components and icons:
+python3 $K mockup "add a 'Refill soon' card with a Restock button" --edit design/list/mockup_v1.png \
+  --style-ref design/home/mockup_r2_v1.png --out design/list --name mockup_r2
 # every further screen of the same app, in the approved screen's exact design language:
 python3 $K mockup "Profile screen, Profile tab active: avatar + name, 3 stat tiles, weekly chart, settings list" \
   --style-ref design/home/mockup_r2_v1.png --out design/profile
@@ -24,6 +27,9 @@ python3 $K critique design/profile/mockup_v1.png --style-ref design/home/mockup_
     a different wordmark, a different art style, text baked into the art. In the prompt, say which tab is active and which
     shared chrome the screen has. `layout_diff < 10` means GPT copied the reference; the kit retries once.
   - `--edit` / `--style-ref` images are sent downsized to a 1536 px long side.
+  - `--edit` with `--style-ref` sends both images in one edit: the screen being revised first, the approved screen as
+    a style reference. Anything added is drawn in the reference's components: on Hearth, a new refill card reused the
+    reference's cart icon and Restock button, where the edit alone invented a refresh icon.
 - **Canvas and validation:**
   - New phone screens render at `1152x2496`, the 9:19.5 proportion of current iPhones (and close to most Android
     phones). `--size` overrides it; `--edit` keeps the edited screen's canvas; web defaults to `1536x1024`.

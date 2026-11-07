@@ -487,7 +487,8 @@ def test_native_gif_route():
                       ["--static", "body"], ["--reroll"], ["--reuse", "static"]):
             assert _main_exit(base + extra)[0] != 0 and len(calls) == n
         g._selected_backend = lambda: "cli"
-        assert _main_exit(base)[0] != 0 and len(calls) == n
+        with _Sheet() as sh:
+            assert _main_exit(base)[0] == 0 and len(calls) == n and len(sh.calls) == 1
         g._selected_backend = lambda: "api"
         g.pick_gif_model = saved[3]
         assert _main_exit(base + ["--model", "gpt-image-2.5-flare"])[0] != 0 and len(calls) == n
@@ -532,12 +533,52 @@ def test_native_gif_refusal_keeps_previous_run():
         def refused(*a, **k):
             raise g.ApiError(400, "this endpoint has no GIF preview access", code="gif_not_enabled")
         g.edit_gif = refused
-        code, err = _main_exit(base)
-        assert code == 1 and "no GIF preview access" in err and len(err.strip().splitlines()) == 1
+        with _Sheet("raise") as sh:
+            code, err = _main_exit(base)
+        assert code == 1 and "sheet call failed" in err and len(sh.calls) == 1
         for extra in (["--count", "17"], ["--fps", "200"]):
             assert _main_exit(base + extra)[0] != 0
         for name in ("frame_01.png", "moving_f01.png", "qa.json", "static.png"):
             assert (out / name).read_text() == "previous run", name
+    _with_native(run)
+
+
+def test_native_gif_fallback_and_sheet_fit():
+    for count, w, h, expected in ((9, 512, 512, (512, 512)), (16, 1024, 1024, (720, 720)),
+                                   (6, 832, 832, (832, 832)), (6, 976, 672, (976, 672))):
+        assert g._gif_sheet_fit(count, w, h) == expected
+    assert g._gif_sheet_fit(6, 1024, 1024)[0] < 1024
+
+    def run(tmp, out, base):
+        calls = []
+        def refused(*args, **kwargs):
+            calls.append(args)
+            raise g.ApiError(400, "refused", code="gif_not_enabled")
+        g.edit_gif = refused
+        for extra, moving in (([], "the whole subject: sway"), (["--moving", "the flame"], "the flame")):
+            with _Sheet() as sh:
+                code, err = _main_exit(base + extra)
+            assert code == 0, err
+            assert len(sh.calls) == 1 and f"moving part — {moving} —" in sh.calls[0][1]
+            assert "as 8 animation frames" in sh.calls[0][1]
+            assert (out / "preview.gif").exists() and (out / "qa.json").exists()
+        assert len(calls) == 2
+        Image.new("RGBA", (1024, 1024), (20, 40, 60, 255)).save(tmp / "assets" / "flame.png")
+        seen = []
+        def fake(ref, prompt, count, ms, size, background, model):
+            seen.append(size)
+            return _gif_bytes(16, 80), {}
+        g.edit_gif = fake
+        args = g.build_parser()[0].parse_args(base + ["--count", "16", "--px", "1024"])
+        text = _run(g.cmd_frames, args)
+        assert seen == ["720x720"] and "sending 720x720" in text
+        assert (out / "native_raw.gif").exists()
+        g.pick_gif_model = lambda m=None: None  # endpoint lists no 2.6 model
+        g.edit_gif = None
+        with _Sheet() as sh:
+            code, err = _main_exit(base)
+        assert code == 0, err
+        assert len(sh.calls) == 1 and not (out / "native_raw.gif").exists()
     _with_native(run)
 
 

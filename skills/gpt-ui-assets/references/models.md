@@ -13,7 +13,7 @@ or a set `GPTKIT_IMAGE_MODEL` overrides the routing (`doctor` shows which mode i
 |---|---|---|
 | Default: mockups, backgrounds, illustrations, app-icon concepts, forge candidates | `gpt-image-2.6-flare` | OpenAI's fast iteration model; supports `background: transparent` (measured: 73% of pixels fully transparent on a test icon). |
 | Edits that must stay consistent: `sequence` frames, `frames` sheets, `state`, art with embedded text, final hero assets | `gpt-image-2.6-sunburst` | OpenAI's model for detailed visual work; same token prices as Flare. |
-| Animated GIF from an approved asset: `frames --native-gif` | `gpt-image-2.6-sunburst`, else `-flare` | GIF output needs 2.6 **and** access to OpenAI's GIF preview (`animation.md`). |
+| Animated GIF from an approved asset: `frames --native-gif` | `gpt-image-2.6-sunburst`, else `-flare` | GIF output needs 2.6 **and** access to OpenAI's GIF preview; without it `frames` uses the sprite-sheet route (`animation.md`). |
 | Transparent PNG/WebP assets (forge, icons, sprites) | `gpt-image-2.6-flare` or `-sunburst` | OpenAI documents `gpt-image-2` as accepting only `auto`/`opaque`. The kit errors with the model name when a transparent request comes back opaque. |
 | Endpoint lists no 2.6 model | the 2.5 pair, picked automatically | Same prices and API; no GIF output. |
 | Endpoint lists neither 2.6 nor 2.5 | `gpt-image-2` for opaque art; `gpt-image-1.5` for transparency **until 2026-12-01** | 1.5 shuts down on 2026-12-01; after that such a gateway cannot make transparent assets. |

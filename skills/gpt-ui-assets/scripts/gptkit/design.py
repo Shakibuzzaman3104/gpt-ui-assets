@@ -271,8 +271,6 @@ def _prep_ref(path, long_side=1536, what="reference image"):
 
 
 def cmd_mockup(a):
-    if a.edit and a.style_ref:
-        sys.exit("gptkit: use --edit (revise a screen) or --style-ref (new screen in its style), not both")
     directions = getattr(a, "directions", False)
     if directions and (a.edit or a.style_ref or getattr(a, "anchor", None) or a.raw):
         sys.exit("gptkit: --directions designs new screens; not with --edit, --style-ref, --anchor/--set or --raw")
@@ -286,6 +284,8 @@ def cmd_mockup(a):
         sys.exit("gptkit: --set requires --anchor")
     ref_path = anchor_path or a.style_ref
     ref_png = _prep_ref(ref_path, what="--anchor image" if anchor_path else "--style-ref image") if ref_path else None
+    edit_style_png = (_prep_ref(a.style_ref, what="--style-ref image") if edit_png is not None and a.style_ref and anchor_path
+                      else ref_png if edit_png is not None and a.style_ref else None)
     ref = Image.open(io.BytesIO(ref_png)) if ref_png else None
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
@@ -355,7 +355,10 @@ def cmd_mockup(a):
     def prompt_for(sz, i=0):
         asp = (record["aspect"] if record and sz == record["canvas"] else ASPECTS.get(sz, f"{sz} px"))
         if edit_png is not None:
-            return f"{a.prompt} Keep the {asp.removesuffix(' canvas')} canvas and everything not mentioned exactly as it is."
+            prompt = f"{a.prompt} Keep the {asp.removesuffix(' canvas')} canvas and everything not mentioned exactly as it is."
+            if edit_style_png is not None:
+                prompt += " The second attached image is an approved screen of the same app: match its visual style (colours, type, components, icon and illustration style) for anything you change or add; do not copy its layout or content."
+            return prompt
         if a.raw:
             return a.prompt
         surface = "web page viewport" if platform == "web" else ("app window" if device_arg == "desktop" or platform in ("macos", "windows", "linux") else "app screen")
@@ -400,7 +403,7 @@ def cmd_mockup(a):
             try:
                 if edit_png is not None or ref_png is not None:
                     img, meta = edit(edit_png if edit_png is not None else ref_png, prompt_for(sz, i), sz, model=a.model,
-                                     task="concept")
+                                     task="concept", **({"extra_refs": [edit_style_png]} if edit_style_png is not None else {}))
                 else:
                     img, meta = generate(prompt_for(sz, i), sz, model=a.model)
             except ApiError as e:

@@ -51,7 +51,25 @@ def _rows(answer="ok", usage=True):
         {"type": "item.completed", "item": {"type": "agent_message", "text": answer}}, end])
 
 
+def test_edit_extra_refs():
+    saved = K._codex, K._generated_snapshot, K._pick_codex_image, K._image_from_codex
+    seen = []
+    def fake_codex(prompt, images, timeout):
+        seen.extend((p.name, p.read_bytes()) for p in images)
+        return None, None, "thread"
+    try:
+        K._codex = fake_codex
+        K._generated_snapshot = lambda: (None, None)
+        K._pick_codex_image = lambda *args: None
+        K._image_from_codex = lambda path: (b"result", {})
+        K._cli_edit(b"one", "edit", fidelity="low", task="concept", extra_refs=[b"two", b"three"])
+        assert seen == [("reference.png", b"one"), ("reference2.png", b"two"), ("reference3.png", b"three")]
+    finally:
+        K._codex, K._generated_snapshot, K._pick_codex_image, K._image_from_codex = saved
+
+
 def run_tests():
+    test_edit_extra_refs()
     # Auto-selection and the three-line setup card happen before any model call.
     saved_ready = K._codex_readiness
     try:

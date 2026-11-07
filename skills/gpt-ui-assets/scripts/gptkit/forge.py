@@ -332,8 +332,14 @@ def cmd_fix(a):
         else:
             prompt = ("Revise the attached standalone asset. " + head + "Clean high-resolution redraw. Fill the canvas "
                       "edge to edge with the element's own artwork (no letterbox), no text. Corrections: ")
-        raw, meta = edit(_png_bytes(cur), prompt + instruction, _size_for(b["w"], b["h"]),
-                         "transparent" if asset["transparent"] else "opaque", a.model)
+        edit_prompt = prompt + instruction
+        edit_kwargs = {}
+        if not getattr(a, "no_target_ref", False):
+            edit_prompt += (" The second attached image is the target region from the approved design: match its artwork; ignore the UI drawn on top and its resolution." if is_bg else
+                            " The second attached image is the target from the approved design (a low-resolution screenshot on its backdrop): match its shape, proportions and colours; ignore its backdrop and resolution.")
+            edit_kwargs["extra_refs"] = [_png_bytes(tgt)]
+        raw, meta = edit(_png_bytes(cur), edit_prompt, _size_for(b["w"], b["h"]),
+                         "transparent" if asset["transparent"] else "opaque", a.model, **edit_kwargs)
         raw, fmt = _png_verified(raw)
         n = 1 + sum(1 for c in entry.get("candidates", []) if str(c.get("cand", "")).startswith("fix"))
         p = d / "raw" / f"{a.name}_fix{n}.png"

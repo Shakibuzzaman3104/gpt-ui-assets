@@ -164,6 +164,7 @@ def _asset_parsers(sub):
     p = sub.add_parser("fix", help="vision-diff the chosen asset against the design and apply one correction")
     p.add_argument("dir"); p.add_argument("name", help="asset name from assets.json")
     p.add_argument("--rounds", type=_pos_int, default=1, help="diff+edit rounds (default 1); stops early when nothing differs")
+    p.add_argument("--no-target-ref", action="store_true", help="send only the asset, not the design crop, to the edit")
     p.add_argument("--note", help="extra user feedback to include"); p.add_argument("--accept", action="store_true",
                                                                                    help="keep the result even if the score is worse")
     _color_args(p); p.add_argument("--model", default=None, help="image model (default GPTKIT_IMAGE_MODEL)"); p.set_defaults(fn=cmd_fix)

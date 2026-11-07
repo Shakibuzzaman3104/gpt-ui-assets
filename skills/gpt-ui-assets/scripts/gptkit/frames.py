@@ -1,10 +1,14 @@
 """Frames."""
 import base64
 import concurrent.futures as cf
+import copy
 import io
 import json
 import math
+import os
+import shutil
 import sys
+import tempfile
 from pathlib import Path
 
 import numpy as np
@@ -882,12 +886,59 @@ def _reroll(a, crops, qa, bad, ref, ref_mask, motion, out):
 FRAME_FORMATS = ("gif", "webp", "apng", "lottie")
 
 
+def _gif_sheet_fit(count, w, h):
+    # Gateway vendor measurement, 2026-11-05: GIF frames occupy a power-of-two sheet.
+    cells = 1 << (count - 1).bit_length()
+    layouts = {1: [(1, 1)], 2: [(2, 1), (1, 2)], 4: [(2, 2)],
+               8: [(4, 2), (2, 4)], 16: [(4, 4)]}[cells]
+
+    def fits(x, y):
+        return x * y * cells <= 8294400 and any(c * x <= 3840 and r * y <= 3840 for c, r in layouts)
+
+    if fits(w, h):
+        return w, h
+    uw, uh = w // 16, h // 16
+    divisor = math.gcd(uw, uh)
+    for scale in range(divisor - 1, 0, -1):
+        x, y = uw // divisor * scale * 16, uh // divisor * scale * 16
+        if fits(x, y):
+            return x, y
+    return 16, 16
+
+
+def _frames_gif_fallback(a, out):
+    if not (a.moving or a.motion):
+        sys.exit("frames: --native-gif requires --motion or --moving")
+    print("frames: no GIF preview access here; using the sprite-sheet route instead (one edit draws the frames on a sheet, the kit builds the GIF)")
+    with tempfile.TemporaryDirectory(dir=str(out.parent)) as tmp:
+        root = Path(tmp)
+        (root / "assets").mkdir()
+        shutil.copyfile(Path(a.dir) / "assets" / f"{a.name}.png", root / "assets" / f"{a.name}.png")
+        args = copy.copy(a)
+        args.dir, args.native_gif, args.reuse = str(root), False, None
+        args.moving = a.moving or f"the whole subject: {a.motion}"
+        cmd_frames(args)
+        staged = root / "frames" / a.name
+        for pat in ("frame_*.png", "moving_f*.png", "reroll_f*.png", "static.png", "qa.json"):
+            for old in out.glob(pat):
+                old.unlink()
+        res = _res_name(a.name)
+        for sub, pat in (("drawable-nodpi", f"{res}_frame_*.png"), ("drawable", f"{res}_anim.xml")):
+            for old in (out / "android" / sub).glob(pat):
+                old.unlink()
+        for file in staged.rglob("*"):
+            if file.is_file():
+                dest = out / file.relative_to(staged)
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                os.replace(file, dest)
+        (out / "native_raw.gif").unlink(missing_ok=True)
+    print(f"frames: sprite-sheet outputs moved to {out}")
+
+
 def _frames_native_gif(a, src, out):
     from .codex_cli import _selected_backend  # deferred: codex_cli imports this module
     if a.procedural or a.static or a.reroll or a.reuse == "static":
         sys.exit("frames: --native-gif cannot be combined with --procedural, --static, --reroll or --reuse static")
-    if _selected_backend() == "cli":
-        sys.exit("frames: the Codex CLI backend does not support native GIF output")
     reuse = a.reuse == "all"
     count, fps = a.count or (None if reuse else 9), a.fps or (None if reuse else 12)
     if count is not None and not 2 <= count <= 16:
@@ -899,7 +950,11 @@ def _frames_native_gif(a, src, out):
         sys.exit("frames: --native-gif requires --motion or --moving")
     if a.px < 16:
         sys.exit("frames: --native-gif requires --px at least 16")
+    if not reuse and _selected_backend() == "cli":
+        return _frames_gif_fallback(a, out)
     model = pick_gif_model(a.model) if not reuse or a.model else None
+    if not reuse and model is None:
+        return _frames_gif_fallback(a, out)
     raw_path = out / "native_raw.gif"
     if reuse:
         if not raw_path.exists():
@@ -912,7 +967,10 @@ def _frames_native_gif(a, src, out):
     else:
         limit = max(16, a.px // 16 * 16)
         size = tuple(max(16, min(limit, round(v / max(src.size) * limit / 16) * 16)) for v in src.size)
-        size = f"{size[0]}x{size[1]}"
+        fitted = _gif_sheet_fit(count, *size)
+        if fitted != size:
+            print(f"  (native GIF: {count} frames at {size[0]}x{size[1]} exceed the API's sheet limit; sending {fitted[0]}x{fitted[1]})")
+        size = f"{fitted[0]}x{fitted[1]}"
         share, _ = _opaque_share(src)
         background = "transparent" if share < 0.9 else "auto"
         if background == "transparent":
@@ -926,6 +984,8 @@ def _frames_native_gif(a, src, out):
         try:
             raw, _ = edit_gif(_png_bytes(src), prompt, count, frame_ms, size, background, model)
         except ApiError as e:
+            if e.code == "gif_not_enabled":
+                return _frames_gif_fallback(a, out)
             sys.exit(f"frames: {e}")
         raw_path.write_bytes(raw)
     try:

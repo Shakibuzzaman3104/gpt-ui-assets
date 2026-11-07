@@ -608,6 +608,26 @@ def test_image_model_routing():
         K._config.cache_clear()
 
 
+def test_edit_multiple_references():
+    ok = R(200, {"data": [{"b64_json": b64(png_bytes())}]})
+    bad = R(400, {"error": {"message": "too many images"}})
+    server_error = R(500, {"error": {"message": "server error"}})
+    with api([ok]) as calls:
+        K.edit(b"one", "edit", model="test")
+        assert calls[0]["files"] == [("image", ("ref.png", b"one", "image/png"))]
+    with api([ok]) as calls:
+        K.edit(b"one", "edit", model="test", extra_refs=[b"two", b"three"])
+        assert calls[0]["files"] == [("image[]", (name, value, "image/png")) for name, value in
+                                     [("ref.png", b"one"), ("ref2.png", b"two"), ("ref3.png", b"three")]]
+    with api([bad, ok]) as calls, contextlib.redirect_stdout(io.StringIO()) as out:
+        K.edit(b"one", "edit", model="test", extra_refs=[b"two"])
+        assert len(calls) == 2 and calls[1]["files"] == [("image", ("ref.png", b"one", "image/png"))]
+        assert out.getvalue().count("the endpoint refused several reference images; sent only the first") == 1
+    with api([server_error]) as calls, env(GPTKIT_RETRIES="0"):
+        assert raises(lambda: K.edit(b"one", "edit", model="test", extra_refs=[b"two"])).status == 500
+        assert len(calls) == 1
+
+
 def test_edit_gif_request_and_fallback():
     images = [Image.new("RGB", (16, 16), (i * 30, 0, 0)) for i in range(6)]
     buf = io.BytesIO()
@@ -642,7 +662,7 @@ def test_gif_model_selection():
     try:
         with env(GPTKIT_API_KEY="sk-test", GPTKIT_CONFIG="/nonexistent/env", GPTKIT_IMAGE_MODEL=None):
             K._listed_models = lambda *a: frozenset(["gpt-image-2.5-flare"])
-            assert "requires" in str(raises(lambda: K.pick_gif_model(), SystemExit))
+            assert K.pick_gif_model() is None  # frames falls back to the sprite-sheet route
             assert "2.6" in str(raises(lambda: K.pick_gif_model("gpt-image-2.5-flare"), SystemExit))
             K._listed_models = lambda *a: frozenset(["gpt-image-2.6-flare"])
             assert K.pick_gif_model() == "gpt-image-2.6-flare"

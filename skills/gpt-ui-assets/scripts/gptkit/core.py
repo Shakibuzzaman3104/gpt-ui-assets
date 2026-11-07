@@ -673,13 +673,15 @@ def generate(prompt, size="1024x1024", background="auto", model=None, task="conc
         raise
 
 
-def edit(ref_png: bytes, prompt, size="1024x1024", background="auto", model=None, fidelity="high", task="precise"):
-    # One reference image per call: multi-image edits returned the reference itself on an OpenAI-compatible gateway the kit
-    # was probed against (the official API accepts up to 16; unverified here, see references/api-findings.md).
+def edit(ref_png: bytes, prompt, size="1024x1024", background="auto", model=None, fidelity="high", task="precise", extra_refs=None):
+    # GPT Image 2.6 accepts up to 16 images per edit, including the image being edited.
+    if extra_refs and len(extra_refs) > 15:
+        raise ValueError("at most 15 extra reference images are supported")
     from .codex_cli import _cli_edit, _selected_backend  # deferred: codex_cli imports this module
     c = _config()
     if _selected_backend() == "cli":
-        return _cli_edit(ref_png, prompt, size=size, background=background, model=model, fidelity=fidelity, task=task)
+        return _cli_edit(ref_png, prompt, size=size, background=background, model=model, fidelity=fidelity, task=task,
+                         **({"extra_refs": extra_refs} if extra_refs else {}))
     data = {"model": pick_image_model(model, task, background), "prompt": prompt, "size": size, "output_format": "png",
             "quality": c.get("quality", "high"), "input_fidelity": fidelity}
     if background != "auto":
@@ -687,8 +689,18 @@ def edit(ref_png: bytes, prompt, size="1024x1024", background="auto", model=None
     if c["moderation"]:
         data["moderation"] = c["moderation"]
     files = [("image", ("ref.png", ref_png, "image/png"))]
+    if extra_refs:
+        files = [("image[]", ("ref.png" if i == 0 else f"ref{i + 1}.png", img, "image/png"))
+                 for i, img in enumerate([ref_png] + list(extra_refs))]
     try:
-        resp = _with_fallback(lambda d: _call("/images/edits", data=d, files=files), data)
+        try:
+            resp = _with_fallback(lambda d: _call("/images/edits", data=d, files=files), data)
+        except ApiError as e:
+            if not extra_refs or e.status != 400:
+                raise
+            print("  (the endpoint refused several reference images; sent only the first)")
+            files = [("image", ("ref.png", ref_png, "image/png"))]
+            resp = _with_fallback(lambda d: _call("/images/edits", data=d, files=files), data)
         result = _image_result(resp)
         _warn_quality(data["quality"], result[1])
         _ledger_record("/images/edits", data["model"], resp, image=True, quality=result[1].get("quality") or data["quality"],
@@ -718,7 +730,7 @@ def pick_gif_model(model=None):
         for m in GIF_MODELS:
             if m in ids:
                 return m
-        sys.exit("frames: --native-gif requires gpt-image-2.6-sunburst or gpt-image-2.6-flare")
+        return None  # no 2.6 on this endpoint: frames falls back to the sprite-sheet route
     return GIF_MODELS[0]
 
 
