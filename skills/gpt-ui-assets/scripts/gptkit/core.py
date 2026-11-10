@@ -24,8 +24,10 @@ SVG_NS = "{http://www.w3.org/2000/svg}"
 ET.register_namespace("", "http://www.w3.org/2000/svg")
 ET.register_namespace("xlink", "http://www.w3.org/1999/xlink")
 
-PRICES_CHECKED = "2026-10-18"
+PRICES_CHECKED = "2026-11-07"
 PRICES = {
+    "gpt-image-2.6-flare": {"text_in": 5, "image_in": 8, "image_out": 30},
+    "gpt-image-2.6-sunburst": {"text_in": 5, "image_in": 8, "image_out": 30},
     "gpt-image-2.5-flare": {"text_in": 5, "image_in": 8, "image_out": 30},
     "gpt-image-2.5-sunburst": {"text_in": 5, "image_in": 8, "image_out": 30},
     "gpt-image-2": {"text_in": 5, "image_in": 8, "image_out": 30},
@@ -511,9 +513,8 @@ def _png_bytes(img):
     return buf.getvalue()
 
 
-def _image_result(resp):
-    """(png_bytes, meta) from an images response. The bytes always decode as PNG (JPEG/WebP from a gateway is
-    re-encoded and meta['source_format'] says so); no/undecodable image raises ApiError no_image/bad_image."""
+def _image_bytes(resp):
+    """Extract and validate image bytes without changing their format."""
     import binascii
     resp = resp if isinstance(resp, dict) else {}
     meta = {k: resp.get(k) for k in ("quality", "size", "background")}
@@ -543,25 +544,34 @@ def _image_result(resp):
     except (OSError, ValueError) as e:
         raise ApiError(200, f"the image API returned bytes that are not an image (starts {raw[:16]!r}): {e}", code="bad_image")
     meta["source_format"] = im.format
-    if im.format != "PNG":
+    return raw, meta
+
+
+def _image_result(resp):
+    """Return PNG bytes and metadata from an images response."""
+    raw, meta = _image_bytes(resp)
+    if meta["source_format"] != "PNG":
+        im = Image.open(io.BytesIO(raw))
         _note_once("source_format", f"  (provider returned {im.format}: no alpha channel, background/output_format were ignored)")
         raw = _png_bytes(im if im.mode in ("RGB", "RGBA", "L", "LA", "P") else im.convert("RGBA"))
     return raw, meta
 
 
 # ---- image model routing: the best listed model for the job unless the user pinned one
-# concept: new art from a prompt (mockups, style, icon concepts): speed matters, Flare matches gpt-image-2 quality at ~half the latency.
+# concept: new art from a prompt (mockups, style, icon concepts): Flare is the fast model of each generation.
 # precise: edits that must keep a reference intact (forge/fix, sequence and frame renders, icon layers): Sunburst is tuned for that.
 # gpt-image-2 only takes background auto/opaque, so it moves to the back of the chain when transparency is needed.
 IMAGE_ROUTES = {
-    "concept": ("gpt-image-2.5-flare", "gpt-image-2.5-sunburst", "gpt-image-2", "gpt-image-1.5"),
-    "precise": ("gpt-image-2.5-sunburst", "gpt-image-2.5-flare", "gpt-image-2", "gpt-image-1.5"),
+    "concept": ("gpt-image-2.6-flare", "gpt-image-2.6-sunburst", "gpt-image-2.5-flare", "gpt-image-2.5-sunburst",
+                "gpt-image-2", "gpt-image-1.5"),
+    "precise": ("gpt-image-2.6-sunburst", "gpt-image-2.6-flare", "gpt-image-2.5-sunburst", "gpt-image-2.5-flare",
+                "gpt-image-2", "gpt-image-1.5"),
 }
 RETIREMENTS = {
-    "gpt-image-1": ("2026-10-23", "gpt-image-2.5-sunburst or gpt-image-2.5-flare"),
-    "gpt-image-1-mini": ("2026-12-01", "gpt-image-2.5-sunburst or gpt-image-2.5-flare"),
-    "gpt-image-1.5": ("2026-12-01", "gpt-image-2.5-sunburst or gpt-image-2.5-flare"),
-    "chatgpt-image-latest": ("2026-12-01", "gpt-image-2.5-sunburst or gpt-image-2.5-flare"),
+    "gpt-image-1": ("2026-10-23", "gpt-image-2.6-sunburst or gpt-image-2.6-flare"),
+    "gpt-image-1-mini": ("2026-12-01", "gpt-image-2.6-sunburst or gpt-image-2.6-flare"),
+    "gpt-image-1.5": ("2026-12-01", "gpt-image-2.6-sunburst or gpt-image-2.6-flare"),
+    "chatgpt-image-latest": ("2026-12-01", "gpt-image-2.6-sunburst or gpt-image-2.6-flare"),
     "gpt-5.1": ("2027-04-01", "gpt-6-sol"),
     "gpt-5.3-codex": ("2027-04-01", "gpt-6-sol"),
     "gpt-5.4-nano": ("2027-04-01", "gpt-6-luna"),
@@ -663,13 +673,15 @@ def generate(prompt, size="1024x1024", background="auto", model=None, task="conc
         raise
 
 
-def edit(ref_png: bytes, prompt, size="1024x1024", background="auto", model=None, fidelity="high", task="precise"):
-    # One reference image per call: multi-image edits returned the reference itself on an OpenAI-compatible gateway the kit
-    # was probed against (the official API accepts up to 16; unverified here, see references/api-findings.md).
+def edit(ref_png: bytes, prompt, size="1024x1024", background="auto", model=None, fidelity="high", task="precise", extra_refs=None):
+    # GPT Image 2.6 accepts up to 16 images per edit, including the image being edited.
+    if extra_refs and len(extra_refs) > 15:
+        raise ValueError("at most 15 extra reference images are supported")
     from .codex_cli import _cli_edit, _selected_backend  # deferred: codex_cli imports this module
     c = _config()
     if _selected_backend() == "cli":
-        return _cli_edit(ref_png, prompt, size=size, background=background, model=model, fidelity=fidelity, task=task)
+        return _cli_edit(ref_png, prompt, size=size, background=background, model=model, fidelity=fidelity, task=task,
+                         **({"extra_refs": extra_refs} if extra_refs else {}))
     data = {"model": pick_image_model(model, task, background), "prompt": prompt, "size": size, "output_format": "png",
             "quality": c.get("quality", "high"), "input_fidelity": fidelity}
     if background != "auto":
@@ -677,14 +689,75 @@ def edit(ref_png: bytes, prompt, size="1024x1024", background="auto", model=None
     if c["moderation"]:
         data["moderation"] = c["moderation"]
     files = [("image", ("ref.png", ref_png, "image/png"))]
+    if extra_refs:
+        files = [("image[]", ("ref.png" if i == 0 else f"ref{i + 1}.png", img, "image/png"))
+                 for i, img in enumerate([ref_png] + list(extra_refs))]
     try:
-        resp = _with_fallback(lambda d: _call("/images/edits", data=d, files=files), data)
+        try:
+            resp = _with_fallback(lambda d: _call("/images/edits", data=d, files=files), data)
+        except ApiError as e:
+            if (not extra_refs or e.status != 400 or e.code == "moderation_blocked"
+                    or e.etype == "image_generation_user_error"):
+                raise
+            print("  (the endpoint refused several reference images; sent only the first)")
+            files = [("image", ("ref.png", ref_png, "image/png"))]
+            resp = _with_fallback(lambda d: _call("/images/edits", data=d, files=files), data)
         result = _image_result(resp)
         _warn_quality(data["quality"], result[1])
         _ledger_record("/images/edits", data["model"], resp, image=True, quality=result[1].get("quality") or data["quality"],
                        size=result[1].get("size") or size)
         return result
     except ApiError as e:
+        e.prompt = e.prompt or prompt[:200]
+        raise
+
+
+GIF_MODELS = ("gpt-image-2.6-sunburst", "gpt-image-2.6-flare")
+GIF_OPTIONAL = ("input_fidelity", "quality", "background", "moderation")  # never output_format or the frame fields
+
+
+def pick_gif_model(model=None):
+    c = _config()
+    if model:
+        if not model.startswith("gpt-image-2.6"):
+            sys.exit("frames: --native-gif requires a gpt-image-2.6 model")
+        return model
+    if c["image_model_pinned"]:
+        if c["image_model"].startswith("gpt-image-2.6"):
+            return c["image_model"]
+        print("  (ignoring GPTKIT_IMAGE_MODEL: native GIF requires gpt-image-2.6)")
+    ids = _listed_models(c["base"], c["key"]) if c["key"] else None
+    if ids:
+        for m in GIF_MODELS:
+            if m in ids:
+                return m
+        return None  # no 2.6 on this endpoint: frames falls back to the sprite-sheet route
+    return GIF_MODELS[0]
+
+
+def edit_gif(ref_png, prompt, frames, frame_ms, size, background="auto", model=None, fidelity="high"):
+    c = _config()
+    data = {"model": pick_gif_model(model), "prompt": prompt, "size": size, "output_format": "gif",
+            "frame_count": frames, "frame_duration_ms": frame_ms, "quality": c.get("quality", "high"),
+            "input_fidelity": fidelity}
+    if background != "auto":
+        data["background"] = background
+    if c["moderation"]:
+        data["moderation"] = c["moderation"]
+    files = [("image", ("ref.png", ref_png, "image/png"))]
+    try:
+        resp = _with_fallback(lambda d: _call("/images/edits", data=d, files=files), data,
+                              GIF_OPTIONAL)
+        result = _image_bytes(resp)
+        _warn_quality(data["quality"], result[1])
+        _ledger_record("/images/edits", data["model"], resp, image=True,
+                       quality=result[1].get("quality") or data["quality"], size=result[1].get("size") or size)
+        return result
+    except ApiError as e:
+        err = (e.body or {}).get("error", {}) if isinstance(e.body, dict) else {}
+        message = err.get("message", str(e)) if isinstance(err, dict) else str(e)
+        if e.status == 400 and "not enabled" in message.lower() and "gif" in message.lower():
+            raise ApiError(400, "this endpoint has no GIF preview access", code="gif_not_enabled")
         e.prompt = e.prompt or prompt[:200]
         raise
 

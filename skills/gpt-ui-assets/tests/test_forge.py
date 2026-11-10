@@ -90,11 +90,11 @@ class Mock:
         import threading
         self.lock = threading.Lock()
 
-    def edit(self, ref_png, prompt, size="1024x1024", background="auto", model=None, fidelity="high"):
+    def edit(self, ref_png, prompt, size="1024x1024", background="auto", model=None, fidelity="high", extra_refs=None):
         with self.lock:
             self.calls += 1
             n = self.calls
-            self.prompts.append({"prompt": prompt, "size": size, "background": background})
+            self.prompts.append({"prompt": prompt, "size": size, "background": background, "extra_refs": extra_refs})
         ref = Image.open(io.BytesIO(ref_png))
         meta = {"quality": "medium", "size": size, "background": background, "usage": None}
         what = self.plan.get(n, "ok")
@@ -600,7 +600,11 @@ def test_fix_prompts_and_empty_diff():
             code, out = run("fix", d, "flame", "--no-color-match")
         assert code == 0 and mk.calls == 1
         assert "no backdrop" in mk.prompts[0]["prompt"] and "transparent background" in mk.prompts[0]["prompt"]
-        assert mk.prompts[0]["background"] == "transparent" and mk.prompts[0]["prompt"].endswith("Corrections: shorter")
+        assert mk.prompts[0]["background"] == "transparent" and "Corrections: shorter The second attached image" in mk.prompts[0]["prompt"]
+        assert len(mk.prompts[0]["extra_refs"]) == 1 and Image.open(io.BytesIO(mk.prompts[0]["extra_refs"][0])).height == 512
+        with patched(Mock(ask={"differences": ["too tall"], "edit_instruction": "shorter"})) as single:
+            run("fix", d, "flame", "--no-color-match", "--no-target-ref")
+        assert single.prompts[0]["extra_refs"] is None and single.prompts[0]["prompt"].endswith("Corrections: shorter")
         # background asset: vision prompt ignores UI, edit prompt keeps it full-bleed, never says "no backdrop"
         with patched(Mock(ask={"differences": ["moon too big"], "edit_instruction": "smaller moon"})) as mk:
             code, out = run("fix", d, "sky", "--accept")
@@ -608,6 +612,7 @@ def test_fix_prompts_and_empty_diff():
         vis = mk.asks[0]["parts"][0]
         assert "ignore all UI" in vis and "compare only the artwork" in vis
         ep = mk.prompts[0]["prompt"]
+        assert "second attached image is the target region" in ep and len(mk.prompts[0]["extra_refs"]) == 1
         assert "full-bleed" in ep and "keep it full-bleed, no UI, no text" in ep and "no backdrop" not in ep
         assert mk.prompts[0]["background"] == "opaque"
         rep = json.loads((d / "forge_report.json").read_text())

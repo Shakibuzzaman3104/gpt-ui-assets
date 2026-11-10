@@ -164,6 +164,7 @@ def _asset_parsers(sub):
     p = sub.add_parser("fix", help="vision-diff the chosen asset against the design and apply one correction")
     p.add_argument("dir"); p.add_argument("name", help="asset name from assets.json")
     p.add_argument("--rounds", type=_pos_int, default=1, help="diff+edit rounds (default 1); stops early when nothing differs")
+    p.add_argument("--no-target-ref", action="store_true", help="send only the asset, not the design crop, to the edit")
     p.add_argument("--note", help="extra user feedback to include"); p.add_argument("--accept", action="store_true",
                                                                                    help="keep the result even if the score is worse")
     _color_args(p); p.add_argument("--model", default=None, help="image model (default GPTKIT_IMAGE_MODEL)"); p.set_defaults(fn=cmd_fix)
@@ -212,7 +213,8 @@ def _animation_parsers(sub):
     p.add_argument("dir"); p.add_argument("name"); p.add_argument("--moving", help="part that moves (generated route)")
     p.add_argument("--static", help="part that stays still (generated once, composited)")
     p.add_argument("--static-order", choices=["front", "back"], default="front")
-    p.add_argument("--motion"); p.add_argument("--count", type=_pos_int, help="frames, at least 2 (default 8; procedural: one loop)")
+    p.add_argument("--native-gif", action="store_true", help="one gpt-image-2.6 edit returns the animated GIF (needs OpenAI's GIF preview; --count 2-16)")
+    p.add_argument("--motion"); p.add_argument("--count", type=_pos_int, help="frames, at least 2 (default 8; native GIF: 2-16, default 9)")
     p.add_argument("--cols", type=_pos_int, default=4, help="sheet columns (clamped to --count)")
     p.add_argument("--anchor", choices=["bottom", "center"], default="bottom")
     p.add_argument("--fps", type=_pos_float, help="default 12 (procedural 24, or 12 for slow loops)")

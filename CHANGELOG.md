@@ -2,6 +2,25 @@
 
 All notable changes to gpt-ui-assets. Versions follow [semantic versioning](https://semver.org).
 
+## 5.6.0 (2026-11-07)
+
+GPT Image 2.6 becomes the default, edits can carry several reference images, and `frames` gains a native GIF route.
+
+### Added
+- **`frames --native-gif`.** One `gpt-image-2.6-*` edit animates an approved asset into a GIF of 2–16 frames. The frames
+  then go through the usual QA and export, so WebP, APNG, Lottie and the Android `animation-list` still come out, and
+  `--reuse all` rebuilds them for free. GIF output is an OpenAI preview: where it is refused (ChatGPT and Codex
+  sign-ins, the Codex CLI, endpoints without 2.6) the kit switches to the sprite-sheet route at no extra cost, and frame
+  sizes are shrunk to fit the API's sheet limit. Not yet run against an endpoint with GIF access.
+- **Several reference images per edit.** 2.6 accepts them (the 5.0 probe returned the reference unchanged).
+  `mockup --edit` now takes `--style-ref` too, so additions are drawn in the approved screen's components; `fix` sends
+  the design crop alongside the asset (`--no-target-ref` to skip); `material --ref a.png,b.png` takes several. An
+  endpoint that refuses several images gets one retry with the first.
+
+### Changed
+- **Image routing** now tries `gpt-image-2.6-flare` (new art) and `gpt-image-2.6-sunburst` (edits) first, then the 2.5
+  pair. Prices are unchanged, and retirement notices now point at 2.6.
+
 ## 5.5.0 (2026-10-30)
 
 A gallery for everything the kit makes: outputs live under `ui-assets/` in the project, and `ui-assets/index.html`

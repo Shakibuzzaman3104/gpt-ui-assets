@@ -3,7 +3,7 @@ name: gpt-ui-assets
 description: Design app, tablet, foldable, desktop-app and website screens with OpenAI's GPT image and vision models (API key or the local Codex CLI), then turn an approved design into production assets redrawn 1:1, never cropped: SVG/VectorDrawable icons, PNG/WebP illustrations, launcher icons, frame, Lottie and AVD animation, smoke/steam/rain loops, theme code and fonts measured from the pixels, a screenshot diff of the built UI, and App Store / Google Play screenshot sets composited from real captures. Also writes GPT-researched feature blueprints. Use whenever the user wants GPT/ChatGPT to design screens, icons, illustrations or an app icon; approves a GPT design ("go ahead", "build it", "give me the assets"); wants assets used in the UI; wants an animated drawable, Lottie or AVD from existing art; wants store screenshots or a Play feature graphic; or complains that GPT cropped assets out of a mockup. Not for go/no-go idea validation, or design direction without GPT.
 license: MIT
 metadata:
-  version: 5.5.0
+  version: 5.6.0
 ---
 
 # GPT UI assets
@@ -124,8 +124,9 @@ python3 $K compare ui-assets/build/home shot.png               # also flags wron
    unverified. Say so.
 10. **An image edit re-renders the whole image.** For a state change, use `state`, which composites only the changed
    region back. Never ship a raw edit as a state frame.
-11. **GPT renders; it does not animate.** Code or the kit decides motion (`--procedural`, `sequence` layouts, `rig`),
-    and GPT paints only the moving layer.
+11. **Code decides motion by default.** The kit moves the art (`--procedural`, `sequence` layouts, `rig`) and GPT paints
+    only the moving layer. The one exception is `frames --native-gif`, where GPT animates one approved asset itself:
+    use it for a quick loop on an endpoint with GIF preview access, never where a static layer must stay exact.
 12. **Store listings get an art direction invented for that app.** There is no common template and no house look for
     store scenes: the world, audience and brand of the app decide the picture, and every example is an illustration,
     never a template. Never present a store shot with BAD-PERSPECTIVE, SMALL-PHONE, OCCLUDED or LOW-FIT; read every

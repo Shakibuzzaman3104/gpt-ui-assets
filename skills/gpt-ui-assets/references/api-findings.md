@@ -665,6 +665,58 @@ The main result: every GPT estimate I measured was usable as a starting point bu
   gateway that accepts but ignores `strict: true` returns shorter objects; `report.md`/`blueprint.md` table cells escape `|`.
   `url_citation` annotations keep `start_index`/`end_index` in `sources.json` when the endpoint sends them.
 
+## GPT Image 2.6 through a ChatGPT-account gateway (2026-11-07)
+
+Measured through sub2api 0.2.20 on a ChatGPT OAuth account. Say so when quoting: an API-key account behaves differently.
+
+- **Model names:** only `gpt-image-2.6-flare` and `-sunburst` exist. A bare `gpt-image-2.6` is `model_not_found`.
+- **Routing:** sub2api sends 2.6 to the Codex images endpoint with the requested model and refuses to fall back to the
+  Responses bridge, which binds an internal `gpt-image-2-codex`. `data[0].model` reports the requested name, which is
+  weaker evidence than that routing.
+- **GIF:** `GIF output is not enabled for this request.` on generations and edits, on 2.5 and 2.6, in about 1 s and at
+  no cost. The Responses route says `not enabled for the model 'gpt-image-2-codex'`. The text is not in sub2api's source;
+  OpenAI's reference says GIF "requires access to the GIF preview". **Not yet measured on an endpoint with access:**
+  the kit's GIF path has only been exercised against mocks built from OpenAI's documented response.
+- **Frame limit:** an OpenAI forum report (2026-11-05) got HTTP 400 for 17 frames and above. The guide now says 2–16.
+- **Parameters ignored without an error:** `size` (`1024x1024` returned 1536x1024 or 1254x1254, following the prompt or
+  reference), `quality: xhigh` (answered `low`), `complexity: ultra` (200, no rejection), `output_format: svg` (a PNG).
+  So the effect of `complexity` can't be measured here, and native SVG is not adopted: `svg` stays on the vision route.
+- **Transparency:** real on 2.6. Generate: 73% of pixels alpha 0. Edit: 93%. Corners clear on both.
+- **Existing parameters:** `input_fidelity` and transparent edits are accepted on 2.6, so no kit call changed.
+- **Quality, one sample:** the same text-heavy budget screen on 2.5 and 2.6 Sunburst at a capped `medium`: all labels and
+  amounts correct on both, 2.6 slightly richer, 601 vs 1,372 output tokens and 30 vs 36 s. Low-quality calls at one size
+  all report 343 tokens, so equal counts there do not mean one backend.
+- **GIF decoding:** OpenAI's published 2.6 sample (512x512, 9 frames, 200 ms, loop 0) went through a local stub over HTTP
+  and the full `frames --native-gif` path: QA, WebP, APNG, Lottie, and `aapt2 compile+link` on the Android output.
+- **Sprite-sheet route on 2.6:** a real campfire with `--static` gave 8 frames, dE 4.1, seam 0.69, IoU 0.83.
+
+**New 2.6 fields, probed with values OpenAI would reject (2026-11-07).** A 200 means the field never reached validation.
+
+| Field | Docs | This gateway | Kit |
+|---|---|---|---|
+| `complexity` | `low`/`medium`/`high`, omitted = `high`; lower can avoid unwanted changes in focused edits | `"bogus"` answered 200 | not sent: no effect to measure here |
+| `markup` | transparent annotation layer, same size as the first image | wrong-sized layer answered 200; a correct circle around one icon with "recolor the circled icon" changed nothing | not sent |
+| `output_format: svg` | generations only, `n=1` | PNG | not adopted |
+| custom `size` | multiples of 16, up to 3840 px a side | `1536x864` returned `1536x1024`; edits return the input image's size | unchanged |
+| several `image[]` in one edit | up to 16, markup and masks apply to the first | **works on 2.6**: a monkey from the second image placed on the first screen, faithfully drawn; the layout below it shifted down | see below |
+| `quality` | `low` to `max` | capped and inconsistent: `low` requests came back `medium`, `high` came back `medium` or `low` | warns, as before |
+
+The 5.0 note "multi-image edit returned the mockup" no longer holds on 2.6. What the kit does with it, measured once each:
+- `mockup --edit` + `--style-ref`, "add a Refill soon card with a Restock button": with the approved detail screen as
+  the second image, the card reused its cart icon on a pale gold disc and its cart Restock button; without it, a
+  made-up refresh icon. The rest of the screen held in both.
+- `fix` with the design crop as the second image, two runs each on `scored_tablet` (fid 18.6 before): pixel diff 10.0
+  and 17.3 (fid 22.8, 27.7) against 22.7 and 20.3 (fid 33.2, 26.6) without. No round beat the forged asset, so `fix`
+  kept it every time; one run with the crop painted its ivory backdrop (`BACKDROP` flag).
+- `frames --native-gif` refused, then the sprite-sheet fallback: 8 frames, aapt2 ok, about 40 s, one extra call.
+
+**Every image command once on 2.6 Flare/Sunburst (a copy of a real project, 2026-11-07):** `mockup --style-ref` (new
+screen matched the reference's header, palette and pill art), `critique --apply` (the edit added a new date mismatch and
+was discarded, as designed), `forge` (fid 18.6), `fix` (one round made it worse and was discarded), `state` (eyes closed,
+0 px changed outside the mask), `material`, `appicon concepts` + `build` (aapt2 ok), `rig --route gpt` (4 parts,
+recomposite IoU 0.91), `frames` sprite-sheet route (8 frames). `icons` and `svg` draw with the vision model and do not
+touch 2.6. `sequence` and `store scene` share the same `edit`/`generate` calls and were not rerun.
+
 ## Verification on macOS (2026-09-29)
 
 - `appicon build` on a synthetic concept: `actool` compiled the AppIcon set and `aapt2` compile+link passed against `android-37.0` (build-tools 36.0.0).

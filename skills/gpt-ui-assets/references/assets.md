@@ -83,6 +83,9 @@ python3 $K icons build/home "notifications, sleep timer, download" --vd app/src/
   `fix` keeps a result only if `fid` improves, because correction passes often over-correct; it stops without an edit when the
   vision pass finds no difference. Pass `--accept` when the user asked for that exact change (an `EMPTY`/`COPY` result is still
   refused). After 2 unsuccessful rounds, tell the user what still differs rather than looping.
+  The edit gets the asset and, as a second image, the design crop it must match (`--no-target-ref` sends the asset
+  alone). Two runs each on one tablet: the result's pixel diff to the design was 10.0 and 17.3 with the crop, 22.7 and
+  20.3 without; one run with the crop also painted the crop's backdrop (`BACKDROP`), which the flags caught.
 
 **svg / icons**
 - Each icon prints `rel`: 0 is perfect and 1 is as bad as drawing nothing. Expect about 0.1 for filled glyphs, 0.2–0.35 for close

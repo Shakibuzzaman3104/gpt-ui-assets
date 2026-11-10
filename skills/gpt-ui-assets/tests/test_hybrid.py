@@ -57,6 +57,20 @@ def test_material_flags_and_best():
         assert (Path(d) / "review" / "material_foil.png").exists()
 
 
+def test_material_multiple_refs():
+    calls = []
+    def fake(ref, prompt, **kw):
+        calls.append((ref, prompt, kw))
+        return _png(_object()), {}
+    K.edit = fake
+    with tempfile.TemporaryDirectory() as d:
+        a, b = Path(d) / "a.png", Path(d) / "b.png"
+        _object().save(a); _object(box=(400, 300, 1000, 700)).save(b)
+        _run(["material", "foil", "--out", d, "--name", "foil", "--candidates", "1", "--ref", f"{a},{b}"])
+        assert calls[0][0] == a.read_bytes() and calls[0][2]["extra_refs"] == [b.read_bytes()]
+        assert calls[0][1].startswith("Use the references only for their material")
+
+
 def test_material_all_empty_exits():
     K.generate = lambda prompt, **kw: (_png(Image.new("RGBA", (1536, 1024), (0, 0, 0, 0))), {})
     with tempfile.TemporaryDirectory() as d:

@@ -130,14 +130,19 @@ def cmd_material(a):
         prompt += (" One isolated object on a fully transparent background, whole and centred with clear margin on every side;"
                    " no text, no labels, no backdrop, no cast shadow outside the object.")
     ref = None
+    extra_refs = []
     if a.ref:
-        _, ref = _image_bytes_checked(a.ref, "--ref")
-        prompt = ("Use the reference only for its material, lighting and rendering quality, not its layout or content. " + prompt)
+        refs = [_image_bytes_checked(path.strip(), "--ref")[1] for path in a.ref.split(",")]
+        ref, extra_refs = refs[0], refs[1:]
+        prefix = ("Use the references only for their material, lighting and rendering quality, not their layout or content. " if extra_refs else
+                  "Use the reference only for its material, lighting and rendering quality, not its layout or content. ")
+        prompt = prefix + prompt
     _plan(a.candidates, 0, image_model=a.model, size=a.size, edits=bool(a.ref))
 
     def one(i):
         try:
-            raw, meta = (edit(ref, prompt, size=a.size, background=bg, model=a.model, fidelity="low", task="concept") if ref
+            raw, meta = (edit(ref, prompt, size=a.size, background=bg, model=a.model, fidelity="low", task="concept",
+                              **({"extra_refs": extra_refs} if extra_refs else {})) if ref
                          else generate(prompt, size=a.size, background=bg, model=a.model))
         except ApiError as e:
             return i, None, f"c{i} failed: {e}"
@@ -753,7 +758,7 @@ def _hybrid_parsers(sub):
     p.add_argument("--size", default="1536x1024", help="WIDTHxHEIGHT canvas: 1536x1024, 1024x1536 or 1024x1024")
     p.add_argument("--candidates", type=_pos_int, default=2, help="images generated in parallel")
     p.add_argument("--jobs", type=_pos_int, default=4)
-    p.add_argument("--ref", help="one approved image to match in material and rendering quality (not layout)")
+    p.add_argument("--ref", help="comma-separated approved images to match in material and rendering quality (not layout)")
     p.add_argument("--opaque", dest="transparent", action="store_false", help="a full-bleed texture/background instead")
     p.add_argument("--no-trim", dest="trim", action="store_false", help="keep the full canvas instead of trimming to content")
     p.add_argument("--margin", type=_pos_float, default=0.02, help="margin kept around the trimmed content (share of size)")

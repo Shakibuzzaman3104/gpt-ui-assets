@@ -25,6 +25,9 @@ runs on its own without pytest, offline, with the API mocked and the Codex CLI d
   the kit was probed on; the official API accepts up to 16 reference images per edit, unverified here.
 - A single-reference edit designs a genuinely new screen when the prompt says "DIFFERENT screen … style guide only … do
   not copy its layout" (5/5 new layouts). A design-system board as the reference is worse than the screen itself.
+- GIF bytes must never pass through `_image_result` (it re-encodes to PNG and keeps the first frame), and
+  `output_format`, `frame_count` and `frame_duration_ms` are never optional: dropping one turns a GIF request into a
+  silent PNG. A gateway can ignore `output_format` too, so check what came back.
 - Some backends ignore `quality`, `size` and `n` (measured on a gateway; the official API defines them), so the kit
   trims, crops and resizes locally and runs candidates in parallel. Output aspect ratio follows the prompt's wording, so
   `mockup` states it and retries on a mismatch. A gateway that returns JPEG instead of PNG has ignored

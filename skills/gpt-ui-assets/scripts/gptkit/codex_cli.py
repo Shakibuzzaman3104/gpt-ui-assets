@@ -294,7 +294,7 @@ def _cli_generate(prompt, size="1024x1024", background="auto", model=None, task=
     return _image_from_codex(_pick_codex_image(root, before, started, thread_id))
 
 
-def _cli_edit(ref_png, prompt, size="1024x1024", background="auto", model=None, fidelity="high", task="precise"):
+def _cli_edit(ref_png, prompt, size="1024x1024", background="auto", model=None, fidelity="high", task="precise", extra_refs=None):
     global _CODEX_EDIT_WARNED
     if (fidelity == "high" or task == "precise") and not _CODEX_EDIT_WARNED:
         _CODEX_EDIT_WARNED = True
@@ -302,9 +302,14 @@ def _cli_edit(ref_png, prompt, size="1024x1024", background="auto", model=None, 
     with tempfile.TemporaryDirectory(prefix="gptkit-edit-") as td:
         ref = Path(td) / "reference.png"
         ref.write_bytes(ref_png)
+        images = [ref]
+        for i, img in enumerate(extra_refs or (), 2):
+            path = Path(td) / f"reference{i}.png"
+            path.write_bytes(img)
+            images.append(path)
         root, before = _generated_snapshot()
         started = time.time_ns()
-        thread_id = _codex(_image_prompt(prompt, size, background, ref=ref), images=[ref], timeout=600)[2]
+        thread_id = _codex(_image_prompt(prompt, size, background, ref=ref), images=images, timeout=600)[2]
         return _image_from_codex(_pick_codex_image(root, before, started, thread_id))
 
 

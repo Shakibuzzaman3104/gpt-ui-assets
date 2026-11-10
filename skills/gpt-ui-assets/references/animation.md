@@ -10,6 +10,7 @@ Pick the route with the user:
 |---|---|---|
 | `frames --procedural bounce\|pulse\|float\|wiggle\|spin\|breathe` | the art moves rigidly; **no API calls**, art stays exactly 1:1 | frames, WebP, APNG, tiny transform Lottie, `motion.json` for code |
 | `frames --moving … --static …` | the art changes shape **in place** (flame, ripples, blinking mascot) | registered frames, WebP/APNG/image-sequence Lottie, Android `animation-list` under `android/` |
+| `frames --native-gif --motion …` | a quick loop from one approved asset, on an endpoint with OpenAI's GIF preview: GPT decides the motion, up to 16 frames | `native_raw.gif` plus the same frames, WebP, APNG, Lottie and `animation-list` as the sprite-sheet route; hard GIF edges |
 | `sequence` (layout → plan → render → build, which propagates or not as planned → reroll) | something **travels**: smoke, steam, falling drops, spray, embers, leaves | a seamless loop where code decides the motion and GPT paints the frames (keys + EbSynth, or every frame); animated WebP, frames, QA report |
 | `vectorize` | GPT-authored vector motion: morphs, transforms, glows | Lottie **and** looping AnimatedVectorDrawable |
 | `rig` + `animate` | the exact traced art must move (1:1 with the design, glow included); **no GPT needed** | layered Lottie with procedural keyframes |
@@ -18,6 +19,7 @@ Pick the route with the user:
 python3 $K frames build/home rain_drop --procedural bounce --amount 1.2
 python3 $K frames build/home campfire --moving "the flame (outer + inner flame with glow)" \
   --static "the two crossed logs" --motion "a gentle campfire flicker" --count 8 --fps 12
+python3 $K frames build/home mascot --native-gif --motion "waves once and blinks" --count 12 --fps 10
 python3 $K frames build/home rain_drop --moving "the concentric ripple rings" --static "the teardrop" \
   --motion "ripples expanding outward and fading, a new ring appearing" --anchor center
 python3 $K vectorize build/home campfire --moving "the outer flame and the inner flame" \
@@ -65,6 +67,26 @@ python3 $K vectorize build/home campfire --rebuild      # after YOU edit layers.
   - `--count 12 --cols 4` gives more frames. `--formats gif,webp,apng,lottie` and `--px 480` control the outputs; the
     image-sequence Lottie costs about 280 KB per 480 px frame.
   - AnimationDrawable decodes every frame into memory, so ship the WebP or Lottie for long loops.
+- **`--native-gif`:** one `gpt-image-2.6-*` edit returns the whole animation, with no sprite sheet to slice.
+  - **Limits:** `--count` is 2–16 (default 9). The API rejects 17 and up, whatever older copies of OpenAI's guide say.
+    Frame delay is `1000/fps` rounded to 10 ms, 20–2000 ms. `--px` sets the frame's long side, snapped to multiples of
+    16.
+  - **Access:** it is a preview. An endpoint without access answers `GIF output is not enabled` at no cost, and the
+    kit then runs the sprite-sheet route on the same asset: one edit draws the frames on a sheet and the kit builds the
+    GIF. The moving part is `--moving` if given, else "the whole subject: <motion>"; `--count` carries over, else the
+    sheet's default of 8. The same happens on the Codex CLI backend and on an endpoint that lists no 2.6 model.
+    ChatGPT and Codex sign-ins refused GIF on 2026-11-07, including through sub2api; an OpenAI API key is the route
+    one user reported working.
+  - **Sheet size:** a gateway vendor measured that 2.6 draws GIF frames on one sheet of the next power of two cells
+    (8 cells for 5–8 frames, 16 for 9–16), at most 3840 px a side and 8,294,400 px in all. The kit shrinks the frame
+    size to fit before the call and says so: about 960 px for 5–8 square frames, 720 px for 9–16.
+  - **Quality:** GIF has 256 colours and on/off alpha, so soft glows and smoke edges come out hard. Keep the sprite-sheet
+    route for those, and for anything that must hold a still layer exactly (`--static` is refused here).
+  - **Re-export:** `--reuse all` rebuilds every output from `native_raw.gif` with no API call. `--tween` and
+    `--match-colors` work as on the sprite-sheet route. `--procedural`, `--static`, `--reroll` and `--reuse static` are
+    refused.
+  - **Never silently wrong:** a reply that is not a multi-frame GIF is saved as `native_raw.notgif` and the run stops. A
+    count that differs from the request is flagged `frame-count`.
 - **vectorize:**
   - Each layer can morph, move (anchor, dx/dy, sx/sy, rotate, opacity, easing) or both; `glows` are radial-gradient halos.
   - Read `keys_review.png`. Its last output line states how it was rendered: `lottie-web` (the real Lottie in headless

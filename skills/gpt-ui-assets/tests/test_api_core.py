@@ -589,6 +589,10 @@ def test_image_model_routing():
             K._config.cache_clear()
             assert K.pick_image_model(task="concept") == "gpt-image-2.5-flare"
             assert K.pick_image_model(task="precise", background="transparent") == "gpt-image-2.5-sunburst"
+            ids["data"] += [{"id": "gpt-image-2.6-flare"}, {"id": "gpt-image-2.6-sunburst"}]
+            K._listed_models.cache_clear()
+            assert K.pick_image_model(task="concept") == "gpt-image-2.6-flare"
+            assert K.pick_image_model(task="precise") == "gpt-image-2.6-sunburst"
             assert K.pick_image_model("mine", "precise") == "mine"
             assert K.image_chain("precise", "transparent")[-1] == "gpt-image-2"
             ids["data"] = [{"id": "gpt-image-2"}, {"id": "gpt-image-1.5"}]
@@ -602,6 +606,75 @@ def test_image_model_routing():
         K.requests.get = saved
         K._listed_models.cache_clear()
         K._config.cache_clear()
+
+
+def test_edit_multiple_references():
+    ok = R(200, {"data": [{"b64_json": b64(png_bytes())}]})
+    bad = R(400, {"error": {"message": "too many images"}})
+    server_error = R(500, {"error": {"message": "server error"}})
+    with api([ok]) as calls:
+        K.edit(b"one", "edit", model="test")
+        assert calls[0]["files"] == [("image", ("ref.png", b"one", "image/png"))]
+    with api([ok]) as calls:
+        K.edit(b"one", "edit", model="test", extra_refs=[b"two", b"three"])
+        assert calls[0]["files"] == [("image[]", (name, value, "image/png")) for name, value in
+                                     [("ref.png", b"one"), ("ref2.png", b"two"), ("ref3.png", b"three")]]
+    with api([bad, ok]) as calls, contextlib.redirect_stdout(io.StringIO()) as out:
+        K.edit(b"one", "edit", model="test", extra_refs=[b"two"])
+        assert len(calls) == 2 and calls[1]["files"] == [("image", ("ref.png", b"one", "image/png"))]
+        assert out.getvalue().count("the endpoint refused several reference images; sent only the first") == 1
+    for err in ({"code": "moderation_blocked", "message": "blocked"},
+                {"type": "image_generation_user_error", "message": "change the request"}):
+        with api([R(400, {"error": err})]) as calls:
+            assert raises(lambda: K.edit(b"one", "edit", model="test", extra_refs=[b"two"])).status == 400
+            assert len(calls) == 1
+    with api([server_error]) as calls, env(GPTKIT_RETRIES="0"):
+        assert raises(lambda: K.edit(b"one", "edit", model="test", extra_refs=[b"two"])).status == 500
+        assert len(calls) == 1
+
+
+def test_edit_gif_request_and_fallback():
+    images = [Image.new("RGB", (16, 16), (i * 30, 0, 0)) for i in range(6)]
+    buf = io.BytesIO()
+    images[0].save(buf, "GIF", save_all=True, append_images=images[1:], duration=80)
+    raw = buf.getvalue()
+    response = R(200, {"data": [{"b64_json": b64(raw)}]})
+    with api([response]) as calls:
+        got, meta = K.edit_gif(png_bytes(), "move", 6, 80, "32x16", model="gpt-image-2.6-flare")
+        assert got == raw and Image.open(io.BytesIO(got)).n_frames == 6 and meta["source_format"] == "GIF"
+        data = calls[0]["data"]
+        assert (data["output_format"], data["frame_count"], data["frame_duration_ms"], data["size"], data["model"]) == (
+            "gif", 6, 80, "32x16", "gpt-image-2.6-flare")
+    def bad(param, message="unsupported"):
+        return R(400, {"error": {"message": message, "param": param, "type": "invalid_request_error"}})
+    with api([bad("output_format")]) as calls:
+        assert raises(lambda: K.edit_gif(png_bytes(), "move", 6, 80, "32x16", model="gpt-image-2.6-flare")).status == 400
+        assert len(calls) == 1 and calls[0]["data"]["output_format"] == "gif"
+    with api([bad("background"), response]) as calls, contextlib.redirect_stderr(io.StringIO()):
+        K.edit_gif(png_bytes(), "move", 6, 80, "32x16", background="transparent", model="gpt-image-2.6-flare")
+        assert len(calls) == 2 and "background" not in calls[1]["data"] and calls[1]["data"]["output_format"] == "gif"
+    with api([bad(None, "GIF output is not enabled for this request.")]) as calls:
+        e = raises(lambda: K.edit_gif(png_bytes(), "move", 6, 80, "32x16", model="gpt-image-2.6-flare"))
+        assert e.code == "gif_not_enabled" and len(calls) == 1
+    with tempfile.TemporaryDirectory() as d, env(GPTKIT_LEDGER=str(Path(d) / "ledger")):
+        K._ledger_record("/images/edits", "gpt-image-2.6-sunburst", {"usage": {"output_tokens": 100}}, image=True)
+        entry = json.loads((Path(d) / "ledger").read_text())
+        assert not entry["estimated"] and entry["est_usd"] == 0.003
+
+
+def test_gif_model_selection():
+    saved = K._listed_models
+    try:
+        with env(GPTKIT_API_KEY="sk-test", GPTKIT_CONFIG="/nonexistent/env", GPTKIT_IMAGE_MODEL=None):
+            K._listed_models = lambda *a: frozenset(["gpt-image-2.5-flare"])
+            assert K.pick_gif_model() is None  # frames falls back to the sprite-sheet route
+            assert "2.6" in str(raises(lambda: K.pick_gif_model("gpt-image-2.5-flare"), SystemExit))
+            K._listed_models = lambda *a: frozenset(["gpt-image-2.6-flare"])
+            assert K.pick_gif_model() == "gpt-image-2.6-flare"
+            K._listed_models = lambda *a: None
+            assert K.pick_gif_model() == "gpt-image-2.6-sunburst"
+    finally:
+        K._listed_models = saved
 
 
 def test_model_retirement_warnings():
@@ -621,7 +694,7 @@ def test_model_retirement_warnings():
         with env(GPTKIT_API_KEY="sk-test", GPTKIT_CONFIG="/nonexistent/env", GPTKIT_IMAGE_MODEL="gpt-image-1"):
             with contextlib.redirect_stderr(io.StringIO()) as err:
                 assert K.pick_image_model() == "gpt-image-1"
-            assert "replacement: gpt-image-2.5-sunburst or gpt-image-2.5-flare" in err.getvalue()
+            assert "replacement: gpt-image-2.6-sunburst or gpt-image-2.6-flare" in err.getvalue()
         K._NOTED.clear()
         K._today = lambda: "2027-04-02"  # gpt-5.1 shuts down 2027-04-01
         with api([R(200, message("ok"))]):
