@@ -797,14 +797,15 @@ def _hybrid_parsers(sub):
 
 
 def _design_to_code_parsers(sub):
-    p = sub.add_parser("tokens", help="design_spec.json -> Compose/SwiftUI/CSS/Tailwind theme code (palette snapped to pixels)")
+    p = sub.add_parser("tokens", help="design_spec.json -> Compose/SwiftUI/CSS/Tailwind/Flutter theme code (palette snapped to pixels)")
     p.add_argument("dir"); p.add_argument("--out", help="default DIR/tokens")
     p.add_argument("--package", default="com.example.app.ui.theme", help="Kotlin package for the Compose files")
     p.add_argument("--r-package", help="package of the app's R class: the module namespace in AGP 8 (default: --package minus .ui.theme)")
     p.add_argument("--author", help="adds an @author/@since header to Kotlin files")
     p.add_argument("--prefix", default="App", help="identifier prefix for the generated objects (AppColors, AppTypography, ...)")
     p.add_argument("--platforms", default="compose,swiftui,web",
-                   help="comma-separated subset of compose, swiftui, web (aliases: android, ios)")
+                   help="comma-separated subset of compose, swiftui, web, flutter (aliases: android, ios, dart); "
+                        "flutter is written only when named")
     p.add_argument("--fonts", help="fonts.json from `fonts` (default DIR/fonts/fonts.json when it exists)")
     p.add_argument("--no-snap", action="store_true", help="keep the spec's hex guesses")
     p.add_argument("--snap-grid", action="store_true",
@@ -812,7 +813,7 @@ def _design_to_code_parsers(sub):
     p.add_argument("--dtcg", action="store_true", help="also write tokens.tokens.json (W3C Design Tokens, Style Dictionary v4 subset)")
     p.add_argument("--vision", action="store_true", help="locate text the spec components don't cover with one vision call")
     p.add_argument("--verify", action="store_true", help="lint the emitted code; kotlinc when on PATH, swiftc on macOS, "
-                                                         "Tailwind config in node, CSS in headless Chrome")
+                                                         "dart analyze when on PATH, Tailwind config in node, CSS in headless Chrome")
     p.set_defaults(fn=cmd_tokens)
     p = sub.add_parser("fonts", help="match typography to Google Fonts by rendering + measuring; download winners")
     p.add_argument("dir"); p.add_argument("--out", help="default DIR/fonts")

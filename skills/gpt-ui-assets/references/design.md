@@ -37,6 +37,34 @@ python3 $K critique design/profile/mockup_v1.png --style-ref design/home/mockup_
     then fits it locally: rows are removed from, or repeated inside, the flat gaps between sections, so nothing is
     stretched. The untouched render is kept as `<name>_vN_raw.png`. Each output line ends `aspect=ok`,
     `aspect=fitted ...` or `aspect=OFF (...)`. Fitting stops at 15% of the height; an `OFF` variant needs a re-run.
+- **True scale (Android and iOS phone screens):**
+  - Left alone, GPT fits a long brief by drawing every element at about 0.7× its real size. The result reads as
+    congested, with small text, or as a small layout with empty space under it. Every new phone screen is therefore
+    asked for real sizes (16-17 body text, a button about 50 units high, rows no shorter than the touch target) and
+    told to let content that does not fit run off the bottom edge, as on a scrolling screen.
+  - Measured on three briefs, two renders per arm: the primary button came out 11%, 13% and 25% taller with the
+    rule, and every render with it beat both renders without it. It narrows the gap, it does not close it: dense
+    screens still drew a 50 pt button at 37-40 pt. Small sample; `spec` still calibrates the real scale.
+  - **Write the brief for one screenful.** A phone shows about 11-13 single-line rows. Name what must be visible
+    without scrolling first, then say what continues below ("then the rest of the list"). Five sections of four
+    rows each do not fit: you get the top of the page with the rest cut off, not a miniature of all of it. Show the
+    rest as a second mockup with `--style-ref` ("the same page scrolled to the Advanced section").
+  - Not added with a custom `--size`, `--raw`, `--edit`, or for tablets, foldables, desktop and web.
+  - `critique` does not report a list cut by the bottom edge or running behind the bottom bar.
+- **Looking at several screens at once (`sheet`, no API calls):**
+  ```bash
+  python3 $K sheet design/home                              # every image in the folder on one lettered sheet
+  python3 $K sheet design/home/mockup_v1.png design/home/mockup_r2_v1.png --labels before,after --crop bottom
+  python3 $K sheet build/home/assets --bg checker           # transparent assets on a checker
+  ```
+  - It prints the letter of each file and the sheet's path; Read the sheet. A tile's label carries the critique
+    result when there is one (`2 issues w5`). Critique overlays and `_raw` files in a folder are left out.
+  - `--crop top|middle|bottom|upper|lower` or `x,y,w,h` (fractions of the image, or pixels) zooms every image into
+    the same region, which is how to compare a tab bar, a header or one card across variants at readable size.
+  - `--cols`, `--bg light|dark|checker`, `--max` (sheet width, default 2000 px) and `--out` are optional. The default
+    output is `review/sheet_<first file>_<region>.jpg` beside the first image.
+  - The critique finds defects. Whether a screen is crowded, empty or looks like every other one is judged by
+    looking, and the sheet is the cheap way to look at all of them side by side before the user does.
 
 ## Form factors
 
@@ -57,8 +85,14 @@ The canvas and logical dimensions are stored in `design.json`, so critique and l
 device width (including web's 1440 px desktop viewport). Foldable aspect fitting is disabled to preserve the hinge
 position. A set render writes `<name>_<device>.png` for each device and records the anchor and files in `set.json`.
 - **Directions:** `--directions` makes variants differ in more than details. One text call first writes an art
-  direction per variant (palette, type scale, radii, spacing, one signature device) from a random shortlist of style
+  direction per variant (layout, palette, type scale, radii, spacing, one signature device) from a random shortlist of style
   families, with a different accent hue for each variant; colours or a theme named in the brief win over the hues.
+  Each direction arranges the content differently (what the hero is, how the main collection is shown, where the
+  primary action sits), and with three or more directions at least one is dark unless the brief names a theme.
+  Before the layout field, four directions of one brief shared one arrangement and differed only in accent and a
+  detail (edge-map similarity 0.79, the same as plain re-renders of one brief, 0.69-0.91); with it the same brief
+  gave 0.40 and a second brief 0.46, close to unrelated screens (0.28-0.43). Two runs, four variants each. Content the brief does not spell out (names, numbers) is invented per variant, so put the
+  exact content in the brief when the variants must be compared like for like.
   The directions are saved in `design.json` under `directions`. Use it for the first screen of a new app; screen 2
   onward uses `--style-ref`. Not with `--edit`, `--style-ref`, `--anchor`/`--set` or `--raw`.
 - **House style:** every `mockup` and `--style-ref` prompt carries the house art direction: clean, decluttered, modern;
@@ -102,4 +136,5 @@ position. A set render writes `<name>_<device>.png` for each device and records 
     editor never sees the approved screen, so Read the revision. Give concrete follow-ups with `--edit`.
   - Vision QA is weak at spatial collisions: it can miss a FAB, snackbar or mini player covering content. **Check
     floating elements yourself**, and fix them with `--edit` (e.g. "move the FAB above the last row").
-  - Don't chase absolute text sizes in the mockup. gpt-image draws everything small, and `spec` calibrates the real scale.
+  - Don't chase absolute text sizes in the mockup. gpt-image draws under real size even with the true-scale rule, and
+    `spec` calibrates the real scale.

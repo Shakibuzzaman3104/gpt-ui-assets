@@ -644,11 +644,33 @@ def pick_text_model(model=None):
         return model
     if c.get("text_model_pinned"):
         return c["text_model"] or "gpt-6-sol"
-    if c.get("key"):
-        ids = _listed_models(c["base"], c["key"])
-        if ids:
-            return next((m for m in TEXT_ROUTE if m in ids), "gpt-6-sol")
-    return "gpt-6-sol"
+    ids = _listed_models(c["base"], c["key"]) if c.get("key") else None
+    return (_text_chain(ids) or ["gpt-6-sol"])[0]
+
+
+_REFUSED_TEXT = set()
+
+
+def _text_chain(ids):
+    """TEXT_ROUTE in trial order: the models the endpoint lists, then gpt-6-sol and the rest, minus refused ones."""
+    listed = [m for m in TEXT_ROUTE if ids and m in ids]
+    rest = ["gpt-6-sol"] + [m for m in TEXT_ROUTE if m != "gpt-6-sol"]
+    return [m for m in listed + [m for m in rest if m not in listed] if m not in _REFUSED_TEXT]
+
+
+def _model_refused(e):
+    return e.code == "model_not_found" or e.param == "model" or (e.status == 404 and "model" in str(e).lower())
+
+
+def _next_text_model(refused):
+    """The next routed text model after the endpoint refused one (an account can list a model it won't serve), or None."""
+    _REFUSED_TEXT.add(refused)
+    c = _config()
+    chain = _text_chain(_listed_models(c["base"], c["key"]) if c.get("key") else None)
+    if chain:
+        print(f"  (text model {refused} refused by this endpoint; using {chain[0]}. "
+              f"Set GPTKIT_TEXT_MODEL={chain[0]} to skip the failed call)", file=sys.stderr)
+    return chain[0] if chain else None
 
 
 def generate(prompt, size="1024x1024", background="auto", model=None, task="concept"):
@@ -841,11 +863,17 @@ def ask(parts, schema=None, name="result", model=None):
         body["text"] = {"format": {"type": "json_object"}}
     elif schema:
         body["text"] = {"format": {"type": "json_schema", "name": name, "strict": True, "schema": schema}}
-    try:
-        answer = _responses_text(_responses(body), schema)[0]
-        if schema and isinstance(schema, dict) and "required" in schema:
-            return _check_keys(answer, schema, name)
-        return answer
-    except ApiError as e:
-        e.prompt = e.prompt or next((p for p in parts if isinstance(p, str)), "")[:200]
-        raise
+    routed = not model and not _config().get("text_model_pinned")
+    while True:
+        try:
+            answer = _responses_text(_responses(body), schema)[0]
+            if schema and isinstance(schema, dict) and "required" in schema:
+                return _check_keys(answer, schema, name)
+            return answer
+        except ApiError as e:
+            fallback = _next_text_model(body["model"]) if routed and _model_refused(e) else None
+            if fallback:
+                body["model"] = fallback
+                continue
+            e.prompt = e.prompt or next((p for p in parts if isinstance(p, str)), "")[:200]
+            raise

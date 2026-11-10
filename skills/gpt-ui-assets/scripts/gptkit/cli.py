@@ -46,6 +46,7 @@ from .appicon import cmd_appicon_build, cmd_appicon_concepts, cmd_pick
 from .trace_rig import _add_trace_rig_parsers
 from .hybrid import _design_to_code_parsers, _hybrid_parsers
 from .doctor import _color_args, cmd_doctor, cmd_score
+from .review import REGIONS, SHEET_MAX, cmd_sheet
 from .research import DEPTHS, RESEARCH_MODEL, cmd_blueprint, cmd_research
 from .store import _store_parsers
 from .cost_status import cmd_cost, cmd_status
@@ -102,6 +103,15 @@ def _design_parsers(sub):
     p.add_argument("dir", nargs="?", help="project root (default: current directory)")
     p.add_argument("--json", action="store_true", help="print a machine-readable status object")
     p.set_defaults(fn=cmd_status)
+    p = sub.add_parser("sheet", help="one labelled contact sheet of any images or folders, whole or zoomed into a region (no API)")
+    p.add_argument("images", nargs="+", help="image files or folders (a folder gives its images; review files are left out)")
+    p.add_argument("--out", help="sheet file (default: review/sheet_<first>_<region>.jpg beside the first image)")
+    p.add_argument("--crop", help=f"zoom every image into one region: {', '.join(REGIONS)}, or x,y,w,h as fractions or pixels")
+    p.add_argument("--cols", type=_pos_int, help="tiles per row (default: 4 for portrait images, 5 when there are more than 8, 2 for landscape)")
+    p.add_argument("--labels", help="comma-separated tile names (default: the file names)")
+    p.add_argument("--bg", choices=["light", "dark", "checker"], default="light", help="page behind the tiles; checker shows transparency")
+    p.add_argument("--max", type=_pos_int, default=SHEET_MAX, help=f"sheet width in px (default {SHEET_MAX})")
+    p.set_defaults(fn=cmd_sheet)
     p = sub.add_parser("mockup", help="generate UI mockup variants (or --edit an existing one)")
     p.add_argument("prompt"); p.add_argument("--out", required=True); p.add_argument("--name", default="mockup")
     p.add_argument("--size", help=f"WIDTHxHEIGHT canvas (default depends on --platform/--device; phone: {PHONE_SIZE}; "

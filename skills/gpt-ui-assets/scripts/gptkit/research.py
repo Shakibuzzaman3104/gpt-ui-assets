@@ -4,7 +4,8 @@ import json
 import sys
 from pathlib import Path
 
-from .core import ApiError, _plan, _read_json, _responses, _responses_text, _warn_retired_model
+from .core import (ApiError, _model_refused, _next_text_model, _plan, _read_json, _responses, _responses_text,
+                   _warn_retired_model)
 from .prompts import PLATFORMS
 
 # ---- market research + feature blueprint
@@ -30,11 +31,16 @@ def think(prompt, schema=None, name="result", model=None, effort="high", search=
         body["tools"] = [{"type": "web_search"}]
     if schema:
         body["text"] = {"format": {"type": "json_schema", "name": name, "strict": True, "schema": schema}}
-    try:
-        return _responses_text(_responses(body, timeout=1200), schema)
-    except ApiError as e:
-        e.prompt = e.prompt or prompt[:200]
-        raise
+    while True:
+        try:
+            return _responses_text(_responses(body, timeout=1200), schema)
+        except ApiError as e:
+            fallback = _next_text_model(body["model"]) if not model and _model_refused(e) else None
+            if fallback:
+                body["model"] = fallback
+                continue
+            e.prompt = e.prompt or prompt[:200]
+            raise
 
 
 def _check_keys(data, schema, what):

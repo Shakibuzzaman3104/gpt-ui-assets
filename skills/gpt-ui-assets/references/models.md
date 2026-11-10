@@ -33,6 +33,9 @@ Rules of thumb:
 `gpt-6.1-sol`, `gpt-6-sol`, `gpt-6`, `gpt-6-luna`, falling back to `gpt-6-sol`. The local Codex backend uses the first
 of `gpt-6.1-sol`, `gpt-6-sol`, `gpt-6-luna` listed in `~/.codex/models_cache.json`, falling back to `gpt-6-luna`.
 `research`/`blueprint` default to `gpt-6-sol` with high effort.
+When the endpoint refuses a routed text model (`model_not_found`: a ChatGPT-account gateway can list a model it will
+not serve), the API backend tries the next one of that list and prints the `GPTKIT_TEXT_MODEL=<id>` line that skips the
+failed call next time. A model chosen with `--model` or `GPTKIT_TEXT_MODEL` is never swapped.
 The `gpt-5.x` families also work, but several are retiring (below).
 
 ## Prices (USD, standard tier)

@@ -181,10 +181,84 @@ def test_empty_output_dir_is_not_done():
         assert checks["review/"] == "done", checks
 
 
+def store_unit(d):
+    return unit(json.loads(call(d, "--json")), "store")
+
+
+def test_store_project_steps_in_order():
+    with TempDir() as td:
+        d = Path(td) / "ui-assets" / "store"
+        (d / "captures").mkdir(parents=True)
+        put(d / "captures.json", json.dumps({"captures": [{"name": "home", "file": "captures/ios-phone/home.png"}]}))
+        assert store_unit(d)["next"] == [f"python3 $K store plan {d} --app \"<name: what it does, for whom>\""]
+        slots = [{"id": "home", "capture": "home", "caption": "Calm", "plate_brief": "soft sky"},
+                 {"id": "list", "capture": "list", "caption": "Yours"}]
+        put(d / "storyboard.json", json.dumps({"slots": slots, "feature": {"subtitle": "x"}}))
+        u = store_unit(d)
+        assert u["next"] == [f"python3 $K store art {d}"] and "plates not painted: plate_home" in u["problems"], u
+        put(d / "art" / "plate_home.png", "fake png")
+        put(d / "art" / "art.json", json.dumps({"plate_home": {"file": "art/plate_home.png", "flags": []}}))
+        assert store_unit(d)["next"] == [f"python3 $K store build {d}"]
+        report = {"targets": {"ios-phone": {"shots": []}, "play-phone": {"shots": [{"slot": "home"}]}}, "errors": []}
+        put(d / "build" / "report.json", json.dumps(report))
+        u = store_unit(d)
+        assert u["next"] == [f"python3 $K store check {d}"] and "ios-phone: 0 shots built" in u["problems"], u
+        put(d / "build" / "check.json", json.dumps([{"level": "FAIL", "where": "ios-phone", "msg": "0 screenshots"},
+                                                     {"level": "WARN", "where": "build", "msg": "left out"}]))
+        u = store_unit(d)
+        assert "FAIL ios-phone: 0 screenshots" in u["problems"] and "1 WARN in build/check.json" in u["problems"], u
+        assert u["next"][0].startswith("fix the FAIL lines"), u
+        put(d / "build" / "check.json", json.dumps([{"level": "PASS", "where": "play-phone", "msg": "ok"}]))
+        assert store_unit(d)["next"] == [f"python3 $K store feature {d} --logo <logo.png>"]
+        put(d / "build" / "play-feature" / "feature.json")
+        u = store_unit(d)
+        assert u["next"] == [] and {c["status"] for c in u["checks"]} == {"done"}, u
+        old = time.time() - 60
+        os.utime(d / "build" / "report.json", (old, old))
+        os.utime(d / "build" / "check.json", (old, old))
+        u = store_unit(d)
+        assert u["next"] == [f"python3 $K store build {d}"] and any(p.startswith("STALE: build/report.json") for p in u["problems"]), u
+        assert "store " in call(d) and "no gptkit artifacts" not in call(d)
+
+
+def test_store_painted_scenes():
+    with TempDir() as td:
+        d = Path(td) / "store"
+        put(d / "captures.json", json.dumps({"captures": [{"name": "home"}]}))
+        slots = [{"id": "home", "capture": "home", "caption": "Calm", "scene_brief": "a desk at dusk"},
+                 {"id": "list", "capture": "list", "caption": "Yours", "scene_brief": "a shelf"}]
+        put(d / "storyboard.json", json.dumps({"slots": slots}))
+        u = store_unit(d)
+        assert u["next"] == [f"python3 $K store scene {d}"] and "build/report.json" not in {c["name"] for c in u["checks"]}, u
+        put(d / "scenes" / "main" / "scenes.json", json.dumps({"slots": {"home": {"pick": "home_v1.png"}, "list": {"pick": None}}}))
+        u = store_unit(d)
+        assert u["next"] == [f"python3 $K store scene {d} --set main --slots list"], u
+        assert "scenes/main: no passing scene picked for list" in u["problems"], u
+        put(d / "scenes" / "main" / "scenes.json", json.dumps({"slots": {"home": {"pick": "a.png"}, "list": {"pick": "b.png"}}}))
+        assert store_unit(d)["next"] == [f"python3 $K store compose {d} --set main"]
+        shots = {"home": {"file": "ios-phone/01_home.png", "flags": ["OCCLUDED"]}, "list": {"file": None, "flags": [], "notes": ["found 0 screens"]}}
+        put(d / "scenes" / "main" / "build" / "report.json", json.dumps({"ios-phone": shots, "ios-phone-large": shots}))
+        u = store_unit(d)
+        assert u["next"] == [] and "scenes/main home: OCCLUDED (ios-phone, ios-phone-large)" in u["problems"], u
+        assert "scenes/main list: found 0 screens (ios-phone, ios-phone-large)" in u["problems"], u
+
+
+def test_store_damaged_files():
+    with TempDir() as td:
+        d = Path(td) / "store"
+        put(d / "storyboard.json", "{not json")
+        put(d / "build" / "report.json", "[]")
+        put(d / "build" / "check.json", '{"level": "FAIL"}')
+        u = store_unit(d)
+        assert any("storyboard.json: invalid JSON" in p for p in u["problems"]), u
+        assert u["next"] == [f"python3 $K store capture {d} --name <screen>"], u
+
+
 def run():
     for fn in (test_empty_output_dir_is_not_done, test_manifest_to_spec_next, test_stale_spec, test_forge_attention,
                test_corrupt_forge_report, test_sequence_missing_frames, test_empty_dir, test_json_shape,
-               test_real_offline_kit_output, test_unforged_assets_and_design_link):
+               test_real_offline_kit_output, test_unforged_assets_and_design_link, test_store_project_steps_in_order,
+               test_store_painted_scenes, test_store_damaged_files):
         fn()
         print(f"ok {fn.__name__}")
 

@@ -2,6 +2,42 @@
 
 All notable changes to gpt-ui-assets. Versions follow [semantic versioning](https://semver.org).
 
+## 5.7.0 (2026-11-10)
+
+### Added
+- **Phone screens are drawn at true device scale.** Left alone, GPT fits a long brief by drawing every element at about
+  0.7x, which reads as congested with small text, or as a small layout with empty space under it. New Android and iOS
+  phone mockups now carry real sizes for text, buttons and rows and let content that does not fit run off the bottom
+  like a scrolling screen. On three briefs with two renders per arm, the primary button measured 11%, 13% and 25%
+  taller, and every render with the rule beat both without it. Dense screens are still under size (a 50 pt button at
+  37-40 pt). Not added with `--size`, `--raw`, `--edit` or for other devices. `critique` no longer reports a list that
+  runs past the bottom edge or behind the bottom bar; before, it called that a high overlap defect.
+- **`sheet`: any images on one lettered contact sheet, whole or zoomed.** `sheet <files or folders>` writes one sheet
+  with a letter and name per tile and the critique result where one exists; `--crop top|middle|bottom|x,y,w,h` zooms
+  every image into the same region; `--bg checker` shows transparency. No API calls. Sessions had written about 200
+  contact-sheet scripts and 190 crop scripts by hand after kit commands.
+- **Flutter theme code from `tokens`.** `--platforms flutter` writes `<prefix>_tokens.dart` (colours, text styles,
+  radii, spacing, a `ColorScheme`, a `TextTheme` and `ThemeData`) and, with matched fonts, `pubspec_fonts.yaml`.
+  `--verify` lints it and runs `dart analyze` against Flutter API stubs when `dart` is installed. The output analyses
+  clean in a Flutter 3.47 project.
+- **`status` reads store screenshot projects.** A folder with `storyboard.json` or `captures.json` is now a `store`
+  unit: captures, storyboard, plates, the flat build, `check.json`, the feature graphic and each painted scene set, with
+  the step that is missing or older than its inputs. It lists unpainted plates, targets with no shots, the `store
+  check` FAIL lines, slots with no passing scene and composed shots with flags, then prints the one next command.
+  Before, `status` answered "no gptkit artifacts" for a finished store set and proposed a new mockup.
+
+### Fixed
+- **`--directions` variants now differ in layout, not only in colour.** Four directions of one brief used to share one
+  arrangement and change the accent, a typeface and one detail: their edge-map similarity was 0.79, the same as plain
+  re-renders of a brief (0.69-0.91). Each direction now carries a `layout` (the hero, how the main collection is shown,
+  where the primary action sits) that must differ from the others, and with three or more directions at least one is
+  dark unless the brief names a theme. The same brief then measured 0.40 and a second brief 0.46; unrelated screens
+  measure 0.28-0.43. Directions saved by an older version still read.
+- **A refused text model no longer ends the command.** An endpoint can list a model that its account will not serve (a
+  ChatGPT-account gateway answers `model_not_found` for `gpt-6.1-sol`). `manifest`, `critique`, `spec`, `research` and
+  every other text or vision call now try the next model of the route and name the `GPTKIT_TEXT_MODEL` value that
+  skips the failed call. A model set with `--model` or `GPTKIT_TEXT_MODEL` is still used as given.
+
 ## 5.6.0 (2026-11-07)
 
 GPT Image 2.6 becomes the default, edits can carry several reference images, and `frames` gains a native GIF route.

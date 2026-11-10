@@ -33,7 +33,7 @@ CMD_KINDS = {"mockup": {"mockup"}, "critique": {"mockup"}, "forge": {"asset"}, "
              "svg": {"icon"}, "icons": {"icon"}, "appicon concepts": {"appicon"}, "appicon build": {"appicon"},
              "material": {"hybrid"}, "state": {"hybrid", "other"}, "stage": {"hybrid", "other"},
              "frames": {"animation", "other"}, "vectorize": {"animation", "other"}}
-QUIET_CMDS = {"status", "cost", "doctor", "setup", "gallery", "login", "logout"}
+QUIET_CMDS = {"status", "cost", "doctor", "setup", "gallery", "login", "logout", "sheet"}
 
 
 def _utc_now():

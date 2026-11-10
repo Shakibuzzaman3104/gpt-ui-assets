@@ -66,6 +66,7 @@ python3 $K store check store --idea                        # + can the pictures 
 python3 $K store feature store --logo brand/logo.png       # Play feature graphic 1024x500
 python3 $K store scene store                               # painted scenes, one per slot with a scene_brief
 python3 $K store compose store                             # App Store scenes per target, with fit and overlap checks
+python3 $K status store                                    # resuming: done, missing and stale steps, FAILs, flags, next command
 ```
 
 ## 1. Capture
