@@ -51,7 +51,14 @@ this product's domain, audience and mood:
 Accent hues, in direction order: {hues}. Build each direction's accent on its hue (shade it to suit the product), unless the brief names colours: then the brief's colours are every direction's palette and accent, and the directions differ in type, shape, layout and signature instead.
 Keep everything the brief states (content, theme, colours, platform) in every direction: a colour or theme the brief
 names overrides the shortlist. Each direction must be credible for this product on its own, not a weaker foil.
+The directions must differ in ARRANGEMENT, not only in colour and type: with the colours removed, a person looking at
+thumbnails still tells them apart. If the brief names no theme and there are 3 or more directions, at least one is dark.
 Write each field as a short, concrete instruction for a renderer:
+- layout: how this direction arranges the brief's content, different from every other direction: what the hero is and
+  how much of the first screenful it takes (a full-width band, a compact strip, a large ring or number, an illustration
+  header), how the main collection is shown (plain rows, separate cards, a two-column grid, a horizontal row of cards,
+  a timeline, grouped sections), and where the primary action sits (a bottom button, a floating button, the top bar,
+  inline with its section). Every item of the brief stays, with the platform's native navigation.
 - palette: hex values for background, surface, primary text, secondary text and ONE accent (the accent marks only the
   primary action, the active navigation item and the single most important value; about 10% of the screen at most);
   secondary text meets 4.5:1 on its background.
@@ -62,8 +69,8 @@ Write each field as a short, concrete instruction for a renderer:
 - avoid: the 3 clichés of this product category.
 Brief: {brief}"""
 DIRECTION_SCHEMA = {"type": "object", "additionalProperties": False,
-                    "required": ["name", "mood", "theme", "palette", "type", "shape", "spacing", "signature", "avoid"],
-                    "properties": {"name": {"type": "string"}, "mood": {"type": "string"},
+                    "required": ["name", "mood", "theme", "layout", "palette", "type", "shape", "spacing", "signature", "avoid"],
+                    "properties": {"name": {"type": "string"}, "mood": {"type": "string"}, "layout": {"type": "string"},
                                    "theme": {"type": "string", "enum": ["light", "dark"]}, "palette": {"type": "string"},
                                    "type": {"type": "string"}, "shape": {"type": "string"}, "spacing": {"type": "string"},
                                    "signature": {"type": "string"}, "avoid": {"type": "string"}}}
@@ -73,7 +80,8 @@ DIRECTIONS_SCHEMA = {"type": "object", "additionalProperties": False, "required"
 
 def _direction_text(d):
     """One art direction as prompt words for the renderer; its name stays out, GPT would draw it as the app's name."""
-    return (f"Art direction ({d['theme']} theme; {d['mood']}). Palette: {d['palette']} Type: {d['type']} "
+    layout = f"Layout: {d['layout']} " if d.get("layout") else ""
+    return (f"Art direction ({d['theme']} theme; {d['mood']}). {layout}Palette: {d['palette']} Type: {d['type']} "
             f"Shape: {d['shape']} Spacing: {d['spacing']} Signature: {d['signature']} Avoid: {d['avoid']}")
 
 
@@ -253,6 +261,27 @@ def _platform_rule(platform):
     return " " + PLATFORM_RULE.format(**PLATFORMS[platform]) + (FLOW_NAV_RULE if platform in ("android", "ios") else "")
 
 
+# Without this GPT fits a long brief by drawing every element at about 0.7x, which reads as congested. Phones only (tested).
+TRUE_SCALE = (" True device scale: this canvas is exactly one {lw} x {lh} {u} screen at {k:.2f} px per {u}, and every element "
+              "is drawn at its real size, never shrunk to fit more in. Body text is 16-17 {u} (capital letters about {cap} px "
+              "tall), secondary text 13-14 {u}, a full-width button is about 50 {u} high ({button} px), a list row or text "
+              "field at least {touch} {u} high ({row} px), screen side margins 16 {u} ({margin} px). "
+              "A real screen of this size holds only about 11-13 single-line rows. When the content is taller than the screen, "
+              "draw the top of it at full size and let it continue below the bottom edge, the last visible item partly cut "
+              "off by the screen edge or passing under the bottom bar, as on a real scrolling screen.")
+_TRUE_SCALE_DEVICES = (("android", "phone", "default"), ("ios", "phone", "default"))
+
+
+def _scale_rule(record, size):
+    """The true-scale clause for a phone screen rendered on its own canvas; empty for every other device or a custom size."""
+    if not record or size != record["canvas"] or not any(record is DEVICES[k] for k in _TRUE_SCALE_DEVICES):
+        return ""
+    k = int(size.split("x")[0]) / record["logical_w"]
+    return TRUE_SCALE.format(lw=record["logical_w"], lh=record["logical_h"], u="dp" if record["touch"] == 48 else "pt", k=k,
+                             cap=round(12 * k), button=round(50 * k), touch=record["touch"], row=round(record["touch"] * k),
+                             margin=round(16 * k))
+
+
 def _design_meta(path):
     """design.json written by `mockup` next to a mockup (platform, screen width), if any."""
     for d in (Path(path).parent, Path(path).parent.parent):
@@ -296,6 +325,8 @@ severe first:
   controls that cannot get a {touch} logical-unit touch target (a smaller visible pill or icon with room around it is fine).
 - overlap: a floating element (FAB, snackbar, sheet, badge, mini player) covering text, numbers, list rows or
   artwork; elements colliding, or hidden under the navigation bar or system bars. High when it hides content.
+  NOT a defect: a scrolling list or page that runs on past the bottom edge or behind the bottom bar, its last row
+  partly cut off. That is the scroll position of a real screen, never report it here or under implementability.
 - platform: {platform} guideline problems (navigation pattern, tab count, safe areas, standard controls; a tab or
   navigation bar on a screen that should not show one: onboarding, sign-in or sign-up, a full-screen player, camera,
   checkout, compose or an edit form), and system

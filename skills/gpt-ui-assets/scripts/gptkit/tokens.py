@@ -1,4 +1,4 @@
-"""Tokens: Compose / SwiftUI / CSS / Tailwind."""
+"""Tokens: Compose / SwiftUI / CSS / Tailwind / Flutter."""
 import json
 import math
 import os
@@ -213,9 +213,17 @@ _SWIFTUI_COLORS = frozenset("primary secondary accentColor clear black white gra
                             "brown cyan indigo mint teal".split())
 
 
+_DART_RESERVED = frozenset("abstract as assert async await base break case catch class const continue covariant default "
+                           "deferred do dynamic else enum export extends extension external factory false final finally for "
+                           "Function get hide if implements import in interface is late library mixin new null of on operator "
+                           "part required rethrow return sealed set show static super switch sync this throw true try type "
+                           "typedef var void when while with yield hashCode runtimeType toString noSuchMethod".split())
+
+
 def _names(labels, colors=()):
     """One identifier set per label, unique across the whole token namespace (colours, styles, families, radii, spacing):
-    kt (PascalCase), sw (camelCase, Swift keywords backticked, SwiftUI colour names suffixed Token), css (kebab-case).
+    kt (PascalCase), sw (camelCase, Swift keywords backticked, SwiftUI colour names suffixed Token), css (kebab-case),
+    dart (camelCase, Dart reserved words suffixed Token).
     `colors` holds the indices of the colour labels."""
     words = [re.findall(r"[A-Za-z0-9]+", str(s).replace("'", ""))[:6] or ["token"] for s in labels]
     pascal = ["".join(w[:1].upper() + w[1:].lower() for w in ws) for ws in words]
@@ -230,7 +238,8 @@ def _names(labels, colors=()):
         sw.append(camel)
         css.append("-".join(w.lower() for w in ws) + (f"-{suffix}" if suffix else ""))
     sw = [f"`{s}`" if s in _SWIFT_KEYWORDS else s for s in _uniq(sw)]
-    return [{"kt": k, "sw": s, "css": c} for k, s, c in zip(kt, sw, css)]
+    dart = _uniq([c + "Token" if c in _DART_RESERVED else c for c in (k[:1].lower() + k[1:] for k in kt)])
+    return [{"kt": k, "sw": s, "css": c, "dart": d} for k, s, c, d in zip(kt, sw, css, dart)]
 
 
 def _r05(v):
@@ -666,6 +675,75 @@ def _emit_swift(tm, a, out):
     return [out / f"{p}Tokens.swift", xc]
 
 
+def _dart_num(v):
+    return f"{v:g}"
+
+
+def _emit_flutter(tm, a, out, fonts_dir=None):
+    """<prefix>_tokens.dart: colours, text styles, radii, spacing and a ThemeData; pubspec_fonts.yaml when fonts were matched."""
+    out.mkdir(parents=True, exist_ok=True)
+    P = a.prefix[:1].upper() + a.prefix[1:]
+    low = P[:1].lower() + P[1:]
+    lum = lambda h: sum(v * w for v, w in zip(_hexi(h), (0.2126, 0.7152, 0.0722))) / 255
+    cols = [f"  static const Color {c['dart']} = {_kt_color(c)};" for c in tm["colors"]]
+    styles = []
+    for t in tm["types"]:
+        family = (t["family"] or "").replace("\\", "").replace("'", "\\'")
+        lines = [f"    fontFamily: '{family}'," if family else None,
+                 f"    fontSize: {_dart_num(t['size'])},",
+                 f"    height: {_dart_num(round(t['line_height'] / t['size'], 3))}," if t["size"] else None,
+                 f"    fontWeight: FontWeight.w{min(900, max(100, round(t['weight'] / 100) * 100))},",
+                 "    fontStyle: FontStyle.italic," if t["italic"] else None,
+                 f"    letterSpacing: {_dart_num(round(t['tracking'] * t['size'], 2))}," if t["tracking"] else None,
+                 f"    color: {P}Colors.{t['color']['dart']}," if t["color"] else f"    color: Color(0xFF{t['color_hex'][1:].upper()}),"]
+        note = "" if t["family"] else ("  // serif in the design: run `fonts` for a matched family" if t["generic"] == "serif" else "")
+        styles.append(f"  static const TextStyle {t['dart']} = TextStyle({note}\n" + "\n".join(x for x in lines if x) + "\n  );")
+    radii = [f"  static const double {r['dart']} = {_dart_num(r['dp'])};  // {r['source']}" for r in tm["radii"]]
+    space = [f"  static const double {s['dart']} = {_dart_num(s['dp'])};"
+             + ("" if s["source"].startswith("redline") else "  // GPT estimate") for s in tm["spacing"]]
+    scheme = {}
+    for role, pat in _SCHEME_RULES:
+        c = next((c for c in tm["colors"] if re.search(pat, f"{c['name']} {c.get('usage', '')}", re.I)), None)
+        if c and role not in scheme:
+            scheme[role] = c
+    bg = scheme.pop("background", None)
+    scheme.pop("onBackground", None)  # folded into surface/onSurface since Flutter 3.22
+    if bg and "surface" not in scheme:
+        scheme["surface"] = bg
+    dark = bg is not None and lum(bg["hex"]) < 0.5
+    roles = "".join(f"  {r}: {P}Colors.{c['dart']},\n" for r, c in scheme.items())
+    slots = {}
+    for t in tm["types"]:
+        slots.setdefault(t["m3_slot"], t)
+    theme = "".join(f"  {s_}: {P}Text.{slots[s_]['dart']},\n" for s_ in _M3_TYPE_SLOTS if s_ in slots)
+    block = lambda name, body: f"abstract final class {P}{name} {{\n" + "\n".join(body) + "\n}\n\n"
+    src = ("// Generated by gptkit tokens from the measured design. Sizes are logical pixels.\n"
+           "import 'package:flutter/material.dart';\n\n"
+           + block("Colors", cols) + block("Text", styles) + block("Radius", radii) + block("Spacing", space)
+           + f"// Measured on the {'dark' if dark else 'light'} mockup; roles not listed keep the Flutter defaults.\n"
+           f"const ColorScheme {low}ColorScheme = ColorScheme.{'dark' if dark else 'light'}(\n{roles});\n\n"
+           f"const TextTheme {low}TextTheme = TextTheme(\n{theme});\n\n"
+           f"ThemeData {low}Theme() => ThemeData(\n  useMaterial3: true,\n  colorScheme: {low}ColorScheme,\n"
+           f"  textTheme: {low}TextTheme,\n"
+           + (f"  scaffoldBackgroundColor: {P}Colors.{bg['dart']},\n" if bg else "") + ");\n")
+    name = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", P).lower()
+    main = out / f"{name}_tokens.dart"
+    main.write_text(src)
+    files = [main]
+    if tm["families"]:
+        rows = [f"# Paste under `flutter:` in pubspec.yaml; copy the files from {fonts_dir or 'fonts'}/ttf into assets/fonts/.", "  fonts:"]
+        for f in tm["families"]:
+            rows += [f"    - family: {f['family']}", "      fonts:"]
+            for r in f["files"]:
+                rows.append(f"        - asset: assets/fonts/{Path(r.get('ttf') or r['android']).name}")
+                rows.append(f"          weight: {min(900, max(100, round(int(r['weight']) / 100) * 100))}")
+                if r.get("italic"):
+                    rows.append("          style: italic")
+        (out / "pubspec_fonts.yaml").write_text("\n".join(rows) + "\n")
+        files.append(out / "pubspec_fonts.yaml")
+    return files
+
+
 def _css_family(t):
     fallback = "serif" if t["generic"] == "serif" else "sans-serif"
     return f'"{t["family"]}", {fallback}' if t["family"] else ("Georgia, serif" if t["generic"] == "serif" else
@@ -790,6 +868,28 @@ def _lint_tokens(files):
                     if (scope, name) in seen:
                         out.append(f"{f.name}:{n}: duplicate declaration {name} in {scope} (first at line {seen[(scope, name)]})")
                     seen[(scope, name)] = n
+        elif f.suffix == ".dart":
+            scope, seen = "<top>", {}
+            for n, line in enumerate(text.splitlines(), 1):
+                m_ = re.match(r"^(?:abstract |final |base |sealed )*class\s+(\w+)", line)
+                if m_:
+                    scope = m_.group(1)
+                elif line.startswith("}"):
+                    scope = "<top>"
+                m_ = re.match(r"^(\s*)(?:static )?const \w+ (\w+) =", line)
+                if m_:
+                    key = (scope if m_.group(1) else "<top>", m_.group(2))
+                    if m_.group(2) in _DART_RESERVED:
+                        out.append(f"{f.name}:{n}: `{m_.group(2)}` is a Dart reserved word or an Object member")
+                    if key in seen:
+                        out.append(f"{f.name}:{n}: duplicate declaration {m_.group(2)} in {key[0]} (first at line {seen[key]})")
+                    seen[key] = n
+                for w in re.findall(r"FontWeight\.w(\d+)", line):
+                    if int(w) not in range(100, 1000, 100):
+                        out.append(f"{f.name}:{n}: FontWeight.w{w} does not exist")
+                for lit in re.findall(r"Color\((0x[0-9A-Fa-f]+)\)", line):
+                    if not re.fullmatch(r"0x[0-9A-F]{8}", lit):
+                        out.append(f"{f.name}:{n}: {lit} is not an 8-digit ARGB literal")
         elif f.suffix == ".css":
             for block in re.findall(r"\{([^{}]*)\}", text):
                 props = re.findall(r"^\s*(--[\w-]+)\s*:", block, re.M)
@@ -882,6 +982,50 @@ def _kotlinc_check(kt_files, rpkg, res_fonts):
     return "ok (kotlinc against Compose API stubs)" if r.returncode == 0 and not errs else "FAILED: " + "; ".join(errs[:4])[:600]
 
 
+_DART_STUB = """class Color { final int value; const Color(this.value); }
+class FontWeight { final int value; const FontWeight._(this.value);
+WEIGHTS}
+enum FontStyle { normal, italic }
+class TextStyle { final Color? color; final String? fontFamily; final double? fontSize; final FontWeight? fontWeight;
+  final FontStyle? fontStyle; final double? letterSpacing; final double? height;
+  const TextStyle({this.color, this.fontFamily, this.fontSize, this.fontWeight, this.fontStyle, this.letterSpacing, this.height}); }
+class ColorScheme { const ColorScheme.light({ROLES}); const ColorScheme.dark({ROLES}); }
+class TextTheme { const TextTheme({SLOTS}); }
+class ThemeData { ThemeData({bool? useMaterial3, ColorScheme? colorScheme, TextTheme? textTheme, Color? scaffoldBackgroundColor}); }
+"""
+
+
+def _dart_check(dart_file):
+    """Analyze the generated Dart with the Dart SDK (PATH or GPTKIT_DART) against signature stubs of the Flutter APIs it
+    uses (no Flutter SDK needed). Returns a one-line verdict."""
+    exe = os.environ.get("GPTKIT_DART") or shutil.which("dart")
+    if not exe:
+        return "skipped (no dart on PATH; the pure-Python lint ran)"
+    roles = ", ".join(f"Color? {r}" for r in _M3_COLOR_ROLES if r not in ("background", "onBackground"))
+    slots = ", ".join(f"TextStyle? {s}" for s in _M3_TYPE_SLOTS)
+    weights = "".join(f"  static const FontWeight w{w} = FontWeight._({w});\n" for w in range(100, 1000, 100))
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        (root / "flutter" / "lib").mkdir(parents=True)
+        (root / "flutter" / "lib" / "material.dart").write_text(
+            _DART_STUB.replace("WEIGHTS", weights).replace("ROLES", roles).replace("SLOTS", slots))
+        (root / "probe" / "lib").mkdir(parents=True)
+        (root / "probe" / ".dart_tool").mkdir()
+        (root / "probe" / "pubspec.yaml").write_text("name: probe\nenvironment:\n  sdk: ^3.0.0\n")
+        (root / "probe" / ".dart_tool" / "package_config.json").write_text(json.dumps({"configVersion": 2, "packages": [
+            {"name": "flutter", "rootUri": "../../flutter", "packageUri": "lib/", "languageVersion": "3.0"},
+            {"name": "probe", "rootUri": "../", "packageUri": "lib/", "languageVersion": "3.0"}]}))
+        shutil.copy(dart_file, root / "probe" / "lib" / Path(dart_file).name)
+        try:
+            r = subprocess.run([exe, "analyze", "lib"], cwd=root / "probe", capture_output=True, text=True, timeout=300)
+        except (OSError, subprocess.TimeoutExpired) as e:
+            return f"FAILED: dart did not run ({type(e).__name__})"
+    bad = [l.strip() for l in (r.stdout + r.stderr).splitlines() if re.match(r"\s*(error|warning)\b", l)]
+    if bad or r.returncode not in (0, 1):
+        return "FAILED: " + ("; ".join(bad[:4]) or (r.stderr or r.stdout).strip())[:600]
+    return "ok (dart analyze against Flutter API stubs)"
+
+
 _CHROME_PROBE_WARNED = False
 
 
@@ -895,6 +1039,8 @@ def _verify_tokens(tm, out, a, platforms=("compose", "swiftui", "web")):
         files += sorted((out / "swiftui").glob("*.swift"))
     if "web" in platforms:
         files += [out / "web" / "tokens.css"]
+    if "flutter" in platforms:
+        files += sorted((out / "flutter").glob("*.dart"))
     lint = _lint_tokens([f for f in files if f.exists()])
     res["lint"] = (f"ok ({len(files)} files: unique identifiers, no self-references, valid weights/colour literals)" if not lint
                    else "FAILED: " + "; ".join(lint[:6]))
@@ -910,6 +1056,8 @@ def _verify_tokens(tm, out, a, platforms=("compose", "swiftui", "web")):
             res["swiftui"] = "ok (swiftc -typecheck, iOS simulator SDK)" if r.returncode == 0 else "FAILED: " + r.stderr.strip()[:600]
         else:
             res["swiftui"] = "skipped (swiftc type-check needs macOS with Xcode; the lint ran)"
+    if "flutter" in platforms:
+        res["flutter"] = "; ".join(_dart_check(f) for f in sorted((out / "flutter").glob("*.dart")))
     if "web" in platforms:
         if shutil.which("node"):
             r = subprocess.run(["node", "-e", f"const c=require({json.dumps(str((out / 'web' / 'tailwind.tokens.cjs').resolve()))});"
@@ -970,20 +1118,24 @@ def _palette_sheet(palette, mock, texts, spec, path):
     im.save(path)
 
 
+_TOKEN_PLATFORMS = ("compose", "swiftui", "web", "flutter")
+
+
 def _platform_set(s):
-    alias = {"android": "compose", "kotlin": "compose", "ios": "swiftui", "swift": "swiftui", "css": "web", "tailwind": "web"}
+    alias = {"android": "compose", "kotlin": "compose", "ios": "swiftui", "swift": "swiftui", "css": "web", "tailwind": "web",
+             "dart": "flutter"}
     got = []
     for p in re.split(r"[,\s]+", (s or "").strip()):
         if not p:
             continue
         q = alias.get(p.lower(), p.lower())
-        if q not in ("compose", "swiftui", "web"):
-            sys.exit(f"gptkit: --platforms: unknown '{p}' (use compose, swiftui, web; aliases android, ios)")
+        if q not in _TOKEN_PLATFORMS:
+            sys.exit(f"gptkit: --platforms: unknown '{p}' (use compose, swiftui, web, flutter; aliases android, ios, dart)")
         if q not in got:
             got.append(q)
     if not got:
-        sys.exit("gptkit: --platforms: nothing to emit (use compose, swiftui, web)")
-    return [p for p in ("compose", "swiftui", "web") if p in got]
+        sys.exit("gptkit: --platforms: nothing to emit (use compose, swiftui, web, flutter)")
+    return [p for p in _TOKEN_PLATFORMS if p in got]
 
 
 def cmd_tokens(a):
@@ -1047,18 +1199,20 @@ def cmd_tokens(a):
     if "web" in platforms:
         fcss = fonts_path.parent / "web" / "fonts.css"
         files += _emit_web(tm, a, out / "web", os.path.relpath(fcss, out / "web") if fonts and fcss.exists() else None)
+    if "flutter" in platforms:
+        files += _emit_flutter(tm, a, out / "flutter", fonts_path.parent if fonts else None)
     if a.dtcg:
         files.append(_emit_dtcg(tm, out))
     _palette_sheet(palette, mock, texts, spec, out / "palette_check.png")
     report = {"palette": palette, "text": {r: {k: v for k, v in t.items() if k not in ("alpha", "instances")}
                                            for r, t in texts.items()},
-              "typography": [{k: t[k] for k in ("role", "kt", "sw", "css", "family", "weight", "size", "line_height", "line_height_source",
+              "typography": [{k: t[k] for k in ("role", "kt", "sw", "css", "dart", "family", "weight", "size", "line_height", "line_height_source",
                                                 "tracking", "color_hex", "size_source", "platform_style", "m3_slot", "m3_slot_source",
                                                 "hig_style")} for t in tm["types"]],
               "m3": {k_: tm.get(k_) for k_ in ("m3_roles_baseline", "m3_slots_baseline", "m3_slot_notes", "m3_shapes")},
               "prefix": a.prefix, "audit": audit,
-              "radii": [{k: r[k] for k in ("name", "dp", "source", "shape", "kt", "sw", "css")} for r in tm["radii"]],
-              "spacing": [{k: s[k] for k in ("name", "dp", "source", "kt", "sw", "css")} for s in tm["spacing"]],
+              "radii": [{k: r[k] for k in ("name", "dp", "source", "shape", "kt", "sw", "css", "dart")} for r in tm["radii"]],
+              "spacing": [{k: s[k] for k in ("name", "dp", "source", "kt", "sw", "css", "dart")} for s in tm["spacing"]],
               "platforms": platforms, "px_to_dp": tm["px_to_dp"], "fonts": str(fonts_path) if fonts else None}
     print(f"palette ({sum(p['snapped'] for p in palette)}/{len(palette)} snapped to mockup pixels):")
     for p in palette:

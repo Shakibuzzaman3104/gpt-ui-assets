@@ -318,6 +318,46 @@ def test_swift_css_names():
     shutil.rmtree(d)
 
 
+def test_flutter_tokens():
+    d = _tmp()
+    spec = design_spec()
+    spec["palette"] += [{"name": "Default", "hex": "#101010", "usage": "a"}, {"name": "Class", "hex": "#202020", "usage": "b"},
+                        {"name": "Hash code", "hex": "#30303080", "usage": "c"}]
+    spec["typography"][2]["weight"] = 450
+    spec["radii"].append({"element": "switch", "px": 8})
+    make_design(d, spec)
+    out = run("tokens", d, "--no-snap", "--prefix", "Acme", "--platforms", "flutter", "--verify")
+    rep = json.loads((d / "tokens" / "tokens.json").read_text())
+    assert rep["platforms"] == ["flutter"] and set(rep["verify"]) == {"lint", "flutter"}, rep["verify"]
+    assert rep["verify"]["lint"].startswith("ok") and not rep["verify"]["flutter"].startswith("FAILED"), rep["verify"]
+    assert not (d / "tokens" / "compose").exists() and "acme_tokens.dart" in out
+    src = (d / "tokens" / "flutter" / "acme_tokens.dart").read_text()
+    for needle in ("import 'package:flutter/material.dart';", "abstract final class AcmeColors {", "abstract final class AcmeText {",
+                   "static const Color defaultToken = Color(0xFF101010);", "static const Color classToken = Color(0xFF202020);",
+                   "static const Color hashCodeToken = Color(0x80303030);", "static const double switchToken = ",
+                   "const ColorScheme acmeColorScheme = ColorScheme.", "const TextTheme acmeTextTheme = TextTheme(",
+                   "ThemeData acmeTheme() => ThemeData(", "color: AcmeColors."):
+        assert needle in src, needle
+    assert "FontWeight.w450" not in src and ("FontWeight.w400" in src or "FontWeight.w500" in src)
+    sizes = {t["dart"]: t for t in rep["typography"]}
+    name, t = next(iter(sizes.items()))
+    block = src.split(f"static const TextStyle {name} = TextStyle(", 1)[1].split(");", 1)[0]
+    assert f"fontSize: {t['size']:g}," in block and f"height: {round(t['line_height'] / t['size'], 3):g}," in block, block
+    if shutil.which("dart"):
+        assert rep["verify"]["flutter"].startswith("ok (dart analyze"), rep["verify"]["flutter"]
+        broken = d / "tokens" / "flutter" / "acme_tokens.dart"
+        broken.write_text(src.replace("Color(0xFF101010)", "Colour(0xFF101010)"))
+        assert g._dart_check(broken).startswith("FAILED"), g._dart_check(broken)
+    bad = d / "bad.dart"
+    bad.write_text("abstract final class XColors {\n  static const Color a = Color(0xFFF);\n  static const Color a = Color(0xFF000000);\n"
+                   "  static const Color class = Color(0xFF000000);\n}\n\nconst x = FontWeight.w450;\n")
+    findings = "\n".join(g._lint_tokens([bad]))
+    for needle in ("0xFFF is not", "duplicate declaration a in XColors", "`class` is a Dart reserved word", "FontWeight.w450"):
+        assert needle in findings, (needle, findings)
+    assert g._platform_set("dart, ios") == ["swiftui", "flutter"]
+    shutil.rmtree(d)
+
+
 def _fake_exe(path, body):
     Path(path).write_text("#!/bin/sh\n" + body)
     os.chmod(path, os.stat(path).st_mode | stat.S_IEXEC)

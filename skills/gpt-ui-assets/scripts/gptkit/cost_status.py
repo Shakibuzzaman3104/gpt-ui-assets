@@ -402,6 +402,119 @@ def _status_scan_misc_units(d, children, names, units, seen):
         _status_scan_add(units, seen, d, "frames", d.name, [{"name": "frames_review.png", "status": "done"}], [], [])
 
 
+def _status_older(path, inputs):
+    """Names of the inputs written after `path`."""
+    try:
+        at = path.stat().st_mtime
+        return [p.name for p in inputs if p.exists() and p.stat().st_mtime > at]
+    except OSError:
+        return []
+
+
+def _status_capped(lines, limit=6):
+    return lines[:limit] + ([f"... and {len(lines) - limit} more"] if len(lines) > limit else [])
+
+
+def _status_scan_store_unit(d, names, units, seen):
+    """Record a store screenshot project: captures, storyboard, plates, flat build, check, feature and painted scenes."""
+    if "storyboard.json" not in names and not ("captures.json" in names and (d / "captures").is_dir()):
+        return
+    arg = _status_arg(d)
+    probs, checks, pending = [], [], []
+
+    def check(name, path, inputs=()):
+        status = "done" if path.exists() else "missing"
+        newer = _status_older(path, inputs) if status == "done" else []
+        if newer:
+            status = "STALE"
+            probs.append(f"STALE: {name} older than {', '.join(newer)}")
+        checks.append({"name": name, "status": status})
+        return status
+
+    def load(path):
+        data, err = _status_json(path) if path.exists() else (None, None)
+        if err:
+            probs.append(err)
+        return data
+
+    captures = load(d / "captures.json")
+    shots = captures.get("captures") if isinstance(captures, dict) else None
+    if check("captures.json", d / "captures.json") == "missing" or not shots:
+        pending.append(f"python3 $K store capture {arg} --name <screen>")
+    if check("storyboard.json", d / "storyboard.json") == "missing":
+        pending.append(f"python3 $K store plan {arg} --app \"<name: what it does, for whom>\"")
+    sb = load(d / "storyboard.json")
+    slots = [s for s in sb.get("slots") or [] if isinstance(s, dict) and s.get("id")] if isinstance(sb, dict) else []
+    feature = sb.get("feature") if isinstance(sb, dict) and isinstance(sb.get("feature"), dict) else {}
+    painted = [s["id"] for s in slots if s.get("scene_brief")]
+    flat = [s["id"] for s in slots if not s.get("scene_brief")]
+
+    plates = [f"plate_{s['id']}" for s in slots if s.get("plate_brief")] + (["plate_feature"] if feature.get("plate_brief") else [])
+    if plates or (d / "art" / "art.json").exists():
+        check("art/art.json", d / "art" / "art.json")
+        art = load(d / "art" / "art.json")
+        art = art if isinstance(art, dict) else {}
+        unpainted = [p for p in plates if not (isinstance(art.get(p), dict) and (d / str(art[p].get("file"))).is_file())]
+        if unpainted:
+            probs.append("plates not painted: " + ", ".join(_status_capped(unpainted)))
+            pending.append(f"python3 $K store art {arg}")
+        probs.extend(f"{name}: {' '.join(map(str, entry['flags']))}" for name, entry in art.items()
+                     if isinstance(entry, dict) and entry.get("flags"))
+
+    report_path, check_path = d / "build" / "report.json", d / "build" / "check.json"
+    upstream = [d / "storyboard.json", d / "captures.json", d / "art" / "art.json"]
+    targets = {}
+    if flat or report_path.exists():
+        if check("build/report.json", report_path, upstream) != "done":
+            pending.append(f"python3 $K store build {arg}")
+        report = load(report_path)
+        if isinstance(report, dict):
+            targets = report.get("targets") if isinstance(report.get("targets"), dict) else {}
+            probs.extend(f"build error: {e}" for e in _status_capped([str(e) for e in report.get("errors") or []], 4))
+            probs.extend(f"{name}: 0 shots built" for name, t in targets.items() if isinstance(t, dict) and not t.get("shots"))
+        if report_path.exists():
+            if check("build/check.json", check_path, [report_path]) != "done":
+                pending.append(f"python3 $K store check {arg}")
+            results = load(check_path)
+            results = [r for r in results if isinstance(r, dict)] if isinstance(results, list) else []
+            fails = [f"FAIL {r.get('where')}: {r.get('msg')}" for r in results if r.get("level") == "FAIL"]
+            probs.extend(_status_capped(fails))
+            warns = sum(1 for r in results if r.get("level") == "WARN")
+            if warns:
+                probs.append(f"{warns} WARN in build/check.json")
+            if fails and not pending:
+                pending.append(f"fix the FAIL lines, then: python3 $K store build {arg} && python3 $K store check {arg}")
+
+    scene_sets = sorted(p.parent for p in (d / "scenes").glob("*/scenes.json")) if (d / "scenes").is_dir() else []
+    if painted and not scene_sets:
+        checks.append({"name": "scenes/main/scenes.json", "status": "missing"})
+        pending.append(f"python3 $K store scene {arg}")
+    for folder in scene_sets:
+        label = f"scenes/{folder.name}"
+        check(f"{label}/scenes.json", folder / "scenes.json")
+        record = load(folder / "scenes.json")
+        record = record.get("slots") if isinstance(record, dict) and isinstance(record.get("slots"), dict) else {}
+        unpicked = [sid for sid in painted if not (record.get(sid) or {}).get("pick")]
+        if unpicked:
+            probs.append(f"{label}: no passing scene picked for {', '.join(_status_capped(unpicked))}")
+            pending.append(f"python3 $K store scene {arg} --set {folder.name} --slots {','.join(unpicked)}")
+        composed = folder / "build" / "report.json"
+        if check(f"{label}/build/report.json", composed, [folder / "scenes.json", d / "storyboard.json"]) != "done" and not unpicked:
+            pending.append(f"python3 $K store compose {arg} --set {folder.name}")
+        shots = load(composed)
+        flagged = {}
+        for target, entries in (shots.items() if isinstance(shots, dict) else []):
+            for sid, entry in (entries.items() if isinstance(entries, dict) else []):
+                if isinstance(entry, dict) and (entry.get("flags") or not entry.get("file")):
+                    why = " ".join(map(str, entry.get("flags") or [])) or "; ".join(map(str, entry.get("notes") or [])) or "not rendered"
+                    flagged.setdefault((sid, why), []).append(target)
+        probs.extend(_status_capped([f"{label} {sid}: {why} ({', '.join(where)})" for (sid, why), where in flagged.items()], 8))
+    if feature or any(str(name).startswith("play") for name in targets):
+        if check("build/play-feature/feature.json", d / "build" / "play-feature" / "feature.json") == "missing" and report_path.exists():
+            pending.append(f"python3 $K store feature {arg} --logo <logo.png>")
+    _status_scan_add(units, seen, d, "store", d.name, checks, probs, pending[:1])
+
+
 def _status_scan_units(dirs, build_mockups):
     """Inspect each discovered directory and assemble its status units."""
     units = []
@@ -417,6 +530,7 @@ def _status_scan_units(dirs, build_mockups):
         _status_scan_project_units(d, children, names, build_mockups, units, seen)
         _status_scan_build_unit(d, names, build_mockups, units, seen)
         _status_scan_misc_units(d, children, names, units, seen)
+        _status_scan_store_unit(d, names, units, seen)
     return units
 
 

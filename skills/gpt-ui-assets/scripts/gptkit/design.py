@@ -22,7 +22,7 @@ from .prompts import (
     CRITIQUE_REF_RULE, CRITIQUE_SCHEMA, DEVICES, MANIFEST_PROMPT, MANIFEST_SCHEMA, MOCKUP_WRAP, PLATFORMS, SEVERITY,
     DIRECTIONS_PROMPT, DIRECTIONS_SCHEMA, SPEC_SCHEMA, STYLE_FAMILIES, STYLE_REF_PROMPT, VERIFY_SCHEMA,
     _aspect_words, _design_meta, _device_record, _direction_text, _house_style, _platform_rule,
-    _screen_dp,
+    _scale_rule, _screen_dp,
 )
 
 # ---------------------------------------------------------------- commands
@@ -369,7 +369,7 @@ def cmd_mockup(a):
                                                                                     surface=surface)
             if dirs and i < len(dirs["directions"]):
                 base += " " + _direction_text(dirs["directions"][i])
-        return base + house + rule + _device_prompt(record)
+        return base + house + rule + _device_prompt(record) + _scale_rule(record, sz)
     canvas = {"size": size}  # shared by the variants: drops to a classic size once if the endpoint rejects this one
     lock = threading.Lock()
     if platform:

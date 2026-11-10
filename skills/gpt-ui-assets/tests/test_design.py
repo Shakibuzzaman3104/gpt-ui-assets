@@ -407,7 +407,8 @@ class _FakeApiError(K.ApiError):
 
 
 def _direction(name):
-    return {"name": name, "mood": f"{name.lower()} calm", "theme": "light", "palette": "#ffffff, #111111, #555555, #008866",
+    return {"name": name, "mood": f"{name.lower()} calm", "theme": "light", "layout": f"{name.lower()} arrangement.",
+            "palette": "#ffffff, #111111, #555555, #008866",
             "type": "humanist sans, 16/20/24/32", "shape": "4/8/16 radii", "spacing": "16 margin, 8 gap",
             "signature": "oversized progress ring", "avoid": "confetti, badges, streak flames"}
 
@@ -437,6 +438,8 @@ def test_directions_give_each_variant_its_own():
             assert not any("Alpha" in p or "Beta" in p for p in prompts)
             assert prompts[0] != prompts[1]
             assert len(asks) == 1 and "direction 1:" in asks[0] and "direction 2:" in asks[0]
+            assert "differ in ARRANGEMENT" in asks[0] and "- layout:" in asks[0] and "at least one is dark" in asks[0]
+            assert sum("Layout: alpha arrangement. Palette:" in p for p in prompts) == 1
             meta = json.loads((d / "design.json").read_text())
             variants = meta["directions"]["variants"]
             assert set(variants) == {"mockup_v1.png", "mockup_v2.png"} and all(v["hue"] for v in variants.values())
@@ -446,6 +449,12 @@ def test_directions_give_each_variant_its_own():
             with patched(generate=generate, _plan=lambda *a, **kw: None):
                 run(K.cmd_mockup, _mockup_args(td, variants=2, no_critique=True, platform=platform))
             assert json.loads((d / "design.json").read_text())["directions"]["variants"] == {}
+
+
+def test_direction_without_a_layout_still_reads():
+    old = {k: v for k, v in _direction("Alpha").items() if k != "layout"}
+    assert "Layout:" not in K._direction_text(old) and "Palette: #ffffff" in K._direction_text(old)
+    assert "layout" in K.DIRECTION_SCHEMA["required"]
 
 
 def test_directions_failure_renders_without_them():
@@ -851,6 +860,67 @@ def test_critique_fit_measures_lines_from_the_pixels():
     assert _grow(14, "max") == 26 / 14
     tab = fit_lines(im, 412, "ios", [dict(lines[0], kind="tab")])[0]
     assert not {"large", "max"} & set(tab.get("short_dp", {})), tab
+
+
+def test_mockup_true_scale_clause():
+    prompts = []
+
+    def fake_generate(prompt, size="1024x1024", **k_):
+        prompts.append(prompt)
+        return K._png_bytes(_sections_png(*map(int, size.split("x")))), {"quality": "high", "size": size}
+    with tempfile.TemporaryDirectory() as td, patched(generate=fake_generate):
+        run(K.cmd_mockup, _mockup_args(td, size=None))
+        assert "True device scale: this canvas is exactly one 412 x 915 dp screen at 2.80 px per dp" in prompts[-1], prompts[-1]
+        assert "a list row or text field at least 48 dp high (134 px)" in prompts[-1] and "continue below the bottom edge" in prompts[-1]
+        run(K.cmd_mockup, _mockup_args(td, size=None, platform="ios"))
+        assert "one 393 x 852 pt screen at 2.93 px per pt" in prompts[-1] and "about 50 pt high (147 px)" in prompts[-1], prompts[-1]
+        for kw in (dict(size="1024x1536"), dict(size=None, raw=True), dict(size=None, device="tablet"),
+                   dict(size=None, platform="web"), dict(size=None, platform=None)):
+            run(K.cmd_mockup, _mockup_args(td, **kw))
+            assert "True device scale" not in prompts[-1], (kw, prompts[-1])
+    assert K._scale_rule(None, K.PHONE_SIZE) == "" and K._scale_rule(K._device_record("android", "foldable"), "1840x1904") == ""
+    assert "runs on past the bottom edge or behind the bottom bar" in K.CRITIQUE_PROMPT
+
+
+def test_sheet():
+    with tempfile.TemporaryDirectory() as td:
+        d = Path(td)
+        for i, colour in enumerate(((200, 30, 30), (30, 160, 60), (30, 60, 200))):
+            im = Image.new("RGB", (300, 600), (245, 245, 245))
+            ImageDraw.Draw(im).rectangle((0, 400, 300, 600), fill=colour)
+            im.save(d / f"home_v{i + 1}.png")
+        (d / "home_v1_critique.json").write_text(json.dumps({"rounds": [{"issues": [{}, {}], "weight": 5}]}))
+        Image.new("RGB", (300, 600)).save(d / "home_v1_critique.png")
+        assert [f.name for f in K._sheet_inputs([str(d)])] == ["home_v1.png", "home_v2.png", "home_v3.png"]
+        out, index = K.make_sheet(K._sheet_inputs([str(d)]), d / "review" / "all.jpg")
+        sheet = Image.open(out)
+        assert [letter for letter, _ in index] == ["A", "B", "C"] and sheet.width <= K.SHEET_MAX and sheet.height > 600
+        assert K._sheet_note(d / "home_v1.png") == "2 issues w5" and K._sheet_note(d / "home_v2.png") == ""
+        out, _ = K.make_sheet([d / "home_v1.png", d / "home_v3.png"], d / "bottom.png", crop="bottom")
+        px = Image.open(out).convert("RGB")
+        left, right = px.getpixel((K.SHEET_GAP + 150, K.SHEET_GAP + K.SHEET_LABEL + 150)), px.getpixel((px.width - K.SHEET_GAP - 150, K.SHEET_GAP + K.SHEET_LABEL + 150))
+        assert left == (200, 30, 30) and right == (30, 60, 200), (left, right)
+        assert K._sheet_region("0.5,0.5,0.5,0.5") == (0.5, 0.5, 0.5, 0.5) and K._sheet_region("upper") == (0, 0, 1, 0.5)
+        assert K._sheet_crop(Image.new("RGB", (300, 600)), (10, 20, 100, 50)).size == (100, 50)
+        assert K._sheet_labels([d / "a" / "x.png", d / "b" / "x.png"], None) == ["a/x", "b/x"]
+        for bad, needle in ((lambda: K._sheet_region("sideways"), "--crop is one of"),
+                            (lambda: K._sheet_labels([d / "home_v1.png"], "one,two"), "2 names for 1 images"),
+                            (lambda: K.make_sheet([d / "home_v1_critique.json"], d / "x.jpg"), "cannot read")):
+            try:
+                bad()
+                raise AssertionError(needle)
+            except ValueError as e:
+                assert needle in str(e), e
+        (d / "empty").mkdir()
+        try:
+            K._sheet_inputs([str(d / "empty")])
+            raise AssertionError("empty folder")
+        except ValueError as e:
+            assert "no images" in str(e)
+        a = argparse.Namespace(images=[str(d / "home_v2.png"), str(d / "home_v3.png")], out=None, crop="top", cols=None,
+                               labels="old,new", bg="dark", max=1200)
+        code, out = run(K.cmd_sheet, a)
+        assert code == 0 and (d / "review" / "sheet_home_v2_top.jpg").exists() and "2 images; Read it" in out, out
 
 
 def test_house_style_asks_for_an_original_product_name():

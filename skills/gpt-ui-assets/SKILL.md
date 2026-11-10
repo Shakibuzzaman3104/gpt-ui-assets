@@ -3,7 +3,7 @@ name: gpt-ui-assets
 description: Design app, tablet, foldable, desktop-app and website screens with OpenAI's GPT image and vision models (API key or the local Codex CLI), then turn an approved design into production assets redrawn 1:1, never cropped: SVG/VectorDrawable icons, PNG/WebP illustrations, launcher icons, frame, Lottie and AVD animation, smoke/steam/rain loops, theme code and fonts measured from the pixels, a screenshot diff of the built UI, and App Store / Google Play screenshot sets composited from real captures. Also writes GPT-researched feature blueprints. Use whenever the user wants GPT/ChatGPT to design screens, icons, illustrations or an app icon; approves a GPT design ("go ahead", "build it", "give me the assets"); wants assets used in the UI; wants an animated drawable, Lottie or AVD from existing art; wants store screenshots or a Play feature graphic; or complains that GPT cropped assets out of a mockup. Not for go/no-go idea validation, or design direction without GPT.
 license: MIT
 metadata:
-  version: 5.6.0
+  version: 5.7.0
 ---
 
 # GPT UI assets
@@ -46,7 +46,8 @@ K="<this skill's base directory>/scripts/gptkit.py"
   `android/`, `ios/` and `web/` folders are copied into the app from there. Folders outside `ui-assets/` get no gallery.
 - **Resuming a project** (after a break, a context reset or in a new session): run `python3 $K status <dir>`. It lists
   each unit's finished, missing and stale steps, the problems the kit's reports recorded, and the exact next command.
-  No API calls.
+  It covers designs, builds, app icons, animation and store screenshot sets (unpainted plates, a build older than its
+  storyboard, `store check` FAILs, flagged or unpicked scenes). No API calls.
 - **Cost.** Image calls take 35–80 s each and cost money or quota. Paid commands print a `plan: ~N image calls … ≈ $X`
   line before the first call (on the Codex CLI it counts plan quota instead). `GPTKIT_QUALITY=low` makes cheap drafts. `forge`, `sequence render` and `research` take `--dry-run`. `GPTKIT_BUDGET_USD` stops any
   command whose estimate exceeds it. `python3 $K cost --by cmd` shows what has been spent. Run slow commands in the
@@ -63,7 +64,7 @@ story.
 | Phase | When | Core commands | Read |
 |---|---|---|---|
 | 0. Research | An app idea needs a feature list, competitors or screens to design | `research "<idea>" --platform P --out research/x`, then `blueprint research/x` | `references/research.md` |
-| 1. Design | The user wants screens designed | `mockup "<brief>" --platform P [--device tablet\|foldable\|desktop] --out design/home`, `critique`, `--edit`, `--style-ref`, `--set tablet,desktop --anchor <approved>` | `references/design.md` |
+| 1. Design | The user wants screens designed | `mockup "<brief>" --platform P [--device tablet\|foldable\|desktop] --out design/home`, `critique`, `--edit`, `--style-ref`, `--set tablet,desktop --anchor <approved>`, `sheet` to look at several at once | `references/design.md` |
 | 1b. Hybrid | The concept must look portfolio-grade or move | `material`, `state`, `stage --init`, `stage`, `stage --compose` | `references/hybrid.md` |
 | 2–4. Assets | The user approves a design ("go ahead") | `manifest`, `spec`, `iconspec`, `forge`, `svg`, `icons`, `pick`, `fix`, `trace`, `vd`, `export` | `references/assets.md` |
 | App icon | A launcher icon is needed | `appicon concepts`, `appicon build` | `references/appicon.md` |
@@ -77,7 +78,8 @@ A typical "design a screen and give me the assets" run:
 python3 $K mockup "habit tracker home: date, progress, 5 habits with check + streak, 4-tab nav; mint + warm white" \
   --platform android --out ui-assets/design/home --variants 2    # 9:19.5 phone canvas, house style, aspect-checked, auto-critiqued
 # first screen of a new app: add --directions so the variants differ in palette, type and signature, not just details
-# Read each mockup_v*_critique.png, then show the user the variants (and the gallery page)
+python3 $K sheet ui-assets/design/home                          # all variants on one lettered sheet; --crop bottom zooms in
+# Read the sheet and each mockup_v*_critique.png, then show the user the variants (and the gallery page)
 # ...iterate with --edit until the user locks one; screen 2 onward uses --style-ref <approved screen>
 python3 $K critique ui-assets/design/home/mockup_v1.png --fit     # on the locked design: offer its fixes, apply the accepted ones
 python3 $K manifest ui-assets/design/home/mockup_v1.png --out ui-assets/build/home   # Read manifest_overlay.png; fix assets.json by hand
@@ -88,7 +90,7 @@ python3 $K vd ui-assets/build/home/svg/*.svg --out app/src/main/res/drawable
 python3 $K export ui-assets/build/home/assets/hero.png --dp 240 --res app/src/main/res --name hero
 python3 $K fonts ui-assets/build/home
 python3 $K redline ui-assets/build/home
-python3 $K tokens ui-assets/build/home --package com.acme.ui.theme --verify
+python3 $K tokens ui-assets/build/home --package com.acme.ui.theme --verify   # a Flutter app: --platforms flutter
 # build the screen with spec's native widgets and the tokens' padding, gaps and radii (never default ones),
 # screenshot it at the design's effective width, then:
 python3 $K compare ui-assets/build/home shot.png               # also flags wrong corner radii, padding and gaps, with the token
@@ -103,7 +105,10 @@ python3 $K compare ui-assets/build/home shot.png               # also flags wron
 2. **Read every review sheet yourself before the user sees the result.** These include `*_critique.png`,
    `manifest_overlay.png`, `review/forge_*.png`, `review/svg_*.png`, `icons/preview.png`, the `appicon` sheets,
    `frames_review.png`, `keys_review.png`, `layout_review.png`, `fonts_review.png` and `compare/heatmap.png`. The
-   metrics rank candidates, but your eyes decide.
+   metrics rank candidates, but your eyes decide. The automatic critique finds defects; it does not judge whether a
+   screen is crowded, empty or dull. That is your call: `python3 $K sheet <files or folder>` puts any images on one
+   lettered sheet and `--crop top|middle|bottom|x,y,w,h` zooms every one into the same region, so never write a
+   Pillow script for a contact sheet or a crop. Reject a screen you would not ship before the user has to.
 3. **Never crop an asset out of the mockup, and never text-only prompt an asset of an approved design.** A text-only
    prompt gives a generic piece in a different style. `forge`, `fix`, `frames`, `sequence` and `material` pass the
    design as the reference.
@@ -113,8 +118,12 @@ python3 $K compare ui-assets/build/home shot.png               # also flags wron
    `--no-house-style` drops it for one run. Phone screens render on a 9:19.5 (iPhone-proportion) canvas, and every
    other device on its own canvas. Each render
    is checked against it and fitted locally (empty gaps trimmed or extended, nothing scaled) when it comes back off;
-   `aspect=OFF` means it could not be fitted. Never hand over an `OFF` variant as final.
-6. **Measure, don't guess.** Vision hex guesses drift by up to ΔE 10, and GPT draws native components at ~0.7× scale.
+   `aspect=OFF` means it could not be fitted. Never hand over an `OFF` variant as final. Android and iOS phone screens
+   are drawn at true device scale, and what does not fit runs off the bottom like a scrolling screen. **Brief one
+   screenful** (about 11-13 rows): what must be visible first, then what continues below. A brief that lists a whole
+   long page gets its top, not a miniature of everything; design the rest as a second mockup with `--style-ref`.
+6. **Measure, don't guess.** Vision hex guesses drift by up to ΔE 10, and GPT draws native components under real size
+   (about 0.7×; 0.8-1.0× on phone screens, which carry the true-scale rule).
    Take colours, sizes, radii and fonts from `spec`, `tokens`, `redline` and `fonts`, not from the model's prose.
 7. **Flags outrank scores.** `EMPTY` and `COPY` are never shipped. After two unsuccessful `fix` rounds, tell the user
    what still differs instead of looping.
@@ -193,7 +202,7 @@ python3 $K compare ui-assets/build/home shot.png               # also flags wron
 | `references/setup.md` | Installing, `doctor` problems, gateway quirks, optional tools |
 | `references/models.md` | Choosing or pinning a model, prices, retirement dates |
 | `references/research.md` | `research`, `blueprint` |
-| `references/design.md` | `mockup`, `critique`, `--edit`, `--style-ref` |
+| `references/design.md` | `mockup`, `critique`, `--edit`, `--style-ref`, `sheet` |
 | `references/hybrid.md` | `material`, `state`, `stage`, carrying a hybrid screen into Compose |
 | `references/assets.md` | `manifest`, `spec`, `iconspec`, `forge`, `fix`, `pick`, `score`, `svg`, `icons`, `trace`, `vd`, `export` |
 | `references/appicon.md` | `appicon concepts`, `appicon build`, installing the icon |

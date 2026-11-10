@@ -404,6 +404,39 @@ def test_think_drops_reasoning_on_rejection():
     assert e.status == 400 and len(calls) == 2
 
 
+def test_routed_text_model_falls_back_when_refused():
+    refused = R(400, {"error": {"message": "The 'gpt-6.1-sol' model is not supported when using Codex with a ChatGPT "
+                                           "account.", "code": "model_not_found"}})
+    models = lambda calls: [c["json"]["model"] for c in calls]
+    saved = K._listed_models
+    K._listed_models = lambda base, key: frozenset({"gpt-6.1-sol", "gpt-6-luna"})  # listed, yet the account refuses one
+    try:
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            K._REFUSED_TEXT.clear()
+            with api([refused, R(200, message("ok"))], []) as calls:
+                assert K.ask(["q"]) == "ok"
+            assert models(calls) == ["gpt-6.1-sol", "gpt-6-luna"] and "GPTKIT_TEXT_MODEL=gpt-6-luna" in err.getvalue()
+            with api([R(200, message("again"))], []) as calls:  # remembered for the rest of the process
+                assert K.ask(["q"]) == "again" and models(calls) == ["gpt-6-luna"]
+            K._REFUSED_TEXT.clear()
+            with api([refused, R(200, message("found"))], []) as calls:
+                assert K.think("q")[0] == "found"
+            assert models(calls) == ["gpt-6-sol", "gpt-6.1-sol"]
+            K._REFUSED_TEXT.clear()
+            with api([refused], []) as calls:  # a model the caller chose is never swapped
+                e = raises(lambda: K.ask(["q"], model="gpt-6.1-sol"))
+            assert e.code == "model_not_found" and len(calls) == 1
+            with api([refused], []) as calls, env(GPTKIT_TEXT_MODEL="gpt-6.1-sol"):
+                e = raises(lambda: K.ask(["q"]))
+            assert e.code == "model_not_found" and len(calls) == 1
+            with api([refused] * 4, []) as calls:  # the whole route refused: the last error, with the pin hint
+                e = raises(lambda: K.ask(["q"]))
+            assert len(calls) == 4 and "GPTKIT_TEXT_MODEL" in str(e)
+    finally:
+        K._listed_models = saved
+        K._REFUSED_TEXT.clear()
+
+
 # ---- research / blueprint
 
 def cells(row):

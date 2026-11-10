@@ -56,7 +56,13 @@ python3 $K tokens  build/home --package com.acme.app.ui.theme --prefix Acme [--a
     type-checks the Kotlin with `kotlinc` against Compose API stubs when it is on PATH (or `GPTKIT_KOTLINC`), `swiftc` only on
     macOS, loads the Tailwind config in node and parses the CSS in headless Chrome. It never reports a check that did not run as ok.
   - It prints which M3 colour roles and type slots stay at the baseline; native components (Switch, FAB, NavigationBar) use those.
-  - Flags: `--platforms compose,swiftui,web` (aliases android, ios), `--r-package` (the module namespace holding `R`, AGP 8),
+  - **Flutter:** `--platforms flutter` (alias `dart`; written only when named) gives `flutter/<prefix>_tokens.dart`:
+    `<Prefix>Colors`, `<Prefix>Text` (`TextStyle` with size, `height` as line height / size, weight rounded to a hundred,
+    letter spacing in logical pixels), `<Prefix>Radius`, `<Prefix>Spacing`, a `ColorScheme`, a `TextTheme` on the M3 slots
+    and `<prefix>Theme()` returning `ThemeData`. With matched fonts it also writes `pubspec_fonts.yaml` to paste under
+    `flutter:`. Dart reserved words get a `Token` suffix. `--verify` runs `dart analyze` against Flutter API stubs when
+    `dart` is on PATH (or `GPTKIT_DART`); the output was also analysed clean in a real Flutter 3.47 project.
+  - Flags: `--platforms compose,swiftui,web,flutter` (aliases android, ios, dart), `--r-package` (the module namespace holding `R`, AGP 8),
     `--fonts FILE`, `--no-snap` (keep the spec's hex), `--dtcg`, `--out DIR`, `--vision`.
   - If `tokens`/`fonts` print "missing: … (add --vision)", add `--vision` (one cached call to locate the text); "vision couldn't
     find it" means the sample text in design_spec.json does not match the mockup.
