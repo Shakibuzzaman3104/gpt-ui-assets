@@ -696,12 +696,18 @@ def _emit_compose(tm, a, out):
                     + ("        fontStyle = FontStyle.Italic,\n" if t["italic"] else "")
                     + f"        fontSize = {_num_s(t['size'])}.sp,\n        lineHeight = {_num_s(t['line_height'])}.sp,\n"
                     f"        letterSpacing = {ls},\n        color = {col},"
-                    + (f" // MaterialTheme.colorScheme.{role}, so it follows the appearance" if role and t["color"] else "") + "\n    )")
+                    + (f" // use {t['kt']}Themed for the colour" if role and t["color"] else "") + "\n    )")
+        if role and t["color"]:
+            body.append(f"    val {t['kt']}Themed: TextStyle\n        @Composable @ReadOnlyComposable\n"
+                        f"        get() = {t['kt']}.copy(color = MaterialTheme.colorScheme.{role})")
     imports = ["androidx.compose.material3.Typography", "androidx.compose.ui.graphics.Color", "androidx.compose.ui.text.TextStyle",
                "androidx.compose.ui.text.font.FontFamily", "androidx.compose.ui.text.font.FontWeight",
                "androidx.compose.ui.unit.em", "androidx.compose.ui.unit.sp"]
     if tm["families"]:
         imports += ["androidx.compose.ui.text.font.Font", f"{rpkg}.R"]
+    if any("Themed: TextStyle" in b for b in body):
+        imports += ["androidx.compose.material3.MaterialTheme", "androidx.compose.runtime.Composable",
+                    "androidx.compose.runtime.ReadOnlyComposable"]
     if uses_italic:
         imports.append("androidx.compose.ui.text.font.FontStyle")
     slots, slot_notes = {}, []
@@ -1089,7 +1095,7 @@ _KT_STUBS = {
                       "infix fun T.at(timeMillis: Int): KeyframeEntity<T> = KeyframeEntity(); infix fun KeyframeEntity<T>.using(easing: Easing): KeyframeEntity<T> = this }\n"
                       "fun <T> keyframes(init: KeyframesSpecConfig<T>.() -> Unit): KeyframesSpec<T> { KeyframesSpecConfig<T>().init(); return KeyframesSpec() }\n",
     "Color.kt": "package androidx.compose.ui.graphics\nclass Color(val value: Long) { companion object { val White = Color(0xFFFFFFFF); "
-                "val Black = Color(0xFF000000); val Transparent = Color(0) } }\ninterface Shape\n",
+                "val Black = Color(0xFF000000); val Transparent = Color(0); val Unspecified = Color(0x10) } }\ninterface Shape\n",
     "Unit.kt": "package androidx.compose.ui.unit\nclass TextUnit(val v: Float)\nclass Dp(val v: Float)\n"
                "val Int.sp: TextUnit get() = TextUnit(toFloat()); val Double.sp: TextUnit get() = TextUnit(toFloat())\n"
                "val Int.em: TextUnit get() = TextUnit(toFloat()); val Double.em: TextUnit get() = TextUnit(toFloat())\n"
@@ -1110,7 +1116,7 @@ _KT_STUBS = {
     "Shape.kt": "package androidx.compose.foundation.shape\nimport androidx.compose.ui.unit.Dp\nimport androidx.compose.ui.graphics.Shape\n"
                 "class RoundedCornerShape(val r: Dp) : Shape\n",
     "Runtime.kt": "package androidx.compose.runtime\n@Target(AnnotationTarget.FUNCTION, AnnotationTarget.TYPE, AnnotationTarget.PROPERTY_GETTER)\n"
-                  "annotation class Composable\n",
+                  "annotation class Composable\n@Target(AnnotationTarget.FUNCTION, AnnotationTarget.PROPERTY_GETTER)\nannotation class ReadOnlyComposable\n",
     "ComposeTest.kt": "package androidx.compose.ui.test\nimport androidx.compose.runtime.Composable\n"
                        "class MainTestClock { var autoAdvance: Boolean = true; fun advanceTimeBy(milliseconds: Long) {} }\n"
                        "class SemanticsNodeInteraction\nclass ComposeContentTestRule { val mainClock = MainTestClock(); "

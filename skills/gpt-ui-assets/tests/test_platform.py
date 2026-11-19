@@ -54,9 +54,9 @@ def test_calibration_from_ios_anchors():
             {"name": "List", "native": "List (inset grouped)", "bbox": {"x": 30, "y": 320, "w": 960, "h": 600}}]}
         g._calibrate(d, spec_, m, 1024)
         ns = spec_["native_scale"]
-        assert not ns["applied"] and [a["component"] for a in ns["anchors"]] == ["Tabs"], ns
-        assert abs(ns["px_to_dp_native"] - round(49 / 85, 5)) < 1e-9 and spec_["px_to_dp"] == round(393 / 1024, 5)
-        assert "effective_width_dp" not in spec_
+        assert ns["applied"] and [a["component"] for a in ns["anchors"]] == ["Tabs"], ns
+        assert abs(ns["px_to_dp_native"] - round(49 / 85, 5)) < 1e-9 and spec_["px_to_dp"] == round(49 / 85, 5)
+        assert spec_["effective_width_dp"] == round(1024 * 49 / 85)
         pats = g.NATIVE_ANCHORS["ios"]
 
         def anchor(native):

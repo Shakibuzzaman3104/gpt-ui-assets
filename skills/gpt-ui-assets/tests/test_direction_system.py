@@ -89,7 +89,7 @@ def test_calibration_outlier_and_single():
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
             g._calibrate(Path(td), single, dict(m), 1000)
-        assert single["px_to_dp"] == 0.4 and not single["native_scale"]["applied"] and "first" in out.getvalue()
+        assert single["px_to_dp"] == 1.0 and single["native_scale"]["applied"] and "one native anchor (first)" in out.getvalue()
 
 
 def test_fine_tones_and_unresolved():

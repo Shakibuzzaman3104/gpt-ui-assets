@@ -275,7 +275,7 @@ def test_compose_namespace_and_weights():
     assert "object AcmeColors {" in col and "val ButtonLabel = Color(0xFF" in col
     assert "primary = AcmeColors." in col and "darkColorScheme(" in col
     body = ty.split("object AcmeTypography {", 1)[1]
-    assert ("color = AcmeColors." in body or "color = Color.Unspecified, // MaterialTheme.colorScheme." in body) and "color = ButtonLabel," not in body
+    assert ("color = AcmeColors." in body or "Themed: TextStyle" in body) and "color = ButtonLabel," not in body
     assert "FontWeight(450)" in ty and "FontWeight.W450" not in ty and "FontWeight.W700" in ty
     assert not g._lint_tokens(sorted((d / "tokens" / "compose").glob("*.kt")))
     assert "verify lint    : ok" in out and "css" not in json.loads((d / "tokens" / "tokens.json").read_text())["verify"]

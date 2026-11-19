@@ -1084,11 +1084,11 @@ def _calibrate(d, spec, m, width, scale="auto"):
         print("  ! native anchors disagree; kept the design scale")
         return
     factor = k / design_k
-    apply = len(anchors) >= 2 and (scale == "native" or (scale == "auto" and abs(factor - 1) > 0.12))
+    apply = scale == "native" or (scale == "auto" and abs(factor - 1) > 0.12)
     spec["native_scale"] = {"factor": round(factor, 3), "px_to_dp_native": round(k, 5), "anchors": anchors, "applied": apply}
-    if len(anchors) == 1:
-        print(f"  ! only one agreeing native anchor ({anchors[0]['component']}); kept the design scale")
-    elif apply:
+    if len(anchors) == 1 and apply:
+        print(f"  ! calibrated from one native anchor ({anchors[0]['component']}); check the scale against the mockup")
+    if apply:
         spec["px_to_dp"] = round(k, 5)
         spec["effective_width_dp"] = round(width * k)
         for x in m.get("assets") or []:
