@@ -939,7 +939,7 @@ def test_theme_and_m3_typography():
     assert "val AcmeM3Typography = Typography(" in ty and "headlineLarge = AcmeTypography.GreetingTitle," in ty
     assert "bodyLarge = AcmeTypography.CardBody," in ty and "labelLarge = AcmeTypography." in ty
     assert "val AcmeDarkColorScheme: ColorScheme = darkColorScheme(" in col and "val AcmeLightColorScheme: ColorScheme = lightColorScheme(" in col
-    assert "TODO: verify against a light mockup" in col and "val AcmeColorScheme: ColorScheme = AcmeDarkColorScheme" in col
+    assert "Dark appearance measured; light appearance derived" in col and "val AcmeColorScheme: ColorScheme = AcmeDarkColorScheme" in col
     assert "val AcmeShapes = Shapes(" in sh and "small = ChipShape," in sh and "medium = PlanCardShape," in sh
     assert "fun AcmeTheme(darkTheme: Boolean = isSystemInDarkTheme(), content: @Composable () -> Unit)" in th
     assert "colorScheme = if (darkTheme) AcmeDarkColorScheme else AcmeLightColorScheme" in th and "shapes = AcmeShapes" in th

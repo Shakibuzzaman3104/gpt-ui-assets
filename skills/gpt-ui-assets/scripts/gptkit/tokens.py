@@ -13,6 +13,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageDraw
 
+from . import palette, system
 from .core import _JAVA_KEYWORDS, _chrome_err, _chrome_flags, _clip_bbox, _need, _open_image, _read_json
 from .previews import _chrome, _chrome_missing_reason
 from .measure import _de_hex, _hexi, _lab_arr, _norm_hex, _save_text_boxes, _text_targets, _to_hex
@@ -177,6 +178,8 @@ def _snap_palette(spec, mock, texts, assets=()):
             entry.update(hex=guess, de00=0.0, snapped=False)
         else:
             entry.update(hex=_to_hex(snapped), de00=_de_hex(guess, _to_hex(snapped)), snapped=True)
+            if entry['alpha'] < 1:
+                entry.update(alpha=1.0, note='composited: sampled over its background')
         out.append(entry)
     return out
 
@@ -512,10 +515,43 @@ def _measured_spacing(name, items, k):
     return None
 
 
-_SCHEME_RULES = [("background", r"screen|background|canvas"), ("surface", r"surface|panel|sheet"),
-                 ("primary", r"primary.*(fill|button)|accent fill|button fill|\baccent\b"),
+_SCHEME_RULES = [("background", r"screen.*background|\bbackground\b|canvas"),
+                 ("surfaceContainerHighest", r"surface[ -]?container[ -]?highest"),
+                 ("surfaceContainerHigh", r"surface[ -]?container[ -]?high\b"),
+                 ("surfaceContainerLowest", r"surface[ -]?container[ -]?lowest"),
+                 ("surfaceContainerLow", r"surface[ -]?container[ -]?low\b"),
+                 ("surfaceContainer", r"surface[ -]?container\b"),
+                 ("surface", r"\bsurface\b|panel|sheet"),
+                 ("primaryContainer", r"\bprimary[ -]?container\b"),
+                 ("secondaryContainer", r"\bsecondary[ -]?container\b"),
+                 ("tertiaryContainer", r"\btertiary[ -]?container\b"),
+                 ("errorContainer", r"\berror[ -]?container\b"),
+                 ("primary", r"(?<!on-)(?<!on )\bprimary\b(?![ -]?(?:container|text))|accent fill|button fill|(?<!on-)(?<!on )\baccent\b"),
+                 ("secondary", r"\bsecondary\b(?![ -]?(?:container|text))"),
+                 ("tertiary", r"\btertiary\b(?![ -]?container)"),
+                 ("error", r"\berror\b(?![ -]?container)"),
                  ("onPrimary", r"on[- ]accent|on[- ]primary|button label"), ("onBackground", r"primary text"),
                  ("onSurface", r"primary text"), ("onSurfaceVariant", r"secondary text"), ("outline", r"border|outline")]
+
+
+def _color_roles(tm):
+    if "schemes" in tm:
+        return tm["measured_mode"], tm["measured_roles"], tm["schemes"]
+    measured = {}
+    for role, pat in _SCHEME_RULES:
+        c = next((c for c in tm["colors"] if re.search(pat, c['name'], re.I)), None)
+        if c is None:
+            c = next((c for c in tm["colors"] if re.search(pat, c.get('usage', ''), re.I)), None)
+        if c:
+            measured[role] = c['hex']
+    bg = measured.get('background', measured.get('surface', '#FFFFFF'))
+    mode = 'dark' if system.contrast_ratio(bg, '#000000') < system.contrast_ratio('#808080', '#000000') else 'light'
+    seed = measured.get('primary') or (max(tm['colors'], key=lambda c: palette.lch(c['hex'])[1])['hex'] if tm['colors'] else '#6750A4')
+    result = palette.schemes(seed, mode, measured=measured)
+    tm['measured_mode'], tm['measured_roles'] = mode, measured
+    tm['schemes'] = {m: result[m] for m in ('light', 'dark')}
+    tm['scheme_notes'] = result['notes']
+    return mode, measured, tm['schemes']
 
 
 def _kt_header(a, pkg):
@@ -530,29 +566,22 @@ def _kt_color(c):
 def _emit_compose(tm, a, out):
     out.mkdir(parents=True, exist_ok=True)
     pkg, P = a.package, a.prefix
-    lum = lambda h: sum(v * w for v, w in zip(_hexi(h), (0.2126, 0.7152, 0.0722))) / 255
-    scheme = {}
-    for role, pat in _SCHEME_RULES:
-        c = next((c for c in tm["colors"] if re.search(pat, f"{c['name']} {c.get('usage', '')}", re.I)), None)
-        if c and role not in scheme:
-            scheme[role] = c["kt"]
-    bg = next((c for c in tm["colors"] if c["kt"] == scheme.get("background")), None)
-    dark = bg is not None and lum(bg["hex"]) < 0.5
-    fn = "darkColorScheme" if dark else "lightColorScheme"
+    mode, measured, schemes = _color_roles(tm)
     lines = [f"    val {c['kt']} = {_kt_color(c)}" for c in tm["colors"]]
-    args = "".join(f"    {r} = {P}Colors.{v},\n" for r, v in scheme.items())
-    other = "lightColorScheme" if dark else "darkColorScheme"
-    measured_name, other_name = (f"{P}DarkColorScheme", f"{P}LightColorScheme") if dark else (f"{P}LightColorScheme", f"{P}DarkColorScheme")
-    tm["m3_roles_baseline"] = [r for r in _M3_COLOR_ROLES if r not in scheme]
+    def args(m):
+        def value(role, h):
+            c = next((c for c in tm['colors'] if c['hex'] == h and c.get('alpha', 1) == 1), None)
+            return f"{P}Colors.{c['kt']}" if m == mode and role in measured and c else f"Color(0xFF{h[1:].upper()})"
+        return ''.join(f"    {r} = {value(r, h)},\n" for r, h in schemes[m].items() if r in _M3_COLOR_ROLES)
+    measured_name = f"{P}{mode.title()}ColorScheme"
+    tm["m3_roles_baseline"] = [r for r in _M3_COLOR_ROLES if r not in measured]
     (out / "Color.kt").write_text(_kt_header(a, pkg) + f"import androidx.compose.material3.ColorScheme\n"
                                   f"import androidx.compose.material3.darkColorScheme\nimport androidx.compose.material3.lightColorScheme\n"
                                   "import androidx.compose.ui.graphics.Color\n\n"
                                   f"object {P}Colors {{\n" + "\n".join(lines) + "\n}\n\n"
-                                  f"// Measured on the {'dark' if dark else 'light'} mockup. Roles not listed stay at the M3 baseline: "
-                                  + (", ".join(tm["m3_roles_baseline"][:8]) + (" ..." if len(tm["m3_roles_baseline"]) > 8 else "")) + "\n"
-                                  f"val {measured_name}: ColorScheme = {fn}(\n{args})\n\n"
-                                  f"// TODO: verify against a {'light' if dark else 'dark'} mockup; scaffolded from the same values\n"
-                                  f"val {other_name}: ColorScheme = {other}(\n{args})\n\n"
+                                  f"// {mode.title()} appearance measured; {'dark' if mode == 'light' else 'light'} appearance derived.\n"
+                                  f"val {P}LightColorScheme: ColorScheme = lightColorScheme(\n{args('light')})\n\n"
+                                  f"val {P}DarkColorScheme: ColorScheme = darkColorScheme(\n{args('dark')})\n\n"
                                   f"val {P}ColorScheme: ColorScheme = {measured_name}\n")
     rpkg = a.r_package or re.sub(r"(\.ui)?(\.theme)?$", "", pkg)
     fam_lines = []
@@ -632,7 +661,9 @@ def _sw_color(hex_, alpha=1.0):
 
 def _emit_swift(tm, a, out):
     out.mkdir(parents=True, exist_ok=True)
+    mode, measured, schemes = _color_roles(tm)
     cols = [f"    static let {c['sw']} = {_sw_color(c['hex'], c.get('alpha', 1.0))}" for c in tm["colors"]]
+    role_cols = [f'    static var {r}: Color {{ Color("{r}") }}' for r in schemes['light']]
     wmap = {100: "ultraLight", 200: "thin", 300: "light", 400: "regular", 500: "medium", 600: "semibold", 700: "bold",
             800: "heavy", 900: "black"}
     styles = []
@@ -654,6 +685,7 @@ def _emit_swift(tm, a, out):
              for s in tm["spacing"]]
     p = a.prefix
     src = ("import SwiftUI\n\nextension Color {\n" + "\n".join(cols) + "\n}\n\n"
+           + f"enum {p}ColorRoles {{\n" + "\n".join(role_cols) + "\n}\n\n"
            f"struct {p}TextToken {{\n    let font: Font\n    let tracking: CGFloat\n    let lineSpacing: CGFloat\n    let color: Color\n}}\n\n"
            f"extension {p}TextToken {{\n" + "\n".join(styles).replace("TextToken(", f"{p}TextToken(") + "\n}\n\n"
            "@available(iOS 16.0, macOS 13.0, *)\nextension View {\n"
@@ -672,6 +704,18 @@ def _emit_swift(tm, a, out):
             {"idiom": "universal", "color": {"color-space": "srgb", "components": {"red": f"0x{r:02X}", "green": f"0x{g_:02X}",
                                                                                     "blue": f"0x{b:02X}", "alpha": f"{c.get('alpha', 1.0):.3f}"}}}]},
                                           indent=2))
+    for role in schemes['light']:
+        cs = xc / f"{role}.colorset"
+        cs.mkdir(exist_ok=True)
+        colors = []
+        for appearance in ('light', 'dark'):
+            r, g_, b = _hexi(schemes[appearance][role])
+            item = {"idiom": "universal", "color": {"color-space": "srgb", "components": {
+                "red": f"0x{r:02X}", "green": f"0x{g_:02X}", "blue": f"0x{b:02X}", "alpha": "1.000"}}}
+            if appearance == 'dark':
+                item['appearances'] = [{"appearance": "luminosity", "value": "dark"}]
+            colors.append(item)
+        (cs / 'Contents.json').write_text(json.dumps({"info": {"author": "xcode", "version": 1}, "colors": colors}, indent=2))
     return [out / f"{p}Tokens.swift", xc]
 
 
@@ -684,7 +728,7 @@ def _emit_flutter(tm, a, out, fonts_dir=None):
     out.mkdir(parents=True, exist_ok=True)
     P = a.prefix[:1].upper() + a.prefix[1:]
     low = P[:1].lower() + P[1:]
-    lum = lambda h: sum(v * w for v, w in zip(_hexi(h), (0.2126, 0.7152, 0.0722))) / 255
+    mode, measured, schemes = _color_roles(tm)
     cols = [f"  static const Color {c['dart']} = {_kt_color(c)};" for c in tm["colors"]]
     styles = []
     for t in tm["types"]:
@@ -701,17 +745,12 @@ def _emit_flutter(tm, a, out, fonts_dir=None):
     radii = [f"  static const double {r['dart']} = {_dart_num(r['dp'])};  // {r['source']}" for r in tm["radii"]]
     space = [f"  static const double {s['dart']} = {_dart_num(s['dp'])};"
              + ("" if s["source"].startswith("redline") else "  // GPT estimate") for s in tm["spacing"]]
-    scheme = {}
-    for role, pat in _SCHEME_RULES:
-        c = next((c for c in tm["colors"] if re.search(pat, f"{c['name']} {c.get('usage', '')}", re.I)), None)
-        if c and role not in scheme:
-            scheme[role] = c
-    bg = scheme.pop("background", None)
-    scheme.pop("onBackground", None)  # folded into surface/onSurface since Flutter 3.22
-    if bg and "surface" not in scheme:
-        scheme["surface"] = bg
-    dark = bg is not None and lum(bg["hex"]) < 0.5
-    roles = "".join(f"  {r}: {P}Colors.{c['dart']},\n" for r, c in scheme.items())
+    def scheme_block(m, legacy=False):
+        roles = ''.join(f"  {r}: Color(0xFF{h[1:].upper()}),\n" for r, h in schemes[m].items()
+                        if (r in _M3_COLOR_ROLES and r not in ('background', 'onBackground')) or r == 'shadow')
+        if legacy:
+            return f"const ColorScheme {low}ColorScheme = ColorScheme.{m}(\n{roles});\n\n"
+        return f"const ColorScheme {low}{m.title()}Scheme = ColorScheme(\n  brightness: Brightness.{m},\n{roles});\n\n"
     slots = {}
     for t in tm["types"]:
         slots.setdefault(t["m3_slot"], t)
@@ -720,12 +759,12 @@ def _emit_flutter(tm, a, out, fonts_dir=None):
     src = ("// Generated by gptkit tokens from the measured design. Sizes are logical pixels.\n"
            "import 'package:flutter/material.dart';\n\n"
            + block("Colors", cols) + block("Text", styles) + block("Radius", radii) + block("Spacing", space)
-           + f"// Measured on the {'dark' if dark else 'light'} mockup; roles not listed keep the Flutter defaults.\n"
-           f"const ColorScheme {low}ColorScheme = ColorScheme.{'dark' if dark else 'light'}(\n{roles});\n\n"
-           f"const TextTheme {low}TextTheme = TextTheme(\n{theme});\n\n"
+           + scheme_block('light') + scheme_block('dark')
+           + scheme_block(mode, legacy=True)
+           + f"const TextTheme {low}TextTheme = TextTheme(\n{theme});\n\n"
            f"ThemeData {low}Theme() => ThemeData(\n  useMaterial3: true,\n  colorScheme: {low}ColorScheme,\n"
            f"  textTheme: {low}TextTheme,\n"
-           + (f"  scaffoldBackgroundColor: {P}Colors.{bg['dart']},\n" if bg else "") + ");\n")
+           + ");\n")
     name = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", P).lower()
     main = out / f"{name}_tokens.dart"
     main.write_text(src)
@@ -757,10 +796,16 @@ def _css_hex(c):
 
 def _emit_web(tm, a, out, fonts_css=None):
     out.mkdir(parents=True, exist_ok=True)
+    mode, measured, schemes = _color_roles(tm)
+    other = 'dark' if mode == 'light' else 'light'
+    kebab = lambda r: re.sub(r'(?<!^)(?=[A-Z])', '-', r).lower()
+    role_names = {kebab(r) for r in schemes[mode]}
     fams = {}
     for t in tm["types"]:
         fams.setdefault(t["family_css"] or t["generic"], _css_family(t))
+    measured_names = {c['css'] for c in tm['colors']}
     v = [f"  --color-{c['css']}: {_css_hex(c)};" for c in tm["colors"]]
+    v += [f"  --color-{kebab(r)}: {h};" for r, h in schemes[mode].items() if kebab(r) not in measured_names]
     v += [f"  --font-{k}: {f};" for k, f in fams.items()]
     v += [f"  --radius-{r['css']}: {_num_s(r['dp'])}px;" for r in tm["radii"]]
     v += [f"  --space-{s['css']}: {_num_s(s['dp'])}px;" for s in tm["spacing"]]
@@ -772,9 +817,13 @@ def _emit_web(tm, a, out, fonts_css=None):
                    + f"  font-size: {_num_s(t['size'])}px;\n  line-height: {_num_s(t['line_height'])}px;\n"
                    f"  letter-spacing: {t['tracking']:g}em;\n  color: {col};\n}}")
     head = f'@import "{fonts_css}";\n\n' if fonts_css else ""
-    (out / "tokens.css").write_text(head + ":root {\n" + "\n".join(v) + "\n}\n\n" + "\n\n".join(cls) + "\n")
+    overrides = '\n'.join(f"  --color-{kebab(r)}: {h};" for r, h in schemes[other].items())
+    (out / "tokens.css").write_text(head + ":root {\n" + "\n".join(v) + "\n}\n\n"
+        + f"@media (prefers-color-scheme: {other}) {{\n  :root:not([data-theme={mode}]) {{\n{overrides}\n  }}\n}}\n\n"
+        + f":root[data-theme={other}] {{\n{overrides}\n}}\n\n" + "\n\n".join(cls) + "\n")
     js = lambda o: json.dumps(o, indent=6).replace("\n}", "\n    }")
-    cfg = {"colors": {c["css"]: _css_hex(c) for c in tm["colors"]},
+    cfg = {"colors": {**{c["css"]: f"var(--color-{c['css']})" for c in tm["colors"]},
+                      **{kebab(r): f"var(--color-{kebab(r)})" for r in schemes[mode]}},
            "fontFamily": {k: [x.strip().strip('"') for x in f.split(",")] for k, f in fams.items()},
            "fontSize": {t["css"]: [f"{_num_s(t['size'])}px", {"lineHeight": f"{_num_s(t['line_height'])}px",
                                                                "letterSpacing": f"{t['tracking']:g}em",
@@ -785,7 +834,7 @@ def _emit_web(tm, a, out, fonts_css=None):
     (out / "tailwind.tokens.cjs").write_text("// Tailwind v3 preset: in tailwind.config.js add  presets: [require('./tailwind.tokens.cjs')]\n"
                                              "/** @type {import('tailwindcss').Config} */\nmodule.exports = {\n"
                                              f"  theme: {{\n    extend: {{\n{body}\n    }},\n  }},\n}};\n")
-    th = [f"  --color-{c['css']}: {_css_hex(c)};" for c in tm["colors"]]
+    th = [f"  --color-{c['css']}: {_css_hex(c)};" for c in tm['colors'] if c['css'] not in role_names]
     th += [f"  --font-{k}: {f};" for k, f in fams.items()]
     for t in tm["types"]:
         th += [f"  --text-{t['css']}: {_num_s(t['size'])}px;", f"  --text-{t['css']}--line-height: {_num_s(t['line_height'])}px;",
@@ -793,7 +842,9 @@ def _emit_web(tm, a, out, fonts_css=None):
     th += [f"  --radius-{r['css']}: {_num_s(r['dp'])}px;" for r in tm["radii"]]
     th += [f"  --spacing-{s['css']}: {_num_s(s['dp'])}px;" for s in tm["spacing"]]
     (out / "tailwind.theme.css").write_text('/* Tailwind v4: in your CSS put  @import "tailwindcss"; @import "./tailwind.theme.css";  */\n\n'
-                                            "@theme {\n" + "\n".join(th) + "\n}\n")
+                                            "@theme {\n" + "\n".join(th) + "\n}\n\n"
+                                            "@theme inline {\n" + "\n".join(
+                                                f"  --color-{kebab(r)}: var(--color-{kebab(r)});" for r in schemes[mode]) + "\n}\n")
     return [out / f for f in ("tokens.css", "tailwind.tokens.cjs", "tailwind.theme.css")]
 
 
@@ -813,6 +864,9 @@ def _emit_dtcg(tm, out):
                                         f"M3 {t['m3_slot']} ({t['m3_slot_source']}), HIG {t['hig_style']}") for t in tm["types"]},
            "dimension": {"radius": {r["css"]: tok("dimension", f"{_num_s(r['dp'])}px", f"{r['name']}: {r['source']}") for r in tm["radii"]},
                          "spacing": {s_["css"]: tok("dimension", f"{_num_s(s_['dp'])}px", f"{s_['name']}: {s_['source']}") for s_ in tm["spacing"]}}}
+    _, _, schemes = _color_roles(tm)
+    for mode in ('light', 'dark'):
+        doc['color'][mode] = {r: tok('color', h, f'{mode} {r}') for r, h in schemes[mode].items()}
     (out / "tokens.tokens.json").write_text(json.dumps(doc, indent=2))
     return out / "tokens.tokens.json"
 
@@ -989,7 +1043,8 @@ enum FontStyle { normal, italic }
 class TextStyle { final Color? color; final String? fontFamily; final double? fontSize; final FontWeight? fontWeight;
   final FontStyle? fontStyle; final double? letterSpacing; final double? height;
   const TextStyle({this.color, this.fontFamily, this.fontSize, this.fontWeight, this.fontStyle, this.letterSpacing, this.height}); }
-class ColorScheme { const ColorScheme.light({ROLES}); const ColorScheme.dark({ROLES}); }
+enum Brightness { light, dark }
+class ColorScheme { const ColorScheme({Brightness? brightness, ROLES}); const ColorScheme.light({ROLES}); const ColorScheme.dark({ROLES}); }
 class TextTheme { const TextTheme({SLOTS}); }
 class ThemeData { ThemeData({bool? useMaterial3, ColorScheme? colorScheme, TextTheme? textTheme, Color? scaffoldBackgroundColor}); }
 """
@@ -1001,7 +1056,7 @@ def _dart_check(dart_file):
     exe = os.environ.get("GPTKIT_DART") or shutil.which("dart")
     if not exe:
         return "skipped (no dart on PATH; the pure-Python lint ran)"
-    roles = ", ".join(f"Color? {r}" for r in _M3_COLOR_ROLES if r not in ("background", "onBackground"))
+    roles = ", ".join(f"Color? {r}" for r in _M3_COLOR_ROLES if r not in ("background", "onBackground")) + ", Color? shadow"
     slots = ", ".join(f"TextStyle? {s}" for s in _M3_TYPE_SLOTS)
     weights = "".join(f"  static const FontWeight w{w} = FontWeight._({w});\n" for w in range(100, 1000, 100))
     with tempfile.TemporaryDirectory() as td:
@@ -1184,6 +1239,12 @@ def cmd_tokens(a):
                 snapped.append(s["name"])
     audit = _shape_audit(tm)
     audit["snapped"] = snapped
+    _, _, schemes = _color_roles(tm)
+    platform = {'compose': 'material3', 'swiftui': 'ios', 'web': 'web', 'flutter': 'material3'}[platforms[0]]
+    tm['contrast'] = [issue for mode in ('light', 'dark') for issue in system.check_pairs(schemes[mode], platform, mode=mode)]
+    audit['contrast'] = tm['contrast']
+    for issue in tm['contrast']:
+        print(f"  ! contrast {issue['fg']}/{issue['bg']} {issue['mode']} {issue['ratio']}:1 (needs {issue['need']})")
     if audit["off_grid"]:
         off = ", ".join(f"{s['name']} {s['dp']:g} dp ({s['nearest'][0]:g}/{s['nearest'][1]:g})" for s in audit["off_grid"])
         print(f"  ! spacing off the 4 dp grid: {off}; --snap-grid rounds them (compare will then show the departure from the mockup)")
