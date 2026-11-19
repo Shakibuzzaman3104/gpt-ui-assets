@@ -580,6 +580,12 @@ def _fonts_rank_group(members, texts, per):
     return reliable, ranking
 
 
+def _tracking_ok(em, size_px):
+    """Tracking a real UI style can have: M3 and SF stay within -0.05..+0.12 em, display sizes near zero or tighter."""
+    hi = 0.02 if size_px and size_px >= 32 else 0.12
+    return -0.05 <= em <= hi
+
+
 def _fonts_store_style(st, t, rs, winner, italic, cands, guess, rgb, show, results, sheet_rows):
     """Store one measured typography style and add its visual review row."""
     mine = [r for r in rs if r[0] == winner]
@@ -593,7 +599,7 @@ def _fonts_store_style(st, t, rs, winner, italic, cands, guess, rgb, show, resul
     if alt and alt[1] != w and abs(steps.index(alt[1]) - steps.index(w)) == 1 and alt[2]["similarity"] >= fit["similarity"] - 0.07:
         tie = {"measured": w, "chosen": spec_w, "similarity": [fit["similarity"], alt[2]["similarity"]]}
         fam, w, fit = alt
-    ok = rs[0][2]["similarity"] >= 0.45 and -0.15 < fit["tracking_em"] < 0.6
+    ok = fit["similarity"] >= 0.45 and _tracking_ok(fit["tracking_em"], fit["size_px"])
     avail = [int(x.rstrip("i")) for f in cands if f["family"] == winner for x in f["fonts"] if x.endswith("i") == italic]
     spec_w = min(avail, key=lambda x: abs(x - st.get("weight", w))) if avail else w
     results[st["role"]] = {"role": st["role"], "family": winner, "weight": w if ok else spec_w, "italic": italic,
