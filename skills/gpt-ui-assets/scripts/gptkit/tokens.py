@@ -481,8 +481,11 @@ def _token_model(spec, palette, texts, fonts, redline=None, screen_size=None, pr
                       "source": f"redline: {hit['component']}" if hit else "spec (GPT estimate)",
                       "native": hit.get("native") if hit else None, "shape": hit.get("shape") if hit else None})
         corners = hit.get("corner_radii_px") if hit else None
-        if corners and len(corners) == 4 and all(isinstance(v, (int, float)) for v in corners):
-            vals = [_r05(v * k) for v in corners]
+        num = lambda v: isinstance(v, (int, float))
+        if corners and len(corners) == 4 and any(num(v) for v in corners) and (
+                all(num(v) for v in corners) or all(num(v) for v in corners[:2]) or all(num(v) for v in corners[2:])):
+            # a whole unmeasured side (a sheet's bottom off screen) is square
+            vals = [_r05(v * k) if num(v) else 0.0 for v in corners]
             if max(vals) - min(vals) > 1:
                 radii[-1]["corners"] = dict(zip(("topStart", "topEnd", "bottomStart", "bottomEnd"), vals))
         if hit:
@@ -686,12 +689,14 @@ def _emit_compose(tm, a, out):
     body = []
     for t in tm["types"]:
         fam = t["family_kt"] or ("FontFamily.Serif" if t["generic"] == "serif" else "FontFamily.SansSerif")
-        col = f"{P}Colors.{t['color']['kt']}" if t["color"] else f"Color(0xFF{t['color_hex'][1:]})"
+        role = _text_role(tm, t)
+        col = ("Color.Unspecified" if role else f"{P}Colors.{t['color']['kt']}") if t["color"] else f"Color(0xFF{t['color_hex'][1:]})"
         ls = f"({t['tracking']:g}).em" if t["tracking"] < 0 else f"{t['tracking']:g}.em"
         body.append(f"    val {t['kt']} = TextStyle(\n        fontFamily = {fam},\n        fontWeight = {_kt_weight(t['weight'])},\n"
                     + ("        fontStyle = FontStyle.Italic,\n" if t["italic"] else "")
                     + f"        fontSize = {_num_s(t['size'])}.sp,\n        lineHeight = {_num_s(t['line_height'])}.sp,\n"
-                    f"        letterSpacing = {ls},\n        color = {col},\n    )")
+                    f"        letterSpacing = {ls},\n        color = {col},"
+                    + (f" // MaterialTheme.colorScheme.{role}, so it follows the appearance" if role and t["color"] else "") + "\n    )")
     imports = ["androidx.compose.material3.Typography", "androidx.compose.ui.graphics.Color", "androidx.compose.ui.text.TextStyle",
                "androidx.compose.ui.text.font.FontFamily", "androidx.compose.ui.text.font.FontWeight",
                "androidx.compose.ui.unit.em", "androidx.compose.ui.unit.sp"]

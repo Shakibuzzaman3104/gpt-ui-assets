@@ -71,6 +71,16 @@ def test_platform_snapping_and_audits():
     assert ca['grid_dp'] == g.system.PRESETS['material3']['grid'] and wa['grid_dp'] == g.system.PRESETS['web']['grid']
 
 
+def test_unmeasured_side_is_square():
+    spec = {"radii": [{"element": "sheet", "px": 28}], "typography": []}
+    redline = {"radii": [{"element": "sheet", "component": "sheet", "measured_px": 28,
+                         "corner_radii_px": [28, 28, None, None]}]}
+    tm = g._token_model(spec, [], {}, None, redline, preset="material3")
+    assert tm["radii"][0]["corners"] == {"topStart": 28, "topEnd": 28, "bottomStart": 0, "bottomEnd": 0}
+    redline["radii"][0]["corner_radii_px"] = [28, None, 28, None]
+    assert "corners" not in g._token_model(spec, [], {}, None, redline, preset="material3")["radii"][0]
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):
