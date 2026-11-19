@@ -17,6 +17,7 @@ from . import palette, system
 from .core import _JAVA_KEYWORDS, _chrome_err, _chrome_flags, _clip_bbox, _need, _open_image, _read_json
 from .previews import _chrome, _chrome_missing_reason
 from .measure import _de_hex, _hexi, _lab_arr, _norm_hex, _save_text_boxes, _text_targets, _to_hex
+from . import system
 
 # ---- tokens: design_spec.json -> Compose / SwiftUI / CSS / Tailwind
 
@@ -400,7 +401,24 @@ def _kt_weight(w):
     return f"FontWeight.W{w}" if w % 100 == 0 and w <= 900 else f"FontWeight({w})"
 
 
-def _token_model(spec, palette, texts, fonts, redline=None):
+def _token_preset(platforms, design_platform=None):
+    design = str(design_platform or "").lower()
+    if design == "fluent2":
+        return "fluent2"
+    if "swiftui" in platforms and ("mac" in design or "desktop" in design):
+        return "macos"
+    if len(platforms) == 1:
+        return {"compose": "material3", "swiftui": "ios", "web": "web", "flutter": "material3"}[platforms[0]]
+    if "mac" in design:
+        return "macos"
+    if "ios" in design or "apple" in design:
+        return "ios"
+    if "web" in design:
+        return "web"
+    return "material3"
+
+
+def _token_model(spec, palette, texts, fonts, redline=None, screen_size=None, preset="material3"):
     k = spec.get("px_to_dp", 1.0)
     families = {f["family"]: f for f in (fonts or {}).get("families", [])}
     types_in = spec.get("typography", [])
@@ -447,7 +465,7 @@ def _token_model(spec, palette, texts, fonts, redline=None):
                       "tracking": round(float(track), 3), "color": col,
                       "color_hex": col["hex"] if col else (ink or st.get("color") or "#000000"),
                       "platform_style": st.get("platform_style"), "m3_slot": slot, "m3_slot_source": slot_src, "m3_slot_off": slot_off,
-                      "hig_style": _hig_style(_r05(size_px * k), st.get("platform_style")),
+                      "hig_style": _hig_style(_r05(size_px * k), st.get("platform_style") or ("body" if st["role"].lower() == "body" else None)),
                       "postscript": (fam or {}).get("postscript", {}).get(str(fs.get("weight")) + ("i" if fs.get("italic") else "")),
                       "natural_lh": fs.get("natural_line_height_em"), "size_source": "fonts" if fs.get("size_px") else "spec"})
     measured = {r["element"]: r for r in (redline or {}).get("radii", []) if r.get("measured_px") is not None}
@@ -461,30 +479,57 @@ def _token_model(spec, palette, texts, fonts, redline=None):
         radii.append({"name": r.get("element", ""), **n, "dp": _r05((hit["measured_px"] if hit else px) * k),
                       "source": f"redline: {hit['component']}" if hit else "spec (GPT estimate)",
                       "native": hit.get("native") if hit else None, "shape": hit.get("shape") if hit else None})
+        corners = hit.get("corner_radii_px") if hit else None
+        if corners and len(corners) == 4 and all(isinstance(v, (int, float)) for v in corners):
+            vals = [_r05(v * k) for v in corners]
+            if max(vals) - min(vals) > 1:
+                radii[-1]["corners"] = dict(zip(("topStart", "topEnd", "bottomStart", "bottomEnd"), vals))
+        if hit:
+            radii[-1]["component"] = hit.get("component")
     spacing = [{"name": s["between"], **n, "dp": _r05(float(s["px"]) * k), "source": "spec (GPT estimate)"}
                for s, n in zip(spacing_in, names[nc + nt + nr:nc + nt + nr + ns])]
     for sp in spacing:
-        got = _measured_spacing(sp["name"], (redline or {}).get("items", []), k)
+        got = _measured_spacing(sp["name"], (redline or {}).get("items", []), k, screen_size)
         if got:
             sp["dp"], sp["source"] = _r05(got[0]), got[1]
     return {"colors": colors, "types": types, "radii": radii, "spacing": spacing, "families": list(families.values()),
-            "px_to_dp": k}
+            "px_to_dp": k, "preset": preset, "redline_items": (redline or {}).get("items", [])}
 
 
 def _shape_audit(tm, grid=4):
+    preset = tm.get("preset", "material3")
+    grid = system.PRESETS[preset]["grid"]
     off = []
     for s in tm["spacing"]:
         dp = s["dp"]
-        lower, upper = math.floor(dp / grid) * grid, math.ceil(dp / grid) * grid
-        if dp >= 2 and min(dp - lower, upper - dp) > 0.5:
+        steps = system.PRESETS[preset]["spacing"]
+        lower = max((v for v in steps if v <= dp), default=steps[0])
+        upper = min((v for v in steps if v >= dp), default=steps[-1])
+        if system.audit_spacing([dp], preset):
             off.append({"name": s["name"], "dp": dp, "nearest": [lower, upper]})
     radii = sorted({round(r["dp"], 1) for r in tm["radii"] if round(r["dp"], 1) != 0
                     and r.get("shape") not in ("pill", "circle", "full")
                     and not re.search(r"pill|full|circle", r["name"], re.I)})
-    return {"grid_dp": grid, "off_grid": off, "radii_dp": radii, "radii_count": len(radii), "snapped": []}
+    issues = system.audit_spacing([s["dp"] for s in tm["spacing"]], preset) + system.audit_radius(radii, preset)
+    items = {i.get("name"): i for i in tm.get("redline_items", [])}
+    by_component = {r.get("component"): r for r in tm["radii"] if r.get("component")}
+    for r in tm["radii"]:
+        item = items.get(r.get("component"), {})
+        parent = by_component.get(item.get("parent"))
+        inset = item.get("inset_dp")
+        if parent and isinstance(inset, dict) and inset:
+            vals = [v for v in inset.values() if isinstance(v, (int, float))]
+            if vals:
+                issue = system.check_nested(parent["dp"], min(vals), r["dp"])
+                if issue:
+                    issues.append(f"{r['name']}: {issue}")
+    types = [{"name": t["role"], "size": t["size"], "line_height": t["line_height"], "weight": t["weight"],
+              "tracking_em": t["tracking"]} for t in tm.get("types", [])]
+    return {"grid_dp": grid, "off_grid": off, "radii_dp": radii, "radii_count": len(radii), "snapped": [],
+            "issues": issues, "type": system.lint_type(types, preset)}
 
 
-def _measured_spacing(name, items, k):
+def _measured_spacing(name, items, k, screen_size=None):
     """(dp, source) for a spacing name from redline's measured items, or None: 'gap/between/below' -> the gap below the
     linked item, 'edge/screen/margin' -> the item's distance from the screen edge, 'padding/inset' -> the smallest inset
     of the item's children (its content padding) or, for a leaf, its own inset."""
@@ -498,11 +543,18 @@ def _measured_spacing(name, items, k):
     low = name.lower()
     side = ("left" if re.search(r"left|start|horizontal", low) else "right" if re.search(r"right|end", low) else
             "bottom" if re.search(r"bottom|below", low) else "top" if re.search(r"top|above|vertical", low) else None)
-    if re.search(r"gap|between|below|above|spacing|distance", low) and it.get("gap_below_dp"):
+    if "above" in low and re.search(r"gap|between|above|spacing|distance", low):
+        above = next((i for i in measured if i.get("gap_below_dp") and i["gap_below_dp"][0] == it["name"]), None)
+        return (above["gap_below_dp"][1], f"redline: gap below {above['name']} (to {it['name']})") if above else None
+    if re.search(r"gap|between|below|spacing|distance", low) and it.get("gap_below_dp"):
         return it["gap_below_dp"][1], f"redline: gap below {it['name']} (to {it['gap_below_dp'][0]})"
     if re.search(r"edge|screen|margin", low):
         sd = side or "left"
-        v = {"left": it["px"][0], "top": it["px"][1], "right": it["px"][0], "bottom": it["px"][1]}[sd] * k
+        x, y, w, h = it["px"]
+        if sd in ("right", "bottom") and not screen_size:
+            return None
+        v = {"left": x, "top": y, "right": screen_size[0] - x - w if screen_size else 0,
+             "bottom": screen_size[1] - y - h if screen_size else 0}[sd] * k
         return round(v, 1), f"redline: {it['name']} {sd} of screen edge"
     # padding: layout-box insets for text (ink insets overstate the top), the smaller of left/top when no side is named
     inset = lambda i, sd: (i.get("layout_top_inset_dp") if sd == "top" and i.get("layout_top_inset_dp") is not None else i["inset_dp"][sd])
@@ -622,7 +674,9 @@ def _emit_compose(tm, a, out):
                                  + f"object {P}Typography {{\n" + "\n\n".join(body) + "\n}\n\n"
                                  f"// M3 slots not listed keep the Typography() defaults (nearest slot by size when the spec gave none).\n"
                                  f"val {P}M3Typography = Typography(\n{m3})\n")
-    shapes = [f"val {r['kt']}Shape = RoundedCornerShape({_num_s(r['dp'])}.dp)  // {r['source']}" for r in tm["radii"]]
+    shapes = [f"val {r['kt']}Shape = RoundedCornerShape(" +
+              (", ".join(f"{k} = {_num_s(r['corners'][k])}.dp" for k in ("topStart", "topEnd", "bottomEnd", "bottomStart"))
+               if r.get("corners") else f"{_num_s(r['dp'])}.dp") + f")  // {r['source']}" for r in tm["radii"]]
     m3_shapes = {}
     for slot, pat in (("small", r"chip"), ("medium", r"card|tile|list item"), ("large", r"fab|drawer|floating"),
                       ("extraLarge", r"sheet|dialog|modal")):
@@ -672,15 +726,23 @@ def _emit_swift(tm, a, out):
             font = f'.custom("{t["postscript"]}", size: {_num_s(t["size"])}, relativeTo: .{t["hig_style"]})'
             natural = (t["natural_lh"] or 1.2) * t["size"]
         else:
-            design = ".serif" if t["generic"] == "serif" else ".default"
-            font = f".system(size: {_num_s(t['size'])}, weight: .{wmap.get(min(900, max(100, round(t['weight'] / 100) * 100)), 'regular')}, design: {design})"
+            font = f".system(.{t['hig_style']}, design: .default, weight: .{wmap.get(min(900, max(100, round(t['weight'] / 100) * 100)), 'regular')})"
             natural = 1.19 * t["size"]
             if t["italic"]:
                 font += ".italic()"
         col = f".{t['color']['sw']}" if t["color"] else _sw_color(t["color_hex"])
-        styles.append(f"    static let {t['sw']} = TextToken(font: {font}, tracking: {round(t['tracking'] * t['size'], 2):g}, "
+        styles.append(("    // Target line height is tighter than the natural line height.\n" if t["line_height"] < natural else "") +
+                      f"    static let {t['sw']} = TextToken(font: {font}, tracking: {round(t['tracking'] * t['size'], 2):g}, "
                       f"lineSpacing: {max(0.0, round(t['line_height'] - natural, 1)):g}, color: {col})")
     radii = [f"    static let {r['sw']}: CGFloat = {_num_s(r['dp'])}  // {r['source']}" for r in tm["radii"]]
+    shapes = []
+    for r in tm["radii"]:
+        c = r.get("corners")
+        shape = ("UnevenRoundedRectangle(" + ", ".join(f"{label}: {_num_s(c[key])}" for label, key in
+                 (("topLeadingRadius", "topStart"), ("bottomLeadingRadius", "bottomStart"),
+                  ("bottomTrailingRadius", "bottomEnd"), ("topTrailingRadius", "topEnd"))) + ", style: .continuous)"
+                 if c else f"RoundedRectangle(cornerRadius: {_num_s(r['dp'])}, style: .continuous)")
+        shapes.append(("    @available(iOS 17.0, macOS 14.0, *)\n" if c else "") + f"    static let {r['sw']} = {shape}")
     space = [f"    static let {s['sw']}: CGFloat = {_num_s(s['dp'])}" + ("" if s["source"].startswith("redline") else "  // GPT estimate")
              for s in tm["spacing"]]
     p = a.prefix
@@ -691,7 +753,8 @@ def _emit_swift(tm, a, out):
            "@available(iOS 16.0, macOS 13.0, *)\nextension View {\n"
            f"    func textToken(_ t: {p}TextToken) -> some View {{\n"
            "        font(t.font).tracking(t.tracking).lineSpacing(t.lineSpacing).foregroundStyle(t.color)\n    }\n}\n\n"
-           f"enum {p}Radius {{\n" + "\n".join(radii) + "\n}\n\n" f"enum {p}Spacing {{\n" + "\n".join(space) + "\n}\n")
+           f"enum {p}Radius {{\n" + "\n".join(radii) + "\n}\n\n" f"enum {p}Shape {{\n" + "\n".join(shapes) + "\n}\n\n"
+           f"enum {p}Spacing {{\n" + "\n".join(space) + "\n}\n")
     (out / f"{p}Tokens.swift").write_text(src)
     xc = out / "Colors.xcassets"
     xc.mkdir(exist_ok=True)
@@ -743,6 +806,10 @@ def _emit_flutter(tm, a, out, fonts_dir=None):
         note = "" if t["family"] else ("  // serif in the design: run `fonts` for a matched family" if t["generic"] == "serif" else "")
         styles.append(f"  static const TextStyle {t['dart']} = TextStyle({note}\n" + "\n".join(x for x in lines if x) + "\n  );")
     radii = [f"  static const double {r['dart']} = {_dart_num(r['dp'])};  // {r['source']}" for r in tm["radii"]]
+    shapes = [f"  static const BorderRadius {r['dart']} = BorderRadius.only(" +
+              ", ".join(f"{dk}: Radius.circular({_dart_num(r['corners'][ck])})" for dk, ck in
+                        (("topLeft", "topStart"), ("topRight", "topEnd"), ("bottomRight", "bottomEnd"), ("bottomLeft", "bottomStart"))) + ");"
+              for r in tm["radii"] if r.get("corners")]
     space = [f"  static const double {s['dart']} = {_dart_num(s['dp'])};"
              + ("" if s["source"].startswith("redline") else "  // GPT estimate") for s in tm["spacing"]]
     def scheme_block(m, legacy=False):
@@ -758,7 +825,7 @@ def _emit_flutter(tm, a, out, fonts_dir=None):
     block = lambda name, body: f"abstract final class {P}{name} {{\n" + "\n".join(body) + "\n}\n\n"
     src = ("// Generated by gptkit tokens from the measured design. Sizes are logical pixels.\n"
            "import 'package:flutter/material.dart';\n\n"
-           + block("Colors", cols) + block("Text", styles) + block("Radius", radii) + block("Spacing", space)
+           + block("Colors", cols) + block("Text", styles) + block("Radius", radii) + block("Shape", shapes) + block("Spacing", space)
            + scheme_block('light') + scheme_block('dark')
            + scheme_block(mode, legacy=True)
            + f"const TextTheme {low}TextTheme = TextTheme(\n{theme});\n\n"
@@ -794,6 +861,14 @@ def _css_hex(c):
     return c["hex"] + (f"{round(a * 255):02X}" if a < 1 else "")
 
 
+def _css_rem(v):
+    return f"{v / 16:.4f}".rstrip("0").rstrip(".") + "rem"
+
+
+def _css_radius(r):
+    return " ".join(f"{_num_s(r['corners'][k])}px" for k in ("topStart", "topEnd", "bottomEnd", "bottomStart")) if r.get("corners") else f"{_num_s(r['dp'])}px"
+
+
 def _emit_web(tm, a, out, fonts_css=None):
     out.mkdir(parents=True, exist_ok=True)
     mode, measured, schemes = _color_roles(tm)
@@ -807,14 +882,14 @@ def _emit_web(tm, a, out, fonts_css=None):
     v = [f"  --color-{c['css']}: {_css_hex(c)};" for c in tm["colors"]]
     v += [f"  --color-{kebab(r)}: {h};" for r, h in schemes[mode].items() if kebab(r) not in measured_names]
     v += [f"  --font-{k}: {f};" for k, f in fams.items()]
-    v += [f"  --radius-{r['css']}: {_num_s(r['dp'])}px;" for r in tm["radii"]]
+    v += [f"  --radius-{r['css']}: {_css_radius(r)};" for r in tm["radii"]]
     v += [f"  --space-{s['css']}: {_num_s(s['dp'])}px;" for s in tm["spacing"]]
     cls = []
     for t in tm["types"]:
         col = f"var(--color-{t['color']['css']})" if t["color"] else t["color_hex"]
         cls.append(f".text-{t['css']} {{\n  font-family: var(--font-{t['family_css'] or t['generic']});\n"
                    f"  font-weight: {t['weight']};\n" + ("  font-style: italic;\n" if t["italic"] else "")
-                   + f"  font-size: {_num_s(t['size'])}px;\n  line-height: {_num_s(t['line_height'])}px;\n"
+                   + f"  font-size: {_css_rem(t['size'])}; /* {_num_s(t['size'])}px */\n  line-height: {_css_rem(t['line_height'])}; /* {_num_s(t['line_height'])}px */\n"
                    f"  letter-spacing: {t['tracking']:g}em;\n  color: {col};\n}}")
     head = f'@import "{fonts_css}";\n\n' if fonts_css else ""
     overrides = '\n'.join(f"  --color-{kebab(r)}: {h};" for r, h in schemes[other].items())
@@ -825,10 +900,10 @@ def _emit_web(tm, a, out, fonts_css=None):
     cfg = {"colors": {**{c["css"]: f"var(--color-{c['css']})" for c in tm["colors"]},
                       **{kebab(r): f"var(--color-{kebab(r)})" for r in schemes[mode]}},
            "fontFamily": {k: [x.strip().strip('"') for x in f.split(",")] for k, f in fams.items()},
-           "fontSize": {t["css"]: [f"{_num_s(t['size'])}px", {"lineHeight": f"{_num_s(t['line_height'])}px",
+           "fontSize": {t["css"]: [_css_rem(t['size']), {"lineHeight": _css_rem(t['line_height']),
                                                                "letterSpacing": f"{t['tracking']:g}em",
                                                                "fontWeight": str(t["weight"])}] for t in tm["types"]},
-           "borderRadius": {r["css"]: f"{_num_s(r['dp'])}px" for r in tm["radii"]},
+           "borderRadius": {r["css"]: _css_radius(r) for r in tm["radii"]},
            "spacing": {s["css"]: f"{_num_s(s['dp'])}px" for s in tm["spacing"]}}
     body = ",\n".join(f"    {k}: {js(val)}" for k, val in cfg.items())
     (out / "tailwind.tokens.cjs").write_text("// Tailwind v3 preset: in tailwind.config.js add  presets: [require('./tailwind.tokens.cjs')]\n"
@@ -837,9 +912,9 @@ def _emit_web(tm, a, out, fonts_css=None):
     th = [f"  --color-{c['css']}: {_css_hex(c)};" for c in tm['colors'] if c['css'] not in role_names]
     th += [f"  --font-{k}: {f};" for k, f in fams.items()]
     for t in tm["types"]:
-        th += [f"  --text-{t['css']}: {_num_s(t['size'])}px;", f"  --text-{t['css']}--line-height: {_num_s(t['line_height'])}px;",
+        th += [f"  --text-{t['css']}: {_css_rem(t['size'])}; /* {_num_s(t['size'])}px */", f"  --text-{t['css']}--line-height: {_css_rem(t['line_height'])}; /* {_num_s(t['line_height'])}px */",
                f"  --text-{t['css']}--letter-spacing: {t['tracking']:g}em;", f"  --text-{t['css']}--font-weight: {t['weight']};"]
-    th += [f"  --radius-{r['css']}: {_num_s(r['dp'])}px;" for r in tm["radii"]]
+    th += [f"  --radius-{r['css']}: {_css_radius(r)};" for r in tm["radii"]]
     th += [f"  --spacing-{s['css']}: {_num_s(s['dp'])}px;" for s in tm["spacing"]]
     (out / "tailwind.theme.css").write_text('/* Tailwind v4: in your CSS put  @import "tailwindcss"; @import "./tailwind.theme.css";  */\n\n'
                                             "@theme {\n" + "\n".join(th) + "\n}\n\n"
@@ -1228,15 +1303,29 @@ def cmd_tokens(a):
     rl_path = d / "redline" / "redline.json"
     redline = _json_lists(_read_json(rl_path, "redline.json", ("items", "radii")), ("items", "radii"), rl_path,
                           f"redline {d}") if rl_path.exists() else None
-    tm = _token_model(spec, palette, texts, fonts, redline)
+    meta_path = d / "design.json"
+    meta = _read_json(meta_path, "design.json") if meta_path.exists() else {}
+    design_platform = (meta.get("platform") if isinstance(meta, dict) else None) or spec.get("platform")
+    preset = _token_preset(platforms, design_platform)
+    tm = _token_model(spec, palette, texts, fonts, redline, mock.size, preset)
     snapped = []
     if getattr(a, "snap_grid", False):
-        for s in tm["spacing"]:
-            if s["dp"] >= 2 and max(4, round(s["dp"] / 4) * 4) != s["dp"]:
+        for s, result in zip(tm["spacing"], system.snap_spacing([s["dp"] for s in tm["spacing"]], preset)):
+            if result["snapped"] != s["dp"]:
                 old = s["dp"]
-                s["dp"] = max(4, round(old / 4) * 4)
-                s["source"] += f" -> snapped to 4 dp grid from {old:g} dp"
+                s["dp"] = result["snapped"]
+                s["source"] += f" -> snapped to {preset} step from {old:g} dp"
                 snapped.append(s["name"])
+        for r in tm["radii"]:
+            if r.get("shape") in ("pill", "circle", "full"):
+                continue
+            old = r["dp"]
+            r["dp"] = system.snap_radius(old, preset)[1]
+            if r["dp"] != old:
+                r["source"] += f" -> snapped to {preset} step from {old:g} dp"
+                snapped.append(r["name"])
+            if r.get("corners"):
+                r["corners"] = {key: system.snap_radius(value, preset)[1] for key, value in r["corners"].items()}
     audit = _shape_audit(tm)
     audit["snapped"] = snapped
     _, _, schemes = _color_roles(tm)
@@ -1247,10 +1336,12 @@ def cmd_tokens(a):
         print(f"  ! contrast {issue['fg']}/{issue['bg']} {issue['mode']} {issue['ratio']}:1 (needs {issue['need']})")
     if audit["off_grid"]:
         off = ", ".join(f"{s['name']} {s['dp']:g} dp ({s['nearest'][0]:g}/{s['nearest'][1]:g})" for s in audit["off_grid"])
-        print(f"  ! spacing off the 4 dp grid: {off}; --snap-grid rounds them (compare will then show the departure from the mockup)")
+        print(f"  ! spacing off the {audit['grid_dp']} dp grid: {off}; --snap-grid rounds them")
     if audit["radii_count"] > 4:
         radii = ", ".join(f"{r:g}" for r in audit["radii_dp"])
         print(f"  ! {audit['radii_count']} corner radii ({radii} dp): a shape scale usually has 3-4 plus pill")
+    for issue in audit["issues"] + audit["type"]:
+        print(f"  ! {issue}")
     tm["width_dp"] = int(spec.get("effective_width_dp") or round(mock.width * tm["px_to_dp"]))
     files = []
     if "compose" in platforms:
@@ -1272,9 +1363,10 @@ def cmd_tokens(a):
                                                 "hig_style")} for t in tm["types"]],
               "m3": {k_: tm.get(k_) for k_ in ("m3_roles_baseline", "m3_slots_baseline", "m3_slot_notes", "m3_shapes")},
               "prefix": a.prefix, "audit": audit,
-              "radii": [{k: r[k] for k in ("name", "dp", "source", "shape", "kt", "sw", "css", "dart")} for r in tm["radii"]],
+              "radii": [{**{k: r[k] for k in ("name", "dp", "source", "shape", "kt", "sw", "css", "dart")},
+                         **({"corners": r["corners"]} if "corners" in r else {})} for r in tm["radii"]],
               "spacing": [{k: s[k] for k in ("name", "dp", "source", "kt", "sw", "css", "dart")} for s in tm["spacing"]],
-              "platforms": platforms, "px_to_dp": tm["px_to_dp"], "fonts": str(fonts_path) if fonts else None}
+              "platforms": platforms, "preset": preset, "px_to_dp": tm["px_to_dp"], "fonts": str(fonts_path) if fonts else None}
     print(f"palette ({sum(p['snapped'] for p in palette)}/{len(palette)} snapped to mockup pixels):")
     for p in palette:
         mark = f"{p['hex_guess']} -> {p['hex']}  dE00 {p['de00']:>4}" if p["snapped"] else f"{p['hex_guess']}  (kept: not found)"

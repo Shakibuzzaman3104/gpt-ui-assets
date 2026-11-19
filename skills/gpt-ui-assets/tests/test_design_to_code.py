@@ -975,8 +975,9 @@ def test_shape_audit():
                    + [{"name": "button", "dp": 28, "shape": "pill"}, {"name": "avatar", "dp": 30, "shape": "circle"},
                       {"name": "full", "dp": 32}, {"name": "pill button", "dp": 40}, {"name": "circle avatar", "dp": 48}]}
     audit = g._shape_audit(tm)
-    assert audit == {"grid_dp": 4, "off_grid": [{"name": "card padding", "dp": 13.5, "nearest": [12, 16]}],
-                     "radii_dp": [4, 8, 12, 16, 20], "radii_count": 5, "snapped": []}
+    assert {k: audit[k] for k in ("grid_dp", "off_grid", "radii_dp", "radii_count", "snapped")} == {
+        "grid_dp": 4, "off_grid": [{"name": "card padding", "dp": 13.5, "nearest": [12, 16]}],
+        "radii_dp": [4, 8, 12, 16, 20], "radii_count": 5, "snapped": []} and audit["issues"] and not audit["type"]
 
 
 def test_spacing_snap_grid():
@@ -992,9 +993,9 @@ def test_spacing_snap_grid():
     assert "  ! 5 corner radii (4, 8, 12, 16, 20 dp)" in out
     out = run("tokens", d, "--platforms", "web", "--no-snap", "--snap-grid")
     rep = json.loads((d / "tokens" / "tokens.json").read_text())
-    assert [s["dp"] for s in rep["spacing"]] == [12, 16, 1, 4]
-    assert rep["spacing"][0]["source"] == "spec (GPT estimate) -> snapped to 4 dp grid from 13.5 dp"
-    assert rep["audit"]["snapped"] == ["card padding", "small"] and not rep["audit"]["off_grid"]
+    assert [s["dp"] for s in rep["spacing"]] == [12, 16, 1, 2]
+    assert rep["spacing"][0]["source"] == "spec (GPT estimate) -> snapped to web step from 13.5 dp"
+    assert rep["audit"]["snapped"] == ["card padding", "corner 20"] and not rep["audit"]["off_grid"]
     assert rep["spacing"][1]["source"] == "spec (GPT estimate)"
     assert "spacing off the 4 dp grid" not in out
     assert "--space-card-padding: 12px" in (d / "tokens" / "web" / "tokens.css").read_text()
