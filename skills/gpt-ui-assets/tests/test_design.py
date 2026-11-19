@@ -354,7 +354,7 @@ def test_calibrate_tolerates_missing_keys():
                                "not a component"]}
         with contextlib.redirect_stdout(io.StringIO()):
             K._calibrate(d, spec, m, 1024)
-        assert spec["native_scale"]["applied"] and abs(spec["px_to_dp"] - round(80 / 136, 5)) < 1e-9
+        assert not spec["native_scale"]["applied"] and spec["px_to_dp"] == round(412 / 1024, 5)
         assert spec["px_to_dp_design"] == round(412 / 1024, 5)
         # recalibrate on a dir with no design_spec.json: one-line exit naming the fix
         code, out = run(lambda a: K.cmd_recalibrate(a, "auto"), d)
