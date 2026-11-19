@@ -121,6 +121,14 @@ def test_presets():
     assert m.PRESETS["material3"]["min_target"] == 48 and m.PRESETS["web"]["min_target"] == 24
 
 
+def test_refuted_edge_cases():
+    assert m.check_pairs({"onSurface": "#125B8EEF", "surface": "#C7E09B"}, "web")
+    assert any("not a positive number" in i for i in m.lint_type([{"name": "body", "size": 0, "line_height": 12}], "ios"))
+    assert m.snap_radius(0, "ios", height=2)[1] == 0
+    assert not m.audit_radius([5, 9, 14], "ios")
+    assert all(t["size"] >= m.PRESETS["web"]["min_text"] for t in m.PRESETS["web"]["type"])
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

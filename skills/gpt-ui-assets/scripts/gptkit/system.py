@@ -124,7 +124,7 @@ PRESETS = {
     },
     "ios": {
         "source": dict(_APPLE_SOURCE),
-        "unit": "pt", "grid": 4, "rhythm": 8, "spacing": _IOS_SPACING, "radius": _apple_radius(), "type": _IOS_TYPE,
+        "unit": "pt", "grid": 4, "rhythm": 8, "spacing": _IOS_SPACING, "radius": _apple_radius(), "fixed_scale": False, "type": _IOS_TYPE,
         "min_text": 11, "default_body": 17, "min_target": 44,
         "margins": {"compact": 16, "regular": 20, "verified": False},
         "breakpoints": [],
@@ -132,7 +132,7 @@ PRESETS = {
     },
     "macos": {
         "source": dict(_APPLE_SOURCE),
-        "unit": "pt", "grid": 4, "spacing": _MACOS_SPACING, "radius": _apple_radius(), "type": _MACOS_TYPE,
+        "unit": "pt", "grid": 4, "spacing": _MACOS_SPACING, "radius": _apple_radius(), "fixed_scale": False, "type": _MACOS_TYPE,
         "min_text": 10, "default_body": 13, "min_target": 28,
         "margins": {"default": 16, "verified": False},
         "breakpoints": [],
@@ -149,11 +149,11 @@ PRESETS = {
     },
     "web": {
         "source": {"spacing": "https://carbondesignsystem.com/elements/spacing/overview/",
-                   "type": "https://carbondesignsystem.com/elements/typography/overview/",
+                   "type": "https://github.com/microsoft/fluentui/blob/master/packages/tokens/src/global/fonts.ts",
                    "contrast": "https://www.w3.org/WAI/WCAG22/Understanding/contrast-minimum.html",
                    "target": "https://www.w3.org/WAI/WCAG22/Understanding/target-size-minimum.html"},
         "unit": "px", "grid": 4, "rem_base": 16, "spacing": _CARBON_SPACING, "radius": dict(_FLUENT_RADIUS),
-        "type": _fluent_type(), "min_text": 12, "default_body": 16, "min_target": 24,
+        "type": [t for t in _fluent_type() if t["size"] >= 12], "min_text": 12, "default_body": 16, "min_target": 24,
         "margins": {"default": 16, "verified": False},
         "breakpoints": [],
         "dark_base": None,
@@ -196,7 +196,6 @@ def contrast_ratio(fg, bg):
     f, b = _hexi(fhex), _hexi(bhex)
     if alpha < 1.0:
         f = [alpha * x + (1 - alpha) * y for x, y in zip(f, b)]
-        f = [int(round(v)) for v in f]
     hi, lo = sorted((_lum(f), _lum(b)), reverse=True)
     return (hi + 0.05) / (lo + 0.05)
 
@@ -235,6 +234,9 @@ def lint_type(styles, platform):
         name, size = s.get("name", "?"), s["size"]
         if size < p["min_text"]:
             out.append(f"{name}: {size:g} is below the {platform} minimum text size {p['min_text']}")
+        if not size or size <= 0:
+            out.append(f"{name}: size {size!r} is not a positive number")
+            continue
         lh = s.get("line_height")
         if lh is not None:
             ratio = lh / size
@@ -289,7 +291,7 @@ def _radius_items(platform):
 def snap_radius(value, platform, height=None):
     """Nearest radius token name, value and error; a full pill is only found when the element height is given."""
     items = _radius_items(platform)
-    if height is not None and value >= height / 2 - 1:
+    if height is not None and value > 0 and value >= height / 2 - 1:
         return "full", 9999, 0.0
     finite = [(k, v) for k, v in items if k != "full"]
     name, step = min(finite, key=lambda kv: (abs(value - kv[1]), kv[1]))
@@ -320,7 +322,7 @@ def audit_radius(radii, platform):
     if len(non_zero) > 5:
         out.append(f"{len(non_zero)} distinct non-zero radii ({', '.join('%g' % r for r in non_zero)}); keep to 5")
     for r in radii:
-        if r <= 0 or r >= 9999:
+        if r <= 0 or r >= 9999 or not PRESETS[platform].get("fixed_scale", True):
             continue
         gap = min(abs(r - s) for s in steps)
         if gap > 2:

@@ -93,13 +93,9 @@ def seed_palettes(primary, secondary=None, tertiary=None, error="#B3261E"):
 
 
 def contrast(a, b):
-    """Return the unrounded WCAG contrast ratio of two sRGB colours."""
-    def luminance(colour):
-        channels = [v / 255 for v in _hexi(colour)]
-        linear = [v / 12.92 if v <= 0.04045 else ((v + 0.055) / 1.055) ** 2.4 for v in channels]
-        return sum(v * w for v, w in zip(linear, (0.2126, 0.7152, 0.0722)))
-    x, y = sorted((luminance(a), luminance(b)))
-    return (y + 0.05) / (x + 0.05)
+    """Unrounded WCAG contrast ratio; a translucent foreground is composited over the background first."""
+    from .system import contrast_ratio  # deferred: keeps palette importable on its own
+    return contrast_ratio(a, b)
 
 
 def _scheme(primary, mode, secondary, tertiary, error, measured):
@@ -115,19 +111,34 @@ def _scheme(primary, mode, secondary, tertiary, error, measured):
         _norm_hex(colour)
         result[role] = colour
     notes = []
-    pairs = {"primary": "onPrimary", "primaryContainer": "onPrimaryContainer",
-             "secondary": "onSecondary", "secondaryContainer": "onSecondaryContainer",
-             "tertiary": "onTertiary", "tertiaryContainer": "onTertiaryContainer",
-             "error": "onError", "errorContainer": "onErrorContainer",
-             "background": "onBackground", "surface": "onSurface",
-             "surfaceVariant": "onSurfaceVariant", "inverseSurface": "inverseOnSurface"}
-    for background, foreground in pairs.items():
-        if background not in measured or foreground in measured:
+    anchor = next((r for r in ("surface", "background") if r in measured), None)
+    touched = set(measured)
+    if anchor:
+        base = ROLE_TONES["surface"][index]
+        shift = lch(measured[anchor])[0] - base
+        _, _, hue = lch(primary)
+        for role in ("surface", "background", "surfaceDim", "surfaceBright", "surfaceContainerLowest", "surfaceContainerLow",
+                     "surfaceContainer", "surfaceContainerHigh", "surfaceContainerHighest"):
+            if role not in measured:
+                result[role] = _tone(min(100, max(0, ROLE_TONES[role][index] + shift)), 4, hue)
+                touched.add(role)
+        if abs(shift) > 2:
+            notes.append(f"{mode}: surface family follows the measured {anchor} (tone shift {shift:+.0f})")
+    surfaces = ["surface", "surfaceDim", "surfaceBright", "surfaceContainerLowest", "surfaceContainerLow",
+                "surfaceContainer", "surfaceContainerHigh", "surfaceContainerHighest"]
+    backgrounds = {"onPrimary": ["primary"], "onPrimaryContainer": ["primaryContainer"],
+                   "onSecondary": ["secondary"], "onSecondaryContainer": ["secondaryContainer"],
+                   "onTertiary": ["tertiary"], "onTertiaryContainer": ["tertiaryContainer"],
+                   "onError": ["error"], "onErrorContainer": ["errorContainer"], "onBackground": ["background"],
+                   "onSurface": surfaces, "onSurfaceVariant": surfaces + ["surfaceVariant"],
+                   "inverseOnSurface": ["inverseSurface"]}
+    for foreground, bgs in backgrounds.items():
+        hit = [b for b in bgs if b in touched]
+        if not hit or foreground in measured:
             continue
         palette, light, dark = ROLE_TONES[foreground]
         start = light if mode == "light" else dark
-        bg_tone = lch(result[background])[0]
-        direction = -1 if start < bg_tone else 1
+        direction = -1 if start < lch(result[hit[0]])[0] else 1
         seed = {"primary": primary, "secondary": secondary, "tertiary": tertiary, "error": error}.get(palette)
         if seed is None:
             _, c, h = lch(primary)
@@ -138,13 +149,13 @@ def _scheme(primary, mode, secondary, tertiary, error, measured):
         candidates += list(range(0 if direction > 0 else 100, start, direction))
         for tone in candidates:
             candidate = _tone(tone, c, h)
-            if contrast(candidate, result[background]) >= 4.5:
+            if min(contrast(candidate, result[b]) for b in bgs) >= 4.5:
                 result[foreground] = candidate
                 if tone != start:
-                    notes.append(f"{mode}: adjusted {foreground} from tone {start} to {tone} for {background}")
+                    notes.append(f"{mode}: adjusted {foreground} from tone {start} to {tone} for {', '.join(hit)}")
                 break
         else:
-            notes.append(f"{mode}: no accessible {foreground} tone found for {background}")
+            notes.append(f"{mode}: no {foreground} tone reaches 4.5:1 on every surface it sits on ({', '.join(bgs)})")
     return result, notes
 
 

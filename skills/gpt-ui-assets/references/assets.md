@@ -32,7 +32,8 @@ Edit `assets.json` directly to fix the inventory, then run `spec` again (missing
   (`effective_width_dp`). All later commands (`tokens`, `fonts`, `redline`, `compare`) use the calibrated scale.
   - `spec --scale design` keeps the proportional width scale.
   - `spec DIR --recalibrate` re-runs the calibration on an existing spec with no API call.
-  - Still snap to platform norms (24 dp icons, 48 dp / 44 pt touch targets, an 8 dp grid).
+  - Still snap to platform norms: 24 dp icons, 48 dp / 44 pt touch targets, and the platform's spacing and radius
+    steps (`references/design-system.md`).
 - `spec` maps each component to the native widget to build it with (`native`) and each text style to the platform type
   scale (`platform_style`). Build with those.
 

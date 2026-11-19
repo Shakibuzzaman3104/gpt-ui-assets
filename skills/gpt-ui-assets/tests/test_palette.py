@@ -56,6 +56,17 @@ def test_measured_and_contrast():
     assert any("onPrimary" in note for note in m.schemes("#FFE066", "light", measured={"primary": "#FFE066"})["notes"])
 
 
+def test_measured_surface_moves_its_family_and_repairs_text():
+    from gptkit import system
+    result = m.schemes("#6750A4", "light", measured={"surface": "#F4F1EA"})
+    assert result["light"]["surface"] == "#F4F1EA"
+    assert abs(m.lch(result["light"]["surfaceContainer"])[0] - (m.lch("#F4F1EA")[0] - 4)) < 1
+    assert not system.check_pairs(result["light"], "material3")
+    odd = m.schemes("#6750A4", "light", measured={"surfaceContainer": "#000000"})
+    assert any("no onSurface tone" in note for note in odd["notes"])
+    assert m.contrast("#00000000", "#FFFFFF") == 1.0
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):
