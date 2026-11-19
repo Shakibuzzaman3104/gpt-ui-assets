@@ -1333,7 +1333,8 @@ def cmd_tokens(a):
     tm['contrast'] = [issue for mode in ('light', 'dark') for issue in system.check_pairs(schemes[mode], platform, mode=mode)]
     audit['contrast'] = tm['contrast']
     for issue in tm['contrast']:
-        print(f"  ! contrast {issue['fg']}/{issue['bg']} {issue['mode']} {issue['ratio']}:1 (needs {issue['need']})")
+        hint = " if this border is what identifies a control" if issue.get("kind") == "ui" else ""
+        print(f"  ! contrast {issue['fg']}/{issue['bg']} {issue['mode']} {issue['ratio']}:1 (needs {issue['need']}{hint})")
     if audit["off_grid"]:
         off = ", ".join(f"{s['name']} {s['dp']:g} dp ({s['nearest'][0]:g}/{s['nearest'][1]:g})" for s in audit["off_grid"])
         print(f"  ! spacing off the {audit['grid_dp']} dp grid: {off}; --snap-grid rounds them")
@@ -1378,7 +1379,7 @@ def cmd_tokens(a):
     if not fonts:
         print("  (no fonts.json: generic serif/sans families; run `fonts` first for matched Google Fonts)")
     if "compose" in platforms:
-        print(f"M3 colour roles left at baseline: {', '.join(tm['m3_roles_baseline']) or 'none'}")
+        print(f"M3 colour roles derived from the tonal palette (not measured): {', '.join(tm['m3_roles_baseline']) or 'none'}")
         print(f"M3 type slots left at baseline: {', '.join(tm['m3_slots_baseline']) or 'none'}"
               + (f"; shapes: {tm['m3_shapes']}" if tm["m3_shapes"] else "; shapes: none matched (chip/card/fab/sheet names)"))
         for n_ in tm["m3_slot_notes"]:

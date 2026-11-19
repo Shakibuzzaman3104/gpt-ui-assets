@@ -36,18 +36,26 @@ python3 $K tokens  build/home --package com.acme.app.ui.theme --prefix Acme [--a
   layout box, what `Modifier.padding` sees), not from the ink inset. Spec radii are linked to surfaces by exact name first
   (`match_score`), each surface at most once; items it can't measure stay listed as `unmeasured` with a reason. `--vision`
   locates text the components don't cover.
-- **`tokens`** writes Compose `Color.kt` (`AcmeColors` object, measured `AcmeDarkColorScheme`/`AcmeLightColorScheme` with the other
-  appearance scaffolded and marked TODO), `Type.kt` (`AcmeTypography` styles plus `AcmeM3Typography = Typography(headlineLarge = …)`
+- **`tokens`** writes Compose `Color.kt` (`AcmeColors` object, and full `AcmeLightColorScheme`/`AcmeDarkColorScheme`: the
+  appearance the mockup shows keeps its measured colours, the other is derived from tonal palettes seeded by the measured
+  primary, never copied; see `references/design-system.md`), `Type.kt` (`AcmeTypography` styles plus `AcmeM3Typography = Typography(headlineLarge = …)`
   from the spec's `platform_style`, nearest slot by size otherwise), `Shape.kt` (`AcmeShapes` from chip/card/fab/sheet radii),
   `Dimens.kt` (spacing with `// redline: …` or `// GPT estimate` comments), `Theme.kt` (`AcmeTheme { }`), a SwiftUI tokens file
-  (`Font.custom(…, relativeTo: .<HIG style>)` for Dynamic Type) with `Colors.xcassets/*.colorset` (one appearance; add the
-  dark values when you have a dark mockup), `web/tokens.css` (imports `fonts.css` when present), `tailwind.tokens.cjs` (a Tailwind
+  (`Font.custom(…, relativeTo: .<HIG style>)` for Dynamic Type) with `Colors.xcassets/*.colorset` (any and dark appearances; the system font falls back to `.system(.<text style>)`),
+  `web/tokens.css` (role variables for both appearances via `prefers-color-scheme` and `[data-theme]`, type in `rem`;
+  imports `fonts.css` when present), `tailwind.tokens.cjs` (a Tailwind
   v3 preset: `presets: [require('./tailwind.tokens.cjs')]`) and `tailwind.theme.css` (an `@theme` block for Tailwind v4:
   `@import "tailwindcss"; @import "./tailwind.theme.css";`), plus `compose/Preview.kt`, a `@Preview(widthDp = <effective width>)`
   stub for Roborazzi or the Compose Preview Screenshot Testing plugin. `--dtcg` adds `tokens.tokens.json` (W3C Design Tokens,
   the Style Dictionary v4 subset: `color`, `typography`, `dimension.radius`, `dimension.spacing`, provenance in `$description`)
   for Style Dictionary, Tokens Studio and friends.
-  It warns about spacing off the 4 dp grid and more than four distinct non-pill corner radii.
+  Per-corner radii (a sheet rounded only on top) survive into every platform. The audit checks against the platform
+  preset (`material3`, `ios`, `macos` or `web`):
+  - contrast of every role pair in both appearances, reported and never silently changed;
+  - type: minimum size, line height, tracking and the number of sizes;
+  - spacing off the preset's steps, and more than five corner radii;
+  - nested corners that aren't concentric.
+  `--snap-grid` snaps spacing (and radii) to the preset's steps.
   `--snap-grid` rounds spacing to the grid: a deliberate departure from the mockup that `compare` will show.
   - Every palette hex (`#rgb`, `#rrggbbaa`, `rgb()`/`rgba()` accepted; alpha kept) is first snapped to the mockup's pixels;
     `palette_check.png` shows the guess, the snapped value and the ΔE00. Identifiers are unique across colours, styles, radii,

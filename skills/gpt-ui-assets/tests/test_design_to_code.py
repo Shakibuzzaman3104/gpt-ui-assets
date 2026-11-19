@@ -944,7 +944,7 @@ def test_theme_and_m3_typography():
     assert "fun AcmeTheme(darkTheme: Boolean = isSystemInDarkTheme(), content: @Composable () -> Unit)" in th
     assert "colorScheme = if (darkTheme) AcmeDarkColorScheme else AcmeLightColorScheme" in th and "shapes = AcmeShapes" in th
     assert not g._lint_tokens(sorted(comp.glob("*.kt"))) and "verify lint    : ok" in out
-    assert "M3 colour roles left at baseline: primaryContainer" in out and "M3 type slots left at baseline: displayLarge" in out
+    assert "M3 colour roles derived from the tonal palette (not measured): primaryContainer" in out and "M3 type slots left at baseline: displayLarge" in out
     rep = json.loads((d / "tokens" / "tokens.json").read_text())
     assert rep["m3"]["m3_shapes"] == {"small": "Chip", "medium": "PlanCard"}
     sw = (d / "tokens" / "swiftui" / "AcmeTokens.swift").read_text()

@@ -332,7 +332,9 @@ def audit_radius(radii, platform):
 
 def check_nested(outer_radius, padding, inner_radius, tol=2):
     """Concentric corners: the inner radius should be outer minus padding."""
-    want = max(0.0, outer_radius - padding)
+    if padding >= outer_radius:
+        return None  # the inner shape sits clear of the outer curve, so any radius works
+    want = outer_radius - padding
     if abs(want - inner_radius) <= tol:
         return None
     return (f"inner radius {inner_radius:g} breaks concentricity: expected {want:g} "

@@ -93,7 +93,10 @@ position. A set render writes `<name>_<device>.png` for each device and records 
   detail (edge-map similarity 0.79, the same as plain re-renders of one brief, 0.69-0.91); with it the same brief
   gave 0.40 and a second brief 0.46, close to unrelated screens (0.28-0.43). Two runs, four variants each. Content the brief does not spell out (names, numbers) is invented per variant, so put the
   exact content in the brief when the variants must be compared like for like.
-  The directions are saved in `design.json` under `directions`. Use it for the first screen of a new app; screen 2
+  Each direction also carries a structured `system`: a preset, colour roles with a name and a hex value, type steps,
+  spacing steps and radii, all drawn from `references/design-system.md`. The renderer gets the roles as "deep teal
+  #0F766E" (image models follow names better than hex). Failing on-colours are fixed before rendering, and `critique`
+  measures every role pair on the mockup. The directions are saved in `design.json` under `directions`. Use it for the first screen of a new app; screen 2
   onward uses `--style-ref`. Not with `--edit`, `--style-ref`, `--anchor`/`--set` or `--raw`.
 - **House style:** every `mockup` and `--style-ref` prompt carries the house art direction: clean, decluttered, modern;
   one focal point and one accent (stat tiles and icon backgrounds share it, never a different tint each); section

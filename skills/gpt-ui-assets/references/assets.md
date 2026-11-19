@@ -27,8 +27,9 @@ Edit `assets.json` directly to fix the inventory, then run `spec` again (missing
 - **Scale.** GPT draws native components at about 0.65–0.7× platform size, for example an 80 dp M3 navigation bar drawn
   at ~56 dp-equivalent on the proportional scale. `spec` measures its native anchors (M3: navigation bar 80 dp, FAB 56 dp,
   small top app bar 64 dp, search bar 56 dp, navigation rail 80 dp wide; iOS: tab bar 49 pt, inline navigation bar 44 pt,
-  switch 31 pt, segmented control 32 pt; a large-title bar is never an anchor), calibrates `px_to_dp` from them and
-  rewrites the asset `dp` estimates. It prints that the design depicts a ~N dp-wide screen
+  switch 31 pt, segmented control 32 pt; a large-title bar is never an anchor), calibrates `px_to_dp` from them (an anchor more than 15% off the median is dropped; it
+  needs two agreeing anchors and keeps the proportional scale with a warning when there is only one) and rewrites the
+  asset `dp` estimates. It prints that the design depicts a ~N dp-wide screen
   (`effective_width_dp`). All later commands (`tokens`, `fonts`, `redline`, `compare`) use the calibrated scale.
   - `spec --scale design` keeps the proportional width scale.
   - `spec DIR --recalibrate` re-runs the calibration on an existing spec with no API call.

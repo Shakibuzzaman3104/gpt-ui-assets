@@ -82,6 +82,7 @@ def test_nested_radius():
     msg = m.check_nested(28, 16, 28)
     assert msg and "12" in msg
     assert m.check_nested(12, 20, 0) is None
+    assert m.check_nested(16, 16, 8) is None
 
 
 def test_audits():
