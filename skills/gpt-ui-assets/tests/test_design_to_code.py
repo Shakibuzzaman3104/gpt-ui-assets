@@ -307,7 +307,7 @@ def test_swift_css_names():
     sw = (d / "tokens" / "swiftui" / "AppTokens.swift").read_text()
     assert "static let primaryToken = " in sw and "static let primary2 = " in sw and "static let secondaryToken = " in sw
     assert "static let primary = " not in sw and "static let `default` = " in sw and "static let `import` = " in sw
-    assert "color: .primaryToken" in sw
+    assert "color: AppColorRoles.primary" in sw
     css = (d / "tokens" / "web" / "tokens.css").read_text()
     kt = (d / "tokens" / "compose" / "Color.kt").read_text()
     assert "--color-primary:" in css and "--color-primary-2:" in css and "val Primary2 = " in kt
@@ -1035,9 +1035,9 @@ def test_dtcg_and_extras():
     out = run("tokens", d, "--prefix", "Acme", "--dtcg", "--verify")
     tk = d / "tokens"
     doc = json.loads((tk / "tokens.tokens.json").read_text())
-    assert doc["color"]["screen-background"] == {"$type": "color", "$value": TRUTH["bg"],
-                                                 "$description": doc["color"]["screen-background"]["$description"]}
-    assert "snapped to the mockup" in doc["color"]["screen-background"]["$description"]
+    assert doc["color"]["primitive"]["screen-background"] == {"$type": "color", "$value": TRUTH["bg"],
+                                                 "$description": doc["color"]["primitive"]["screen-background"]["$description"]}
+    assert "snapped to the mockup" in doc["color"]["primitive"]["screen-background"]["$description"]
     ty = doc["typography"]["card-body"]
     assert ty["$type"] == "typography" and ty["$value"]["fontFamily"] == "Inter" and ty["$value"]["fontWeight"] == 400
     assert ty["$value"]["fontSize"].endswith("px") and ty["$value"]["lineHeight"].endswith("px") and ty["$value"]["letterSpacing"].endswith("em")

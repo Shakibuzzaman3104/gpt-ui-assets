@@ -75,7 +75,10 @@ Preset numbers (type entries are name/size/line height/weight):
 {presets}
 Brief: {brief}"""
 _ROLE_NAMES = ["primary", "onPrimary", "primaryContainer", "secondary", "background", "surface", "surfaceContainer",
-               "onSurface", "onSurfaceVariant", "outline", "error"]
+               "onSurface", "onSurfaceVariant", "outline", "error", "onPrimaryContainer", "onSecondary", "onError",
+               "onBackground", "secondaryContainer", "onSecondaryContainer", "tertiary", "onTertiary",
+               "tertiaryContainer", "onTertiaryContainer", "errorContainer", "onErrorContainer",
+               "surfaceContainerHigh", "surfaceContainerHighest", "outlineVariant"]
 _SYSTEM_SCHEMA = {"type": "object", "additionalProperties": False,
                   "required": ["preset", "roles", "type", "spacing_base", "spacing", "radius"],
                   "properties": {

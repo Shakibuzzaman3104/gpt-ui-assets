@@ -62,6 +62,15 @@ def test_shapes_and_type_emitters():
         assert "BorderRadius.only(topLeft: Radius.circular(24)" in (root / "flutter/demo_tokens.dart").read_text()
 
 
+def test_platform_snapping_and_audits():
+    tm = g._token_model({'spacing': [{'between': 'gap', 'px': 20}]}, [], {}, None)
+    compose, ca = g._platform_model(tm, g._token_preset(['compose']), True)
+    web, wa = g._platform_model(tm, g._token_preset(['web']), True)
+    assert compose['spacing'][0]['dp'] != web['spacing'][0]['dp']
+    assert compose['preset'] == 'material3' and web['preset'] == 'web'
+    assert ca['grid_dp'] == g.system.PRESETS['material3']['grid'] and wa['grid_dp'] == g.system.PRESETS['web']['grid']
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):
