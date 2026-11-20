@@ -275,7 +275,7 @@ def test_compose_namespace_and_weights():
     assert "object AcmeColors {" in col and "val ButtonLabel = Color(0xFF" in col
     assert "primary = AcmeColors." in col and "darkColorScheme(" in col
     body = ty.split("object AcmeTypography {", 1)[1]
-    assert "color = AcmeColors." in body and "color = ButtonLabel," not in body
+    assert ("color = AcmeColors." in body or "Themed: TextStyle" in body) and "color = ButtonLabel," not in body
     assert "FontWeight(450)" in ty and "FontWeight.W450" not in ty and "FontWeight.W700" in ty
     assert not g._lint_tokens(sorted((d / "tokens" / "compose").glob("*.kt")))
     assert "verify lint    : ok" in out and "css" not in json.loads((d / "tokens" / "tokens.json").read_text())["verify"]
@@ -307,7 +307,7 @@ def test_swift_css_names():
     sw = (d / "tokens" / "swiftui" / "AppTokens.swift").read_text()
     assert "static let primaryToken = " in sw and "static let primary2 = " in sw and "static let secondaryToken = " in sw
     assert "static let primary = " not in sw and "static let `default` = " in sw and "static let `import` = " in sw
-    assert "color: .primaryToken" in sw
+    assert "color: AppColorRoles.primary" in sw
     css = (d / "tokens" / "web" / "tokens.css").read_text()
     kt = (d / "tokens" / "compose" / "Color.kt").read_text()
     assert "--color-primary:" in css and "--color-primary-2:" in css and "val Primary2 = " in kt
@@ -939,12 +939,12 @@ def test_theme_and_m3_typography():
     assert "val AcmeM3Typography = Typography(" in ty and "headlineLarge = AcmeTypography.GreetingTitle," in ty
     assert "bodyLarge = AcmeTypography.CardBody," in ty and "labelLarge = AcmeTypography." in ty
     assert "val AcmeDarkColorScheme: ColorScheme = darkColorScheme(" in col and "val AcmeLightColorScheme: ColorScheme = lightColorScheme(" in col
-    assert "TODO: verify against a light mockup" in col and "val AcmeColorScheme: ColorScheme = AcmeDarkColorScheme" in col
+    assert "Dark appearance measured; light appearance derived" in col and "val AcmeColorScheme: ColorScheme = AcmeDarkColorScheme" in col
     assert "val AcmeShapes = Shapes(" in sh and "small = ChipShape," in sh and "medium = PlanCardShape," in sh
     assert "fun AcmeTheme(darkTheme: Boolean = isSystemInDarkTheme(), content: @Composable () -> Unit)" in th
     assert "colorScheme = if (darkTheme) AcmeDarkColorScheme else AcmeLightColorScheme" in th and "shapes = AcmeShapes" in th
     assert not g._lint_tokens(sorted(comp.glob("*.kt"))) and "verify lint    : ok" in out
-    assert "M3 colour roles left at baseline: primaryContainer" in out and "M3 type slots left at baseline: displayLarge" in out
+    assert "M3 colour roles derived from the tonal palette (not measured): primaryContainer" in out and "M3 type slots left at baseline: displayLarge" in out
     rep = json.loads((d / "tokens" / "tokens.json").read_text())
     assert rep["m3"]["m3_shapes"] == {"small": "Chip", "medium": "PlanCard"}
     sw = (d / "tokens" / "swiftui" / "AcmeTokens.swift").read_text()
@@ -975,8 +975,9 @@ def test_shape_audit():
                    + [{"name": "button", "dp": 28, "shape": "pill"}, {"name": "avatar", "dp": 30, "shape": "circle"},
                       {"name": "full", "dp": 32}, {"name": "pill button", "dp": 40}, {"name": "circle avatar", "dp": 48}]}
     audit = g._shape_audit(tm)
-    assert audit == {"grid_dp": 4, "off_grid": [{"name": "card padding", "dp": 13.5, "nearest": [12, 16]}],
-                     "radii_dp": [4, 8, 12, 16, 20], "radii_count": 5, "snapped": []}
+    assert {k: audit[k] for k in ("grid_dp", "off_grid", "radii_dp", "radii_count", "snapped")} == {
+        "grid_dp": 4, "off_grid": [{"name": "card padding", "dp": 13.5, "nearest": [12, 16]}],
+        "radii_dp": [4, 8, 12, 16, 20], "radii_count": 5, "snapped": []} and audit["issues"] and not audit["type"]
 
 
 def test_spacing_snap_grid():
@@ -992,9 +993,9 @@ def test_spacing_snap_grid():
     assert "  ! 5 corner radii (4, 8, 12, 16, 20 dp)" in out
     out = run("tokens", d, "--platforms", "web", "--no-snap", "--snap-grid")
     rep = json.loads((d / "tokens" / "tokens.json").read_text())
-    assert [s["dp"] for s in rep["spacing"]] == [12, 16, 1, 4]
-    assert rep["spacing"][0]["source"] == "spec (GPT estimate) -> snapped to 4 dp grid from 13.5 dp"
-    assert rep["audit"]["snapped"] == ["card padding", "small"] and not rep["audit"]["off_grid"]
+    assert [s["dp"] for s in rep["spacing"]] == [12, 16, 1, 2]
+    assert rep["spacing"][0]["source"] == "spec (GPT estimate) -> snapped to web step from 13.5 dp"
+    assert rep["audit"]["snapped"] == ["card padding", "corner 20"] and not rep["audit"]["off_grid"]
     assert rep["spacing"][1]["source"] == "spec (GPT estimate)"
     assert "spacing off the 4 dp grid" not in out
     assert "--space-card-padding: 12px" in (d / "tokens" / "web" / "tokens.css").read_text()
@@ -1034,9 +1035,9 @@ def test_dtcg_and_extras():
     out = run("tokens", d, "--prefix", "Acme", "--dtcg", "--verify")
     tk = d / "tokens"
     doc = json.loads((tk / "tokens.tokens.json").read_text())
-    assert doc["color"]["screen-background"] == {"$type": "color", "$value": TRUTH["bg"],
-                                                 "$description": doc["color"]["screen-background"]["$description"]}
-    assert "snapped to the mockup" in doc["color"]["screen-background"]["$description"]
+    assert doc["color"]["primitive"]["screen-background"] == {"$type": "color", "$value": TRUTH["bg"],
+                                                 "$description": doc["color"]["primitive"]["screen-background"]["$description"]}
+    assert "snapped to the mockup" in doc["color"]["primitive"]["screen-background"]["$description"]
     ty = doc["typography"]["card-body"]
     assert ty["$type"] == "typography" and ty["$value"]["fontFamily"] == "Inter" and ty["$value"]["fontWeight"] == 400
     assert ty["$value"]["fontSize"].endswith("px") and ty["$value"]["lineHeight"].endswith("px") and ty["$value"]["letterSpacing"].endswith("em")

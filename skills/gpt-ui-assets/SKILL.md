@@ -203,6 +203,7 @@ python3 $K compare ui-assets/build/home shot.png               # also flags wron
 | `references/models.md` | Choosing or pinning a model, prices, retirement dates |
 | `references/research.md` | `research`, `blueprint` |
 | `references/design.md` | `mockup`, `critique`, `--edit`, `--style-ref`, `sheet` |
+| `references/design-system.md` | Writing art directions; judging type, colour, spacing and corner radius; before `tokens` |
 | `references/hybrid.md` | `material`, `state`, `stage`, carrying a hybrid screen into Compose |
 | `references/assets.md` | `manifest`, `spec`, `iconspec`, `forge`, `fix`, `pick`, `score`, `svg`, `icons`, `trace`, `vd`, `export` |
 | `references/appicon.md` | `appicon concepts`, `appicon build`, installing the icon |

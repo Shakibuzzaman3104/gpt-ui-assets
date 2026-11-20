@@ -1,5 +1,6 @@
 """Tokens: Compose / SwiftUI / CSS / Tailwind / Flutter."""
 import json
+import copy
 import math
 import os
 import re
@@ -13,9 +14,11 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageDraw
 
+from . import palette, system
 from .core import _JAVA_KEYWORDS, _chrome_err, _chrome_flags, _clip_bbox, _need, _open_image, _read_json
 from .previews import _chrome, _chrome_missing_reason
 from .measure import _de_hex, _hexi, _lab_arr, _norm_hex, _save_text_boxes, _text_targets, _to_hex
+from . import system
 
 # ---- tokens: design_spec.json -> Compose / SwiftUI / CSS / Tailwind
 
@@ -177,6 +180,8 @@ def _snap_palette(spec, mock, texts, assets=()):
             entry.update(hex=guess, de00=0.0, snapped=False)
         else:
             entry.update(hex=_to_hex(snapped), de00=_de_hex(guess, _to_hex(snapped)), snapped=True)
+            if entry['alpha'] < 1:
+                entry.update(alpha=1.0, note='composited: sampled over its background')
         out.append(entry)
     return out
 
@@ -397,7 +402,24 @@ def _kt_weight(w):
     return f"FontWeight.W{w}" if w % 100 == 0 and w <= 900 else f"FontWeight({w})"
 
 
-def _token_model(spec, palette, texts, fonts, redline=None):
+def _token_preset(platforms, design_platform=None):
+    design = str(design_platform or "").lower()
+    if design == "fluent2":
+        return "fluent2"
+    if "swiftui" in platforms and ("mac" in design or "desktop" in design):
+        return "macos"
+    if len(platforms) == 1:
+        return {"compose": "material3", "swiftui": "ios", "web": "web", "flutter": "material3"}[platforms[0]]
+    if "mac" in design:
+        return "macos"
+    if "ios" in design or "apple" in design:
+        return "ios"
+    if "web" in design:
+        return "web"
+    return "material3"
+
+
+def _token_model(spec, palette, texts, fonts, redline=None, screen_size=None, preset="material3"):
     k = spec.get("px_to_dp", 1.0)
     families = {f["family"]: f for f in (fonts or {}).get("families", [])}
     types_in = spec.get("typography", [])
@@ -444,7 +466,7 @@ def _token_model(spec, palette, texts, fonts, redline=None):
                       "tracking": round(float(track), 3), "color": col,
                       "color_hex": col["hex"] if col else (ink or st.get("color") or "#000000"),
                       "platform_style": st.get("platform_style"), "m3_slot": slot, "m3_slot_source": slot_src, "m3_slot_off": slot_off,
-                      "hig_style": _hig_style(_r05(size_px * k), st.get("platform_style")),
+                      "hig_style": _hig_style(_r05(size_px * k), st.get("platform_style") or ("body" if st["role"].lower() == "body" else None)),
                       "postscript": (fam or {}).get("postscript", {}).get(str(fs.get("weight")) + ("i" if fs.get("italic") else "")),
                       "natural_lh": fs.get("natural_line_height_em"), "size_source": "fonts" if fs.get("size_px") else "spec"})
     measured = {r["element"]: r for r in (redline or {}).get("radii", []) if r.get("measured_px") is not None}
@@ -458,30 +480,60 @@ def _token_model(spec, palette, texts, fonts, redline=None):
         radii.append({"name": r.get("element", ""), **n, "dp": _r05((hit["measured_px"] if hit else px) * k),
                       "source": f"redline: {hit['component']}" if hit else "spec (GPT estimate)",
                       "native": hit.get("native") if hit else None, "shape": hit.get("shape") if hit else None})
+        corners = hit.get("corner_radii_px") if hit else None
+        num = lambda v: isinstance(v, (int, float))
+        if corners and len(corners) == 4 and any(num(v) for v in corners) and (
+                all(num(v) for v in corners) or all(num(v) for v in corners[:2]) or all(num(v) for v in corners[2:])):
+            # a whole unmeasured side (a sheet's bottom off screen) is square
+            vals = [_r05(v * k) if num(v) else 0.0 for v in corners]
+            if max(vals) - min(vals) > 1:
+                radii[-1]["corners"] = dict(zip(("topStart", "topEnd", "bottomStart", "bottomEnd"), vals))
+        if hit:
+            radii[-1]["component"] = hit.get("component")
     spacing = [{"name": s["between"], **n, "dp": _r05(float(s["px"]) * k), "source": "spec (GPT estimate)"}
                for s, n in zip(spacing_in, names[nc + nt + nr:nc + nt + nr + ns])]
     for sp in spacing:
-        got = _measured_spacing(sp["name"], (redline or {}).get("items", []), k)
+        got = _measured_spacing(sp["name"], (redline or {}).get("items", []), k, screen_size)
         if got:
             sp["dp"], sp["source"] = _r05(got[0]), got[1]
     return {"colors": colors, "types": types, "radii": radii, "spacing": spacing, "families": list(families.values()),
-            "px_to_dp": k}
+            "px_to_dp": k, "preset": preset, "redline_items": (redline or {}).get("items", [])}
 
 
 def _shape_audit(tm, grid=4):
+    preset = tm.get("preset", "material3")
+    grid = system.PRESETS[preset]["grid"]
     off = []
     for s in tm["spacing"]:
         dp = s["dp"]
-        lower, upper = math.floor(dp / grid) * grid, math.ceil(dp / grid) * grid
-        if dp >= 2 and min(dp - lower, upper - dp) > 0.5:
+        steps = system.PRESETS[preset]["spacing"]
+        lower = max((v for v in steps if v <= dp), default=steps[0])
+        upper = min((v for v in steps if v >= dp), default=steps[-1])
+        if system.audit_spacing([dp], preset):
             off.append({"name": s["name"], "dp": dp, "nearest": [lower, upper]})
     radii = sorted({round(r["dp"], 1) for r in tm["radii"] if round(r["dp"], 1) != 0
                     and r.get("shape") not in ("pill", "circle", "full")
                     and not re.search(r"pill|full|circle", r["name"], re.I)})
-    return {"grid_dp": grid, "off_grid": off, "radii_dp": radii, "radii_count": len(radii), "snapped": []}
+    issues = system.audit_spacing([s["dp"] for s in tm["spacing"]], preset) + system.audit_radius(radii, preset)
+    items = {i.get("name"): i for i in tm.get("redline_items", [])}
+    by_component = {r.get("component"): r for r in tm["radii"] if r.get("component")}
+    for r in tm["radii"]:
+        item = items.get(r.get("component"), {})
+        parent = by_component.get(item.get("parent"))
+        inset = item.get("inset_dp")
+        if parent and isinstance(inset, dict) and inset:
+            vals = [v for v in inset.values() if isinstance(v, (int, float))]
+            if vals:
+                issue = system.check_nested(parent["dp"], min(vals), r["dp"])
+                if issue:
+                    issues.append(f"{r['name']}: {issue}")
+    types = [{"name": t["role"], "size": t["size"], "line_height": t["line_height"], "weight": t["weight"],
+              "tracking_em": t["tracking"]} for t in tm.get("types", [])]
+    return {"grid_dp": grid, "off_grid": off, "radii_dp": radii, "radii_count": len(radii), "snapped": [],
+            "issues": issues, "type": system.lint_type(types, preset)}
 
 
-def _measured_spacing(name, items, k):
+def _measured_spacing(name, items, k, screen_size=None):
     """(dp, source) for a spacing name from redline's measured items, or None: 'gap/between/below' -> the gap below the
     linked item, 'edge/screen/margin' -> the item's distance from the screen edge, 'padding/inset' -> the smallest inset
     of the item's children (its content padding) or, for a leaf, its own inset."""
@@ -495,11 +547,18 @@ def _measured_spacing(name, items, k):
     low = name.lower()
     side = ("left" if re.search(r"left|start|horizontal", low) else "right" if re.search(r"right|end", low) else
             "bottom" if re.search(r"bottom|below", low) else "top" if re.search(r"top|above|vertical", low) else None)
-    if re.search(r"gap|between|below|above|spacing|distance", low) and it.get("gap_below_dp"):
+    if "above" in low and re.search(r"gap|between|above|spacing|distance", low):
+        above = next((i for i in measured if i.get("gap_below_dp") and i["gap_below_dp"][0] == it["name"]), None)
+        return (above["gap_below_dp"][1], f"redline: gap below {above['name']} (to {it['name']})") if above else None
+    if re.search(r"gap|between|below|spacing|distance", low) and it.get("gap_below_dp"):
         return it["gap_below_dp"][1], f"redline: gap below {it['name']} (to {it['gap_below_dp'][0]})"
     if re.search(r"edge|screen|margin", low):
         sd = side or "left"
-        v = {"left": it["px"][0], "top": it["px"][1], "right": it["px"][0], "bottom": it["px"][1]}[sd] * k
+        x, y, w, h = it["px"]
+        if sd in ("right", "bottom") and not screen_size:
+            return None
+        v = {"left": x, "top": y, "right": screen_size[0] - x - w if screen_size else 0,
+             "bottom": screen_size[1] - y - h if screen_size else 0}[sd] * k
         return round(v, 1), f"redline: {it['name']} {sd} of screen edge"
     # padding: layout-box insets for text (ink insets overstate the top), the smaller of left/top when no side is named
     inset = lambda i, sd: (i.get("layout_top_inset_dp") if sd == "top" and i.get("layout_top_inset_dp") is not None else i["inset_dp"][sd])
@@ -512,10 +571,83 @@ def _measured_spacing(name, items, k):
     return None
 
 
-_SCHEME_RULES = [("background", r"screen|background|canvas"), ("surface", r"surface|panel|sheet"),
-                 ("primary", r"primary.*(fill|button)|accent fill|button fill|\baccent\b"),
-                 ("onPrimary", r"on[- ]accent|on[- ]primary|button label"), ("onBackground", r"primary text"),
+_SCHEME_RULES = [("background", r"screen.*background|\bbackground\b|canvas"),
+                 ("surfaceContainerHighest", r"surface[ -]?container[ -]?highest"),
+                 ("surfaceContainerHigh", r"surface[ -]?container[ -]?high\b"),
+                 ("surfaceContainerLowest", r"surface[ -]?container[ -]?lowest"),
+                 ("surfaceContainerLow", r"surface[ -]?container[ -]?low\b"),
+                 ("surfaceContainer", r"surface[ -]?container\b"),
+                 ("surface", r"\bsurface\b|panel|sheet"),
+                 ("primaryContainer", r"\bprimary[ -]?container\b"),
+                 ("secondaryContainer", r"\bsecondary[ -]?container\b"),
+                 ("tertiaryContainer", r"\btertiary[ -]?container\b"),
+                 ("errorContainer", r"\berror[ -]?container\b"),
+                 ("primary", r"(?<!on-)(?<!on )\bprimary\b(?![ -]?(?:container|text))|accent fill|button fill|(?<!on-)(?<!on )\baccent\b"),
+                 ("secondary", r"\bsecondary\b(?![ -]?(?:container|text))"),
+                 ("tertiary", r"\btertiary\b(?![ -]?container)"),
+                 ("error", r"\berror\b(?![ -]?container)"),
+                 ("onPrimary", r"on[- ]accent|on[- ]primary|button label"),
                  ("onSurface", r"primary text"), ("onSurfaceVariant", r"secondary text"), ("outline", r"border|outline")]
+
+
+def _color_roles(tm):
+    if "schemes" in tm:
+        return tm["measured_mode"], tm["measured_roles"], tm["schemes"]
+    measured = {}
+    role_colors = {}
+    eligible = [c for c in tm['colors'] if not re.search(r'\b(?:illustration|avatar|photo|photograph|decoration|decorative|chart|series)\b', c['name'] + ' ' + c.get('usage', ''), re.I)]
+    used = set()
+    for c in eligible:
+        text = c['name'] + ' ' + c.get('usage', '')
+        for role in sorted(_M3_COLOR_ROLES, key=len, reverse=True):
+            words = re.sub(r'(?<!^)(?=[A-Z])', r'[ -]?', role)
+            if re.search(r'\b' + words + r'\b', text, re.I):
+                if not role.startswith('on') and re.search(r'\b' + words + r'[ -]+text\b', text, re.I):
+                    continue  # 'secondary text' is a text colour, not the secondary accent
+                if role != 'primary' or (not re.search(r'\bprimary[ -]+text\b', text, re.I) and re.search(r'\b(primary|action|accent|button)\b', text, re.I)):
+                    measured.setdefault(role, c['hex'])
+                    role_colors.setdefault(role, c)
+                    used.add(id(c))
+                break
+    for role, pat in _SCHEME_RULES:
+        if role in measured:
+            continue
+        c = next((c for c in eligible if id(c) not in used and re.search(pat, c['name'], re.I)), None)
+        if c is None:
+            c = next((c for c in eligible if id(c) not in used and re.search(pat, c.get('usage', ''), re.I)), None)
+        if c:
+            measured[role] = c['hex']
+            role_colors[role] = c
+            used.add(id(c))
+    bg = measured.get('background', measured.get('surface', '#FFFFFF'))
+    mode = 'dark' if system.contrast_ratio(bg, '#000000') < system.contrast_ratio('#808080', '#000000') else 'light'
+    seed = measured.get('primary') or '#6750A4'
+    result = palette.schemes(seed, mode, measured=measured)
+    for role, h in list(measured.items()):
+        c = role_colors.get(role)
+        if c and c.get('alpha', 1) < 1:
+            measured[role] = _css_hex(c)
+            result[mode][role] = measured[role]
+    tm['measured_mode'], tm['measured_roles'] = mode, measured
+    tm['role_colors'] = {r: c.get('name') for r, c in role_colors.items()}
+    tm['schemes'] = {m: result[m] for m in ('light', 'dark')}
+    tm['scheme_notes'] = result['notes']
+    return mode, measured, tm['schemes']
+
+
+def _text_role(tm, t):
+    _, measured, _ = _color_roles(tm)
+    c = t.get('color')
+    value = _css_hex(c) if c else t.get('color_hex')
+    named = tm.get('role_colors', {})
+    hits = [r for r, h in measured.items() if h.upper() == (value or '').upper()]
+    # text sits on a role: prefer the role measured from this very colour, then on-roles over background roles
+    hits.sort(key=lambda r: (not (c and named.get(r) == c.get('name')), not r.startswith('on')))
+    return hits[0] if hits else None
+
+
+def _argb(h):
+    return (h[7:9] if len(h) == 9 else 'FF') + h[1:7].upper()
 
 
 def _kt_header(a, pkg):
@@ -530,29 +662,22 @@ def _kt_color(c):
 def _emit_compose(tm, a, out):
     out.mkdir(parents=True, exist_ok=True)
     pkg, P = a.package, a.prefix
-    lum = lambda h: sum(v * w for v, w in zip(_hexi(h), (0.2126, 0.7152, 0.0722))) / 255
-    scheme = {}
-    for role, pat in _SCHEME_RULES:
-        c = next((c for c in tm["colors"] if re.search(pat, f"{c['name']} {c.get('usage', '')}", re.I)), None)
-        if c and role not in scheme:
-            scheme[role] = c["kt"]
-    bg = next((c for c in tm["colors"] if c["kt"] == scheme.get("background")), None)
-    dark = bg is not None and lum(bg["hex"]) < 0.5
-    fn = "darkColorScheme" if dark else "lightColorScheme"
+    mode, measured, schemes = _color_roles(tm)
     lines = [f"    val {c['kt']} = {_kt_color(c)}" for c in tm["colors"]]
-    args = "".join(f"    {r} = {P}Colors.{v},\n" for r, v in scheme.items())
-    other = "lightColorScheme" if dark else "darkColorScheme"
-    measured_name, other_name = (f"{P}DarkColorScheme", f"{P}LightColorScheme") if dark else (f"{P}LightColorScheme", f"{P}DarkColorScheme")
-    tm["m3_roles_baseline"] = [r for r in _M3_COLOR_ROLES if r not in scheme]
+    def args(m):
+        def value(role, h):
+            c = next((c for c in tm['colors'] if _css_hex(c) == h), None)
+            return f"{P}Colors.{c['kt']}" if m == mode and role in measured and c else f"Color(0x{_argb(h)})"
+        return ''.join(f"    {r} = {value(r, h)},\n" for r, h in schemes[m].items() if r in _M3_COLOR_ROLES)
+    measured_name = f"{P}{mode.title()}ColorScheme"
+    tm["m3_roles_baseline"] = [r for r in _M3_COLOR_ROLES if r not in measured]
     (out / "Color.kt").write_text(_kt_header(a, pkg) + f"import androidx.compose.material3.ColorScheme\n"
                                   f"import androidx.compose.material3.darkColorScheme\nimport androidx.compose.material3.lightColorScheme\n"
                                   "import androidx.compose.ui.graphics.Color\n\n"
                                   f"object {P}Colors {{\n" + "\n".join(lines) + "\n}\n\n"
-                                  f"// Measured on the {'dark' if dark else 'light'} mockup. Roles not listed stay at the M3 baseline: "
-                                  + (", ".join(tm["m3_roles_baseline"][:8]) + (" ..." if len(tm["m3_roles_baseline"]) > 8 else "")) + "\n"
-                                  f"val {measured_name}: ColorScheme = {fn}(\n{args})\n\n"
-                                  f"// TODO: verify against a {'light' if dark else 'dark'} mockup; scaffolded from the same values\n"
-                                  f"val {other_name}: ColorScheme = {other}(\n{args})\n\n"
+                                  f"// {mode.title()} appearance measured; {'dark' if mode == 'light' else 'light'} appearance derived.\n"
+                                  f"val {P}LightColorScheme: ColorScheme = lightColorScheme(\n{args('light')})\n\n"
+                                  f"val {P}DarkColorScheme: ColorScheme = darkColorScheme(\n{args('dark')})\n\n"
                                   f"val {P}ColorScheme: ColorScheme = {measured_name}\n")
     rpkg = a.r_package or re.sub(r"(\.ui)?(\.theme)?$", "", pkg)
     fam_lines = []
@@ -564,17 +689,25 @@ def _emit_compose(tm, a, out):
     body = []
     for t in tm["types"]:
         fam = t["family_kt"] or ("FontFamily.Serif" if t["generic"] == "serif" else "FontFamily.SansSerif")
-        col = f"{P}Colors.{t['color']['kt']}" if t["color"] else f"Color(0xFF{t['color_hex'][1:]})"
+        role = _text_role(tm, t)
+        col = ("Color.Unspecified" if role else f"{P}Colors.{t['color']['kt']}") if t["color"] else f"Color(0xFF{t['color_hex'][1:]})"
         ls = f"({t['tracking']:g}).em" if t["tracking"] < 0 else f"{t['tracking']:g}.em"
         body.append(f"    val {t['kt']} = TextStyle(\n        fontFamily = {fam},\n        fontWeight = {_kt_weight(t['weight'])},\n"
                     + ("        fontStyle = FontStyle.Italic,\n" if t["italic"] else "")
                     + f"        fontSize = {_num_s(t['size'])}.sp,\n        lineHeight = {_num_s(t['line_height'])}.sp,\n"
-                    f"        letterSpacing = {ls},\n        color = {col},\n    )")
+                    f"        letterSpacing = {ls},\n        color = {col},"
+                    + (f" // use {t['kt']}Themed for the colour" if role and t["color"] else "") + "\n    )")
+        if role and t["color"]:
+            body.append(f"    val {t['kt']}Themed: TextStyle\n        @Composable @ReadOnlyComposable\n"
+                        f"        get() = {t['kt']}.copy(color = MaterialTheme.colorScheme.{role})")
     imports = ["androidx.compose.material3.Typography", "androidx.compose.ui.graphics.Color", "androidx.compose.ui.text.TextStyle",
                "androidx.compose.ui.text.font.FontFamily", "androidx.compose.ui.text.font.FontWeight",
                "androidx.compose.ui.unit.em", "androidx.compose.ui.unit.sp"]
     if tm["families"]:
         imports += ["androidx.compose.ui.text.font.Font", f"{rpkg}.R"]
+    if any("Themed: TextStyle" in b for b in body):
+        imports += ["androidx.compose.material3.MaterialTheme", "androidx.compose.runtime.Composable",
+                    "androidx.compose.runtime.ReadOnlyComposable"]
     if uses_italic:
         imports.append("androidx.compose.ui.text.font.FontStyle")
     slots, slot_notes = {}, []
@@ -593,7 +726,9 @@ def _emit_compose(tm, a, out):
                                  + f"object {P}Typography {{\n" + "\n\n".join(body) + "\n}\n\n"
                                  f"// M3 slots not listed keep the Typography() defaults (nearest slot by size when the spec gave none).\n"
                                  f"val {P}M3Typography = Typography(\n{m3})\n")
-    shapes = [f"val {r['kt']}Shape = RoundedCornerShape({_num_s(r['dp'])}.dp)  // {r['source']}" for r in tm["radii"]]
+    shapes = [f"val {r['kt']}Shape = RoundedCornerShape(" +
+              (", ".join(f"{k} = {_num_s(r['corners'][k])}.dp" for k in ("topStart", "topEnd", "bottomEnd", "bottomStart"))
+               if r.get("corners") else f"{_num_s(r['dp'])}.dp") + f")  // {r['source']}" for r in tm["radii"]]
     m3_shapes = {}
     for slot, pat in (("small", r"chip"), ("medium", r"card|tile|list item"), ("large", r"fab|drawer|floating"),
                       ("extraLarge", r"sheet|dialog|modal")):
@@ -632,7 +767,9 @@ def _sw_color(hex_, alpha=1.0):
 
 def _emit_swift(tm, a, out):
     out.mkdir(parents=True, exist_ok=True)
+    mode, measured, schemes = _color_roles(tm)
     cols = [f"    static let {c['sw']} = {_sw_color(c['hex'], c.get('alpha', 1.0))}" for c in tm["colors"]]
+    role_cols = [f'    static var {r}: Color {{ Color("{r}") }}' for r in schemes['light']]
     wmap = {100: "ultraLight", 200: "thin", 300: "light", 400: "regular", 500: "medium", 600: "semibold", 700: "bold",
             800: "heavy", 900: "black"}
     styles = []
@@ -641,25 +778,36 @@ def _emit_swift(tm, a, out):
             font = f'.custom("{t["postscript"]}", size: {_num_s(t["size"])}, relativeTo: .{t["hig_style"]})'
             natural = (t["natural_lh"] or 1.2) * t["size"]
         else:
-            design = ".serif" if t["generic"] == "serif" else ".default"
-            font = f".system(size: {_num_s(t['size'])}, weight: .{wmap.get(min(900, max(100, round(t['weight'] / 100) * 100)), 'regular')}, design: {design})"
+            font = f".system(.{t['hig_style']}, design: .default, weight: .{wmap.get(min(900, max(100, round(t['weight'] / 100) * 100)), 'regular')})"
             natural = 1.19 * t["size"]
             if t["italic"]:
                 font += ".italic()"
-        col = f".{t['color']['sw']}" if t["color"] else _sw_color(t["color_hex"])
-        styles.append(f"    static let {t['sw']} = TextToken(font: {font}, tracking: {round(t['tracking'] * t['size'], 2):g}, "
+        role = _text_role(tm, t)
+        col = f"{a.prefix}ColorRoles.{role}" if role else (f".{t['color']['sw']}" if t["color"] else _sw_color(t["color_hex"]))
+        styles.append(("    // Target line height is tighter than the natural line height.\n" if t["line_height"] < natural else "") +
+                      f"    static let {t['sw']} = TextToken(font: {font}, tracking: {round(t['tracking'] * t['size'], 2):g}, "
                       f"lineSpacing: {max(0.0, round(t['line_height'] - natural, 1)):g}, color: {col})")
     radii = [f"    static let {r['sw']}: CGFloat = {_num_s(r['dp'])}  // {r['source']}" for r in tm["radii"]]
+    shapes = []
+    for r in tm["radii"]:
+        c = r.get("corners")
+        shape = ("UnevenRoundedRectangle(" + ", ".join(f"{label}: {_num_s(c[key])}" for label, key in
+                 (("topLeadingRadius", "topStart"), ("bottomLeadingRadius", "bottomStart"),
+                  ("bottomTrailingRadius", "bottomEnd"), ("topTrailingRadius", "topEnd"))) + ", style: .continuous)"
+                 if c else f"RoundedRectangle(cornerRadius: {_num_s(r['dp'])}, style: .continuous)")
+        shapes.append(("    @available(iOS 17.0, macOS 14.0, *)\n" if c else "") + f"    static let {r['sw']} = {shape}")
     space = [f"    static let {s['sw']}: CGFloat = {_num_s(s['dp'])}" + ("" if s["source"].startswith("redline") else "  // GPT estimate")
              for s in tm["spacing"]]
     p = a.prefix
     src = ("import SwiftUI\n\nextension Color {\n" + "\n".join(cols) + "\n}\n\n"
+           + f"enum {p}ColorRoles {{\n" + "\n".join(role_cols) + "\n}\n\n"
            f"struct {p}TextToken {{\n    let font: Font\n    let tracking: CGFloat\n    let lineSpacing: CGFloat\n    let color: Color\n}}\n\n"
            f"extension {p}TextToken {{\n" + "\n".join(styles).replace("TextToken(", f"{p}TextToken(") + "\n}\n\n"
            "@available(iOS 16.0, macOS 13.0, *)\nextension View {\n"
            f"    func textToken(_ t: {p}TextToken) -> some View {{\n"
            "        font(t.font).tracking(t.tracking).lineSpacing(t.lineSpacing).foregroundStyle(t.color)\n    }\n}\n\n"
-           f"enum {p}Radius {{\n" + "\n".join(radii) + "\n}\n\n" f"enum {p}Spacing {{\n" + "\n".join(space) + "\n}\n")
+           f"enum {p}Radius {{\n" + "\n".join(radii) + "\n}\n\n" f"enum {p}Shape {{\n" + "\n".join(shapes) + "\n}\n\n"
+           f"enum {p}Spacing {{\n" + "\n".join(space) + "\n}\n")
     (out / f"{p}Tokens.swift").write_text(src)
     xc = out / "Colors.xcassets"
     xc.mkdir(exist_ok=True)
@@ -672,6 +820,19 @@ def _emit_swift(tm, a, out):
             {"idiom": "universal", "color": {"color-space": "srgb", "components": {"red": f"0x{r:02X}", "green": f"0x{g_:02X}",
                                                                                     "blue": f"0x{b:02X}", "alpha": f"{c.get('alpha', 1.0):.3f}"}}}]},
                                           indent=2))
+    for role in schemes['light']:
+        cs = xc / f"{role}.colorset"
+        cs.mkdir(exist_ok=True)
+        colors = []
+        for appearance in ('light', 'dark'):
+            h = schemes[appearance][role]
+            r, g_, b = _hexi(h[:7])
+            item = {"idiom": "universal", "color": {"color-space": "srgb", "components": {
+                "red": f"0x{r:02X}", "green": f"0x{g_:02X}", "blue": f"0x{b:02X}", "alpha": f"{int(h[7:9], 16) / 255 if len(h) == 9 else 1:.3f}"}}}
+            if appearance == 'dark':
+                item['appearances'] = [{"appearance": "luminosity", "value": "dark"}]
+            colors.append(item)
+        (cs / 'Contents.json').write_text(json.dumps({"info": {"author": "xcode", "version": 1}, "colors": colors}, indent=2))
     return [out / f"{p}Tokens.swift", xc]
 
 
@@ -684,10 +845,11 @@ def _emit_flutter(tm, a, out, fonts_dir=None):
     out.mkdir(parents=True, exist_ok=True)
     P = a.prefix[:1].upper() + a.prefix[1:]
     low = P[:1].lower() + P[1:]
-    lum = lambda h: sum(v * w for v, w in zip(_hexi(h), (0.2126, 0.7152, 0.0722))) / 255
+    mode, measured, schemes = _color_roles(tm)
     cols = [f"  static const Color {c['dart']} = {_kt_color(c)};" for c in tm["colors"]]
     styles = []
     for t in tm["types"]:
+        role = _text_role(tm, t)
         family = (t["family"] or "").replace("\\", "").replace("'", "\\'")
         lines = [f"    fontFamily: '{family}'," if family else None,
                  f"    fontSize: {_dart_num(t['size'])},",
@@ -695,37 +857,42 @@ def _emit_flutter(tm, a, out, fonts_dir=None):
                  f"    fontWeight: FontWeight.w{min(900, max(100, round(t['weight'] / 100) * 100))},",
                  "    fontStyle: FontStyle.italic," if t["italic"] else None,
                  f"    letterSpacing: {_dart_num(round(t['tracking'] * t['size'], 2))}," if t["tracking"] else None,
-                 f"    color: {P}Colors.{t['color']['dart']}," if t["color"] else f"    color: Color(0xFF{t['color_hex'][1:].upper()}),"]
+                 f"    color: {P}Colors.{t['color']['dart']}," if t["color"] else f"    color: Color(0x{_argb(t['color_hex'])}),"]
         note = "" if t["family"] else ("  // serif in the design: run `fonts` for a matched family" if t["generic"] == "serif" else "")
         styles.append(f"  static const TextStyle {t['dart']} = TextStyle({note}\n" + "\n".join(x for x in lines if x) + "\n  );")
     radii = [f"  static const double {r['dart']} = {_dart_num(r['dp'])};  // {r['source']}" for r in tm["radii"]]
+    shapes = [f"  static const BorderRadius {r['dart']} = BorderRadius.only(" +
+              ", ".join(f"{dk}: Radius.circular({_dart_num(r['corners'][ck])})" for dk, ck in
+                        (("topLeft", "topStart"), ("topRight", "topEnd"), ("bottomRight", "bottomEnd"), ("bottomLeft", "bottomStart"))) + ");"
+              for r in tm["radii"] if r.get("corners")]
     space = [f"  static const double {s['dart']} = {_dart_num(s['dp'])};"
              + ("" if s["source"].startswith("redline") else "  // GPT estimate") for s in tm["spacing"]]
-    scheme = {}
-    for role, pat in _SCHEME_RULES:
-        c = next((c for c in tm["colors"] if re.search(pat, f"{c['name']} {c.get('usage', '')}", re.I)), None)
-        if c and role not in scheme:
-            scheme[role] = c
-    bg = scheme.pop("background", None)
-    scheme.pop("onBackground", None)  # folded into surface/onSurface since Flutter 3.22
-    if bg and "surface" not in scheme:
-        scheme["surface"] = bg
-    dark = bg is not None and lum(bg["hex"]) < 0.5
-    roles = "".join(f"  {r}: {P}Colors.{c['dart']},\n" for r, c in scheme.items())
+    def scheme_block(m, legacy=False):
+        values = dict(schemes[m])
+        distinct = 'background' in measured and 'surface' in measured and measured['background'] != measured['surface']
+        if distinct:
+            values['surfaceContainer'], values['surface'] = values['surface'], values['background']
+        roles = ('  // Background maps to surface; the measured surface maps to surfaceContainer.\n' if distinct else '') + ''.join(f"  {r}: Color(0x{_argb(h)}),\n" for r, h in values.items()
+                        if (r in _M3_COLOR_ROLES and r not in ('background', 'onBackground')) or r == 'shadow')
+        if legacy:
+            return f"const ColorScheme {low}ColorScheme = ColorScheme.{m}(\n{roles});\n\n"
+        return f"const ColorScheme {low}{m.title()}Scheme = ColorScheme(\n  brightness: Brightness.{m},\n{roles});\n\n"
     slots = {}
     for t in tm["types"]:
         slots.setdefault(t["m3_slot"], t)
-    theme = "".join(f"  {s_}: {P}Text.{slots[s_]['dart']},\n" for s_ in _M3_TYPE_SLOTS if s_ in slots)
+    theme = "".join(f"  {s_}: {P}Text.{slots[s_]['dart']}" + (f".copyWith(color: scheme.{_text_role(tm, slots[s_])})" if _text_role(tm, slots[s_]) else "") + ",\n" for s_ in _M3_TYPE_SLOTS if s_ in slots)
+    legacy_theme = "".join(f"  {s_}: {P}Text.{slots[s_]['dart']},\n" for s_ in _M3_TYPE_SLOTS if s_ in slots)
     block = lambda name, body: f"abstract final class {P}{name} {{\n" + "\n".join(body) + "\n}\n\n"
     src = ("// Generated by gptkit tokens from the measured design. Sizes are logical pixels.\n"
            "import 'package:flutter/material.dart';\n\n"
-           + block("Colors", cols) + block("Text", styles) + block("Radius", radii) + block("Spacing", space)
-           + f"// Measured on the {'dark' if dark else 'light'} mockup; roles not listed keep the Flutter defaults.\n"
-           f"const ColorScheme {low}ColorScheme = ColorScheme.{'dark' if dark else 'light'}(\n{roles});\n\n"
-           f"const TextTheme {low}TextTheme = TextTheme(\n{theme});\n\n"
+           + block("Colors", cols) + block("Text", styles) + block("Radius", radii) + block("Shape", shapes) + block("Spacing", space)
+           + scheme_block('light') + scheme_block('dark')
+           + scheme_block(mode, legacy=True)
+           + f"const TextTheme {low}TextTheme = TextTheme(\n{legacy_theme});\n\n"
+           f"TextTheme {low}TextThemeFor(ColorScheme scheme) => TextTheme(\n{theme});\n\n"
            f"ThemeData {low}Theme() => ThemeData(\n  useMaterial3: true,\n  colorScheme: {low}ColorScheme,\n"
-           f"  textTheme: {low}TextTheme,\n"
-           + (f"  scaffoldBackgroundColor: {P}Colors.{bg['dart']},\n" if bg else "") + ");\n")
+           f"  textTheme: {low}TextThemeFor({low}ColorScheme),\n);\n\n"
+           f"ThemeData {low}ThemeFor(Brightness brightness) {{\n  final scheme = brightness == Brightness.dark ? {low}DarkScheme : {low}LightScheme;\n  return ThemeData(useMaterial3: true, colorScheme: scheme, textTheme: {low}TextThemeFor(scheme));\n}}\n")
     name = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", P).lower()
     main = out / f"{name}_tokens.dart"
     main.write_text(src)
@@ -755,45 +922,66 @@ def _css_hex(c):
     return c["hex"] + (f"{round(a * 255):02X}" if a < 1 else "")
 
 
+def _css_rem(v):
+    return f"{v / 16:.4f}".rstrip("0").rstrip(".") + "rem"
+
+
+def _css_radius(r):
+    return " ".join(f"{_num_s(r['corners'][k])}px" for k in ("topStart", "topEnd", "bottomEnd", "bottomStart")) if r.get("corners") else f"{_num_s(r['dp'])}px"
+
+
 def _emit_web(tm, a, out, fonts_css=None):
     out.mkdir(parents=True, exist_ok=True)
+    mode, measured, schemes = _color_roles(tm)
+    other = 'dark' if mode == 'light' else 'light'
+    kebab = lambda r: re.sub(r'(?<!^)(?=[A-Z])', '-', r).lower()
+    role_names = {kebab(r) for r in schemes[mode]}
     fams = {}
     for t in tm["types"]:
         fams.setdefault(t["family_css"] or t["generic"], _css_family(t))
+    measured_names = {c['css'] for c in tm['colors']}
     v = [f"  --color-{c['css']}: {_css_hex(c)};" for c in tm["colors"]]
+    v += [f"  --color-{kebab(r)}: {h};" for r, h in schemes[mode].items() if kebab(r) not in measured_names]
     v += [f"  --font-{k}: {f};" for k, f in fams.items()]
-    v += [f"  --radius-{r['css']}: {_num_s(r['dp'])}px;" for r in tm["radii"]]
+    v += [f"  --radius-{r['css']}: {_css_radius(r)};" for r in tm["radii"]]
     v += [f"  --space-{s['css']}: {_num_s(s['dp'])}px;" for s in tm["spacing"]]
     cls = []
     for t in tm["types"]:
-        col = f"var(--color-{t['color']['css']})" if t["color"] else t["color_hex"]
+        role = _text_role(tm, t)
+        col = f"var(--color-{kebab(role)})" if role else (f"var(--color-{t['color']['css']})" if t["color"] else t["color_hex"])
         cls.append(f".text-{t['css']} {{\n  font-family: var(--font-{t['family_css'] or t['generic']});\n"
                    f"  font-weight: {t['weight']};\n" + ("  font-style: italic;\n" if t["italic"] else "")
-                   + f"  font-size: {_num_s(t['size'])}px;\n  line-height: {_num_s(t['line_height'])}px;\n"
+                   + f"  font-size: {_css_rem(t['size'])}; /* {_num_s(t['size'])}px */\n  line-height: {_css_rem(t['line_height'])}; /* {_num_s(t['line_height'])}px */\n"
                    f"  letter-spacing: {t['tracking']:g}em;\n  color: {col};\n}}")
     head = f'@import "{fonts_css}";\n\n' if fonts_css else ""
-    (out / "tokens.css").write_text(head + ":root {\n" + "\n".join(v) + "\n}\n\n" + "\n\n".join(cls) + "\n")
+    overrides = '\n'.join(f"  --color-{kebab(r)}: {h};" for r, h in schemes[other].items())
+    (out / "tokens.css").write_text(head + ":root {\n" + "\n".join(v) + "\n}\n\n"
+        + f"@media (prefers-color-scheme: {other}) {{\n  :root:not([data-theme={mode}]) {{\n{overrides}\n  }}\n}}\n\n"
+        + f":root[data-theme={other}] {{\n{overrides}\n}}\n\n" + "\n\n".join(cls) + "\n")
     js = lambda o: json.dumps(o, indent=6).replace("\n}", "\n    }")
-    cfg = {"colors": {c["css"]: _css_hex(c) for c in tm["colors"]},
+    cfg = {"colors": {**{c["css"]: f"var(--color-{c['css']})" for c in tm["colors"]},
+                      **{kebab(r): f"var(--color-{kebab(r)})" for r in schemes[mode]}},
            "fontFamily": {k: [x.strip().strip('"') for x in f.split(",")] for k, f in fams.items()},
-           "fontSize": {t["css"]: [f"{_num_s(t['size'])}px", {"lineHeight": f"{_num_s(t['line_height'])}px",
+           "fontSize": {t["css"]: [_css_rem(t['size']), {"lineHeight": _css_rem(t['line_height']),
                                                                "letterSpacing": f"{t['tracking']:g}em",
                                                                "fontWeight": str(t["weight"])}] for t in tm["types"]},
-           "borderRadius": {r["css"]: f"{_num_s(r['dp'])}px" for r in tm["radii"]},
+           "borderRadius": {r["css"]: _css_radius(r) for r in tm["radii"]},
            "spacing": {s["css"]: f"{_num_s(s['dp'])}px" for s in tm["spacing"]}}
     body = ",\n".join(f"    {k}: {js(val)}" for k, val in cfg.items())
     (out / "tailwind.tokens.cjs").write_text("// Tailwind v3 preset: in tailwind.config.js add  presets: [require('./tailwind.tokens.cjs')]\n"
                                              "/** @type {import('tailwindcss').Config} */\nmodule.exports = {\n"
                                              f"  theme: {{\n    extend: {{\n{body}\n    }},\n  }},\n}};\n")
-    th = [f"  --color-{c['css']}: {_css_hex(c)};" for c in tm["colors"]]
+    th = [f"  --color-{c['css']}: {_css_hex(c)};" for c in tm['colors'] if c['css'] not in role_names]
     th += [f"  --font-{k}: {f};" for k, f in fams.items()]
     for t in tm["types"]:
-        th += [f"  --text-{t['css']}: {_num_s(t['size'])}px;", f"  --text-{t['css']}--line-height: {_num_s(t['line_height'])}px;",
+        th += [f"  --text-{t['css']}: {_css_rem(t['size'])}; /* {_num_s(t['size'])}px */", f"  --text-{t['css']}--line-height: {_css_rem(t['line_height'])}; /* {_num_s(t['line_height'])}px */",
                f"  --text-{t['css']}--letter-spacing: {t['tracking']:g}em;", f"  --text-{t['css']}--font-weight: {t['weight']};"]
-    th += [f"  --radius-{r['css']}: {_num_s(r['dp'])}px;" for r in tm["radii"]]
+    th += [f"  --radius-{r['css']}: {_css_radius(r)};" for r in tm["radii"]]
     th += [f"  --spacing-{s['css']}: {_num_s(s['dp'])}px;" for s in tm["spacing"]]
     (out / "tailwind.theme.css").write_text('/* Tailwind v4: in your CSS put  @import "tailwindcss"; @import "./tailwind.theme.css";  */\n\n'
-                                            "@theme {\n" + "\n".join(th) + "\n}\n")
+                                            "@theme {\n" + "\n".join(th) + "\n}\n\n"
+                                            "@theme inline {\n" + "\n".join(
+                                                f"  --color-{kebab(r)}: var(--color-{kebab(r)});" for r in schemes[mode]) + "\n}\n")
     return [out / f for f in ("tokens.css", "tailwind.tokens.cjs", "tailwind.theme.css")]
 
 
@@ -813,6 +1001,8 @@ def _emit_dtcg(tm, out):
                                         f"M3 {t['m3_slot']} ({t['m3_slot_source']}), HIG {t['hig_style']}") for t in tm["types"]},
            "dimension": {"radius": {r["css"]: tok("dimension", f"{_num_s(r['dp'])}px", f"{r['name']}: {r['source']}") for r in tm["radii"]},
                          "spacing": {s_["css"]: tok("dimension", f"{_num_s(s_['dp'])}px", f"{s_['name']}: {s_['source']}") for s_ in tm["spacing"]}}}
+    _, _, schemes = _color_roles(tm)
+    doc['color'] = {'primitive': doc['color'], 'role': {mode: {r: tok('color', h, f'{mode} {r}') for r, h in schemes[mode].items()} for mode in ('light', 'dark')}}
     (out / "tokens.tokens.json").write_text(json.dumps(doc, indent=2))
     return out / "tokens.tokens.json"
 
@@ -905,7 +1095,7 @@ _KT_STUBS = {
                       "infix fun T.at(timeMillis: Int): KeyframeEntity<T> = KeyframeEntity(); infix fun KeyframeEntity<T>.using(easing: Easing): KeyframeEntity<T> = this }\n"
                       "fun <T> keyframes(init: KeyframesSpecConfig<T>.() -> Unit): KeyframesSpec<T> { KeyframesSpecConfig<T>().init(); return KeyframesSpec() }\n",
     "Color.kt": "package androidx.compose.ui.graphics\nclass Color(val value: Long) { companion object { val White = Color(0xFFFFFFFF); "
-                "val Black = Color(0xFF000000); val Transparent = Color(0) } }\ninterface Shape\n",
+                "val Black = Color(0xFF000000); val Transparent = Color(0); val Unspecified = Color(0x10) } }\ninterface Shape\n",
     "Unit.kt": "package androidx.compose.ui.unit\nclass TextUnit(val v: Float)\nclass Dp(val v: Float)\n"
                "val Int.sp: TextUnit get() = TextUnit(toFloat()); val Double.sp: TextUnit get() = TextUnit(toFloat())\n"
                "val Int.em: TextUnit get() = TextUnit(toFloat()); val Double.em: TextUnit get() = TextUnit(toFloat())\n"
@@ -926,7 +1116,7 @@ _KT_STUBS = {
     "Shape.kt": "package androidx.compose.foundation.shape\nimport androidx.compose.ui.unit.Dp\nimport androidx.compose.ui.graphics.Shape\n"
                 "class RoundedCornerShape(val r: Dp) : Shape\n",
     "Runtime.kt": "package androidx.compose.runtime\n@Target(AnnotationTarget.FUNCTION, AnnotationTarget.TYPE, AnnotationTarget.PROPERTY_GETTER)\n"
-                  "annotation class Composable\n",
+                  "annotation class Composable\n@Target(AnnotationTarget.FUNCTION, AnnotationTarget.PROPERTY_GETTER)\nannotation class ReadOnlyComposable\n",
     "ComposeTest.kt": "package androidx.compose.ui.test\nimport androidx.compose.runtime.Composable\n"
                        "class MainTestClock { var autoAdvance: Boolean = true; fun advanceTimeBy(milliseconds: Long) {} }\n"
                        "class SemanticsNodeInteraction\nclass ComposeContentTestRule { val mainClock = MainTestClock(); "
@@ -988,8 +1178,10 @@ WEIGHTS}
 enum FontStyle { normal, italic }
 class TextStyle { final Color? color; final String? fontFamily; final double? fontSize; final FontWeight? fontWeight;
   final FontStyle? fontStyle; final double? letterSpacing; final double? height;
-  const TextStyle({this.color, this.fontFamily, this.fontSize, this.fontWeight, this.fontStyle, this.letterSpacing, this.height}); }
-class ColorScheme { const ColorScheme.light({ROLES}); const ColorScheme.dark({ROLES}); }
+  const TextStyle({this.color, this.fontFamily, this.fontSize, this.fontWeight, this.fontStyle, this.letterSpacing, this.height});
+  TextStyle copyWith({Color? color}) => this; }
+enum Brightness { light, dark }
+class ColorScheme { const ColorScheme({Brightness? brightness, ROLES}); const ColorScheme.light({ROLES}); const ColorScheme.dark({ROLES}); GETTERS }
 class TextTheme { const TextTheme({SLOTS}); }
 class ThemeData { ThemeData({bool? useMaterial3, ColorScheme? colorScheme, TextTheme? textTheme, Color? scaffoldBackgroundColor}); }
 """
@@ -1001,14 +1193,15 @@ def _dart_check(dart_file):
     exe = os.environ.get("GPTKIT_DART") or shutil.which("dart")
     if not exe:
         return "skipped (no dart on PATH; the pure-Python lint ran)"
-    roles = ", ".join(f"Color? {r}" for r in _M3_COLOR_ROLES if r not in ("background", "onBackground"))
+    roles = ", ".join(f"Color? {r}" for r in _M3_COLOR_ROLES if r not in ("background", "onBackground")) + ", Color? shadow"
     slots = ", ".join(f"TextStyle? {s}" for s in _M3_TYPE_SLOTS)
     weights = "".join(f"  static const FontWeight w{w} = FontWeight._({w});\n" for w in range(100, 1000, 100))
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
         (root / "flutter" / "lib").mkdir(parents=True)
         (root / "flutter" / "lib" / "material.dart").write_text(
-            _DART_STUB.replace("WEIGHTS", weights).replace("ROLES", roles).replace("SLOTS", slots))
+            _DART_STUB.replace("WEIGHTS", weights).replace("ROLES", roles).replace("SLOTS", slots).replace(
+                "GETTERS", ' '.join(f'Color get {r} => const Color(0);' for r in _M3_COLOR_ROLES)))
         (root / "probe" / "lib").mkdir(parents=True)
         (root / "probe" / ".dart_tool").mkdir()
         (root / "probe" / "pubspec.yaml").write_text("name: probe\nenvironment:\n  sdk: ^3.0.0\n")
@@ -1138,6 +1331,45 @@ def _platform_set(s):
     return [p for p in _TOKEN_PLATFORMS if p in got]
 
 
+def _platform_model(base, preset, snap):
+    tm = copy.deepcopy(base)
+    tm['preset'] = preset
+    snapped = []
+    if snap:
+        for s, result in zip(tm['spacing'], system.snap_spacing([s['dp'] for s in tm['spacing']], preset)):
+            old = s['dp']
+            s['dp'] = result['snapped']
+            if old != s['dp']:
+                s['source'] += f" -> snapped to {preset} step from {old:g} dp"
+                snapped.append(s['name'])
+        for r in tm['radii']:
+            if r.get('shape') in ('pill', 'circle', 'full'):
+                continue
+            old = r['dp']
+            r['dp'] = system.snap_radius(old, preset)[1]
+            if old != r['dp']:
+                r['source'] += f" -> snapped to {preset} step from {old:g} dp"
+                snapped.append(r['name'])
+            if r.get('corners'):
+                r['corners'] = {k: system.snap_radius(v, preset)[1] for k, v in r['corners'].items()}
+    audit = _shape_audit(tm)
+    audit['snapped'] = snapped
+    _, _, schemes = _color_roles(tm)
+    issues = []
+    for mode in ('light', 'dark'):
+        for fg, bg, kind in system.PAIRS:
+            if fg not in schemes[mode] or bg not in schemes[mode]:
+                continue
+            styles = [t for t in tm['types'] if _text_role(tm, t) == fg]
+            fallback = min(tm['types'], key=lambda t: t['size']) if tm['types'] else {'size': 14, 'weight': 400}
+            need = 3.0 if kind == 'ui' else max(system.text_threshold(t['size'], t['weight'], preset) for t in (styles or [fallback]))
+            ratio = system.contrast_ratio(schemes[mode][fg], schemes[mode][bg])
+            if ratio < need:
+                issues.append({'fg': fg, 'bg': bg, 'mode': mode, 'ratio': round(ratio, 2), 'need': need, 'kind': kind})
+    tm['contrast'] = audit['contrast'] = issues
+    return tm, audit
+
+
 def cmd_tokens(a):
     platforms = _platform_set(a.platforms)
     if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*", a.prefix or ""):
@@ -1173,34 +1405,37 @@ def cmd_tokens(a):
     rl_path = d / "redline" / "redline.json"
     redline = _json_lists(_read_json(rl_path, "redline.json", ("items", "radii")), ("items", "radii"), rl_path,
                           f"redline {d}") if rl_path.exists() else None
-    tm = _token_model(spec, palette, texts, fonts, redline)
-    snapped = []
-    if getattr(a, "snap_grid", False):
-        for s in tm["spacing"]:
-            if s["dp"] >= 2 and max(4, round(s["dp"] / 4) * 4) != s["dp"]:
-                old = s["dp"]
-                s["dp"] = max(4, round(old / 4) * 4)
-                s["source"] += f" -> snapped to 4 dp grid from {old:g} dp"
-                snapped.append(s["name"])
-    audit = _shape_audit(tm)
-    audit["snapped"] = snapped
+    meta_path = d / "design.json"
+    meta = _read_json(meta_path, "design.json") if meta_path.exists() else {}
+    design_platform = (meta.get("platform") if isinstance(meta, dict) else None) or spec.get("platform")
+    presets = {p: _token_preset([p], design_platform if p == 'swiftui' and re.search(r'mac|desktop', str(design_platform or ''), re.I) else None) for p in platforms}
+    preset = presets[platforms[0]]
+    base = _token_model(spec, palette, texts, fonts, redline, mock.size, preset)
+    models = {p: _platform_model(base, presets[p], getattr(a, 'snap_grid', False)) for p in platforms}
+    tm, audit = models[platforms[0]]
+    audit['platforms'] = {p: a_ for p, (_, a_) in models.items() if p != platforms[0]}
+    for issue in tm['contrast']:
+        hint = " if this border is what identifies a control" if issue.get("kind") == "ui" else ""
+        print(f"  ! contrast {issue['fg']}/{issue['bg']} {issue['mode']} {issue['ratio']}:1 (needs {issue['need']}{hint})")
     if audit["off_grid"]:
         off = ", ".join(f"{s['name']} {s['dp']:g} dp ({s['nearest'][0]:g}/{s['nearest'][1]:g})" for s in audit["off_grid"])
-        print(f"  ! spacing off the 4 dp grid: {off}; --snap-grid rounds them (compare will then show the departure from the mockup)")
+        print(f"  ! spacing off the {audit['grid_dp']} dp grid: {off}; --snap-grid rounds them")
     if audit["radii_count"] > 4:
         radii = ", ".join(f"{r:g}" for r in audit["radii_dp"])
         print(f"  ! {audit['radii_count']} corner radii ({radii} dp): a shape scale usually has 3-4 plus pill")
+    for issue in audit["issues"] + audit["type"]:
+        print(f"  ! {issue}")
     tm["width_dp"] = int(spec.get("effective_width_dp") or round(mock.width * tm["px_to_dp"]))
     files = []
     if "compose" in platforms:
-        files += _emit_compose(tm, a, out / "compose")
+        files += _emit_compose(models['compose'][0], a, out / "compose")
     if "swiftui" in platforms:
-        files += _emit_swift(tm, a, out / "swiftui")
+        files += _emit_swift(models['swiftui'][0], a, out / "swiftui")
     if "web" in platforms:
         fcss = fonts_path.parent / "web" / "fonts.css"
-        files += _emit_web(tm, a, out / "web", os.path.relpath(fcss, out / "web") if fonts and fcss.exists() else None)
+        files += _emit_web(models['web'][0], a, out / "web", os.path.relpath(fcss, out / "web") if fonts and fcss.exists() else None)
     if "flutter" in platforms:
-        files += _emit_flutter(tm, a, out / "flutter", fonts_path.parent if fonts else None)
+        files += _emit_flutter(models['flutter'][0], a, out / "flutter", fonts_path.parent if fonts else None)
     if a.dtcg:
         files.append(_emit_dtcg(tm, out))
     _palette_sheet(palette, mock, texts, spec, out / "palette_check.png")
@@ -1211,9 +1446,10 @@ def cmd_tokens(a):
                                                 "hig_style")} for t in tm["types"]],
               "m3": {k_: tm.get(k_) for k_ in ("m3_roles_baseline", "m3_slots_baseline", "m3_slot_notes", "m3_shapes")},
               "prefix": a.prefix, "audit": audit,
-              "radii": [{k: r[k] for k in ("name", "dp", "source", "shape", "kt", "sw", "css", "dart")} for r in tm["radii"]],
+              "radii": [{**{k: r[k] for k in ("name", "dp", "source", "shape", "kt", "sw", "css", "dart")},
+                         **({"corners": r["corners"]} if "corners" in r else {})} for r in tm["radii"]],
               "spacing": [{k: s[k] for k in ("name", "dp", "source", "kt", "sw", "css", "dart")} for s in tm["spacing"]],
-              "platforms": platforms, "px_to_dp": tm["px_to_dp"], "fonts": str(fonts_path) if fonts else None}
+              "platforms": platforms, "preset": preset, "presets": presets, "px_to_dp": tm["px_to_dp"], "fonts": str(fonts_path) if fonts else None}
     print(f"palette ({sum(p['snapped'] for p in palette)}/{len(palette)} snapped to mockup pixels):")
     for p in palette:
         mark = f"{p['hex_guess']} -> {p['hex']}  dE00 {p['de00']:>4}" if p["snapped"] else f"{p['hex_guess']}  (kept: not found)"
@@ -1225,7 +1461,7 @@ def cmd_tokens(a):
     if not fonts:
         print("  (no fonts.json: generic serif/sans families; run `fonts` first for matched Google Fonts)")
     if "compose" in platforms:
-        print(f"M3 colour roles left at baseline: {', '.join(tm['m3_roles_baseline']) or 'none'}")
+        print(f"M3 colour roles derived from the tonal palette (not measured): {', '.join(tm['m3_roles_baseline']) or 'none'}")
         print(f"M3 type slots left at baseline: {', '.join(tm['m3_slots_baseline']) or 'none'}"
               + (f"; shapes: {tm['m3_shapes']}" if tm["m3_shapes"] else "; shapes: none matched (chip/card/fab/sheet names)"))
         for n_ in tm["m3_slot_notes"]:

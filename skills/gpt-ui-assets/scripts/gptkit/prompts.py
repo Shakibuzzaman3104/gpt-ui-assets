@@ -63,17 +63,44 @@ Write each field as a short, concrete instruction for a renderer:
   primary action, the active navigation item and the single most important value; about 10% of the screen at most);
   secondary text meets 4.5:1 on its background.
 - type: typeface character, the hero element and its size, and a 4-5 step type scale in logical units.
-- shape: a radius scale of at most 3 values and which components use each; depth approach.
+- shape: a radius scale and which components use each; depth approach.
 - spacing: screen side margin, gap inside a group, gap between groups, card padding, all multiples of 4.
 - signature: ONE visual device that makes this product recognisable, layered on standard platform components.
 - avoid: the 3 clichés of this product category.
+- system: choose the matching platform preset and fill all roles with short colour names and hex values. Use the preset
+  type sizes unless the direction needs a display size; body leading 1.4-1.5 times size, headings 1.1-1.3. Use preset
+  spacing steps and 3-5 radii from its scale, with inner radius equal to outer radius minus padding. On-colours meet
+  4.5:1 contrast (3:1 for large text). Use one accent on about 10% of the screen.
+Preset numbers (type entries are name/size/line height/weight):
+{presets}
 Brief: {brief}"""
+_ROLE_NAMES = ["primary", "onPrimary", "primaryContainer", "secondary", "background", "surface", "surfaceContainer",
+               "onSurface", "onSurfaceVariant", "outline", "error", "onPrimaryContainer", "onSecondary", "onError",
+               "onBackground", "secondaryContainer", "onSecondaryContainer", "tertiary", "onTertiary",
+               "tertiaryContainer", "onTertiaryContainer", "errorContainer", "onErrorContainer",
+               "surfaceContainerHigh", "surfaceContainerHighest", "outlineVariant"]
+_SYSTEM_SCHEMA = {"type": "object", "additionalProperties": False,
+                  "required": ["preset", "roles", "type", "spacing_base", "spacing", "radius"],
+                  "properties": {
+                      "preset": {"type": "string", "enum": ["material3", "ios", "macos", "web"]},
+                      "roles": {"type": "array", "items": {"type": "object", "additionalProperties": False,
+                          "required": ["role", "name", "hex"], "properties": {
+                              "role": {"type": "string", "enum": _ROLE_NAMES}, "name": {"type": "string"},
+                              "hex": {"type": "string"}}}},
+                      "type": {"type": "array", "items": {"type": "object", "additionalProperties": False,
+                          "required": ["role", "size", "line_height", "weight"], "properties": {
+                              "role": {"type": "string", "enum": ["display", "headline", "title", "body", "label", "caption"]},
+                              "size": {"type": "number"}, "line_height": {"type": "number"}, "weight": {"type": "integer"}}}},
+                      "spacing_base": {"type": "integer", "enum": [4, 8]},
+                      "spacing": {"type": "array", "items": {"type": "integer"}},
+                      "radius": {"type": "array", "items": {"type": "object", "additionalProperties": False,
+                          "required": ["use", "value"], "properties": {"use": {"type": "string"}, "value": {"type": "integer"}}}}}}
 DIRECTION_SCHEMA = {"type": "object", "additionalProperties": False,
-                    "required": ["name", "mood", "theme", "layout", "palette", "type", "shape", "spacing", "signature", "avoid"],
+                    "required": ["name", "mood", "theme", "layout", "palette", "type", "shape", "spacing", "signature", "avoid", "system"],
                     "properties": {"name": {"type": "string"}, "mood": {"type": "string"}, "layout": {"type": "string"},
                                    "theme": {"type": "string", "enum": ["light", "dark"]}, "palette": {"type": "string"},
                                    "type": {"type": "string"}, "shape": {"type": "string"}, "spacing": {"type": "string"},
-                                   "signature": {"type": "string"}, "avoid": {"type": "string"}}}
+                                   "signature": {"type": "string"}, "avoid": {"type": "string"}, "system": _SYSTEM_SCHEMA}}
 DIRECTIONS_SCHEMA = {"type": "object", "additionalProperties": False, "required": ["directions"],
                      "properties": {"directions": {"type": "array", "items": DIRECTION_SCHEMA}}}
 
@@ -81,6 +108,16 @@ DIRECTIONS_SCHEMA = {"type": "object", "additionalProperties": False, "required"
 def _direction_text(d):
     """One art direction as prompt words for the renderer; its name stays out, GPT would draw it as the app's name."""
     layout = f"Layout: {d['layout']} " if d.get("layout") else ""
+    if d.get("system"):
+        s = d["system"]
+        roles = "; ".join(f"{r['role']}: {r['name']} {r['hex']}" for r in s["roles"])
+        weights = {400: "regular", 500: "medium", 600: "semibold", 700: "bold"}
+        types = "; ".join(f"{t['role']} {t['size']}/{t['line_height']} {weights.get(t['weight'], t['weight'])}" for t in s["type"])
+        radii = "; ".join(f"{r['use']}: {r['value']}" for r in s["radius"])
+        return (f"Art direction ({d['theme']} theme; {d['mood']}). {layout}Palette: {roles}. {d['palette']} "
+                f"Type: {types}. {d['type']} Shape: {radii}. {d['shape']} "
+                f"Spacing: base {s['spacing_base']}, steps {', '.join(map(str, s['spacing']))}. {d['spacing']} "
+                f"Signature: {d['signature']} Avoid: {d['avoid']}")
     return (f"Art direction ({d['theme']} theme; {d['mood']}). {layout}Palette: {d['palette']} Type: {d['type']} "
             f"Shape: {d['shape']} Spacing: {d['spacing']} Signature: {d['signature']} Avoid: {d['avoid']}")
 

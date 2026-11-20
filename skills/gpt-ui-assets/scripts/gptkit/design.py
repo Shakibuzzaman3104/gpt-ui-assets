@@ -469,24 +469,96 @@ def cmd_mockup(a):
 
 def _art_directions(platform, n, brief, rng=random):
     """Choose distinct art directions before rendering variants."""
+    from .system import PRESETS  # deferred: system follows design
+    presets = []
+    for name in ("material3", "ios", "macos", "web"):
+        p = PRESETS[name]
+        types = ", ".join(f"{t['name']}/{t['size']}/{t['line_height']}/{t['weight']}" for t in p["type"])
+        radii = [v for v in p["radius"].values() if isinstance(v, int) and not isinstance(v, bool)]
+        presets.append(f"{name}: type {types}; spacing {p['spacing']}; radii {radii}")
     fam = rng.sample(STYLE_FAMILIES, min(len(STYLE_FAMILIES), n + 3))
     hues = [ACCENT_HUES[j % len(ACCENT_HUES)] for j in rng.sample(range(len(ACCENT_HUES)), min(n, len(ACCENT_HUES)))]
     hues = [hues[i % len(hues)] for i in range(n)]
     text = DIRECTIONS_PROMPT.format(n=n, platform=platform, brief=brief,
                                     families="\n".join(f"- {a}: {b}" for a, b in fam),
-                                    hues=", ".join(f"direction {i + 1}: {h}" for i, h in enumerate(hues)))
+                                    hues=", ".join(f"direction {i + 1}: {h}" for i, h in enumerate(hues)),
+                                    presets="\n".join(presets))
     try:
         result = ask([text], DIRECTIONS_SCHEMA, "art_directions")
         directions = result["directions"][:n]
         for d in directions:
             _direction_text(d)
+            if d.get("system"):
+                _validate_direction_system(d)
         lines = [f"  direction v{i+1}: {d['name']} ({d['theme']}, {hues[i]})" for i, d in enumerate(directions)]
-    except (ApiError, KeyError, TypeError, AttributeError) as e:
+    except (ApiError, KeyError, TypeError, AttributeError, ValueError) as e:
         print(f"  ! art directions failed ({e}); rendering the variants without them")
         return None
     for line in lines:
         print(line)
     return {"families": [a for a, _ in fam], "hues": hues, "directions": directions}
+
+
+_EXTRA_PAIRS = [("onSurface", "surfaceContainerHigh", "text"), ("outlineVariant", "surface", "ui")]
+
+
+def _direction_pair_failures(roles, preset, theme):
+    from .system import check_pairs, contrast_ratio  # deferred: system follows design
+    failures = check_pairs(roles, preset, theme)
+    for fg, bg, kind in _EXTRA_PAIRS:
+        if fg in roles and bg in roles:
+            ratio = contrast_ratio(roles[fg], roles[bg])
+            need = 3.0 if kind == "ui" else 4.5
+            if ratio < need:
+                failures.append({"fg": fg, "bg": bg, "mode": theme, "ratio": round(ratio, 2), "need": need, "kind": kind})
+    return failures
+
+
+def _validate_direction_system(d):
+    from .system import PAIRS, lint_type, contrast_ratio  # deferred: system follows design
+    from .palette import tone_hex, lch  # deferred: palette follows design
+    s = d["system"]
+    entries = {r["role"]: r for r in s["roles"]}
+    roles = {name: r["hex"] for name, r in entries.items()}
+    failures = _direction_pair_failures(roles, s["preset"], d.get("theme", "light"))
+    issues = [{"type": "contrast", **failure} for failure in failures]
+    for present, problem in [("primary" in roles, "missing primary role"),
+                             ("background" in roles or "surface" in roles, "missing background or surface role"),
+                             ("onSurface" in roles, "missing onSurface role"),
+                             (len(s["type"]) >= 3, "at least 3 type steps are required"),
+                             (bool(s["spacing"]), "spacing is empty"), (bool(s["radius"]), "radius is empty")]:
+        if not present:
+            issues.append({"type": "missing", "problem": problem})
+    issues += [{"type": "type", "problem": problem} for problem in lint_type(
+        [dict(t, name=t["role"]) for t in s["type"]], s["preset"])]
+    for fg in {f["fg"] for f in failures if f["fg"].startswith("on")}:
+        relevant = [f for f in _direction_pair_failures(roles, s["preset"], d.get("theme", "light")) if f["fg"] == fg]
+        if not relevant:
+            continue
+        original = roles[fg]
+        constraints = [(bg, kind) for a, bg, kind in PAIRS + _EXTRA_PAIRS
+                       if a == fg and bg in roles]
+        original_lightness = lch(original)[0]
+        candidates = sorted((t / 4 for t in range(1, 400)), key=lambda t: abs(t - original_lightness)) + [0, 100]
+        for tone in candidates:
+            candidate = tone_hex(original, tone)
+            if all(contrast_ratio(candidate, roles[bg]) >= (3.0 if kind == "ui" else 4.5) for bg, kind in constraints):
+                entries[fg]["hex"] = roles[fg] = candidate
+                lightness = lch(candidate)[0]
+                if abs(lightness - original_lightness) > 20:
+                    entries[fg]["name"] = ("near-black" if lightness < 5 else "white" if lightness > 98 else
+                                           entries[fg]["name"] + (", darker" if lightness < original_lightness else ", lighter"))
+                issues.append({"type": "fix", "role": fg, "from": original, "to": candidate})
+                break
+        else:
+            issues.append({"type": "unresolved", "role": fg, "problem": "No on-colour meets all contrast requirements."})
+    d["system_issues"] = issues
+
+
+def _direction_for_image(path):
+    meta = _design_meta(path)
+    return (((meta.get("directions") or {}).get("variants") or {}).get(Path(path).name)
+            or meta.get("direction") or (meta if meta.get("system") else {}))
 
 
 def _mockup_qa(paths, platform, ref, record=None):
@@ -495,6 +567,9 @@ def _mockup_qa(paths, platform, ref, record=None):
 
     def one(p):
         img = _open_image(p, "mockup")
+        direction = _direction_for_image(p)
+        if direction.get("system"):
+            return img, critique(img, dp, platform, ref, device_record=record, direction=direction)
         return img, critique(img, dp, platform, ref, device_record=record)
     with cf.ThreadPoolExecutor(len(paths)) as ex:
         futs = [ex.submit(one, p) for p in paths]
@@ -596,7 +671,36 @@ def _corner_mix_issues(img, dp):
     return issues
 
 
-def critique(img, dp=390, platform="android", style_ref=None, note=None, device_record=None):
+def _system_contrast_issues(img, direction):
+    from .measure import _de00, _hexi, _lab_arr, _to_hex  # deferred: measure follows design
+    s = (direction or {}).get("system") or {}
+    entries = s.get("roles") or []
+    if not entries or s.get("preset") not in ("material3", "ios", "macos", "web"):
+        return []
+    rgb = np.asarray(img.convert("RGB"))
+    pixels = rgb.reshape(-1, 3)
+    labs = _lab_arr(pixels)
+    measured = {}
+    for entry in entries:
+        target = _lab_arr(_hexi(entry["hex"]))
+        distances = np.linalg.norm(labs - target, axis=1)
+        nearest = float(distances.min())
+        if nearest > 12:
+            continue
+        mask = distances <= min(12, nearest + 2)
+        colour = np.median(pixels[mask], axis=0)
+        measured[entry["role"]] = _to_hex(colour)
+    failures = _direction_pair_failures(measured, s["preset"], direction.get("theme", "light"))
+    failures = [f for f in failures if float(_de00(_lab_arr(_hexi(measured[f["fg"]])),
+                                                   _lab_arr(_hexi(measured[f["bg"]])))) >= 5]
+    return [{"severity": "medium", "category": "contrast", "scope": "screen",
+             "bbox": {"x": 0, "y": 0, "w": img.width, "h": img.height},
+             "problem": f"Measured {f['fg']} on {f['bg']} is {f['ratio']}:1, below {f['need']:g}:1.",
+             "edit": f"Increase contrast between {f['fg']} and {f['bg']} to {f['need']:g}:1.",
+             "measured_contrast": f["ratio"], "roles": [f["fg"], f["bg"]]} for f in failures]
+
+
+def critique(img, dp=390, platform="android", style_ref=None, note=None, device_record=None, direction=None):
     rule = CRITIQUE_REF_RULE if style_ref is not None else ""
     rec = device_record or _device_record(platform)
     touch = rec["touch"] if rec else (48 if platform == "android" else 44)
@@ -612,6 +716,22 @@ def critique(img, dp=390, platform="android", style_ref=None, note=None, device_
         if x["category"] == "contrast" and x["bbox"]["w"] > 2 and x["bbox"]["h"] > 2:
             x["measured_contrast"] = measured_contrast(img, x["bbox"])
             _weigh_contrast(x)
+    for x in _system_contrast_issues(img, direction):
+        def names_role(issue, role):
+            text = " ".join(str(issue.get(k, "")) for k in ("problem", "edit"))
+            words = re.sub(r"([a-z])([A-Z])", r"\1[\\s_-]*\2", role)
+            return bool(re.search(r"(?<![a-z])" + words + r"(?![a-z])", text, re.I))
+        match = next((issue for issue in issues if issue["category"] == "contrast" and
+                      all(names_role(issue, role) for role in x["roles"])), None)
+        if match:
+            match["measured_contrast"] = x["measured_contrast"]
+            match["roles"] = x["roles"]
+            if match.pop("measured_passes", None) is not None:
+                match["severity"] = x["severity"]
+            _weigh_contrast(match)
+            continue
+        x["id"] = len(issues) + 1
+        issues.append(x)
     return issues
 
 
@@ -625,7 +745,7 @@ def _weigh_contrast(issue):
     """A contrast issue whose measured ratio already meets its target drops to low: the estimate (perimeter background
     vs the most distinct 5% of pixels) can miss a thin element, so it is kept and flagged for a look, not deleted."""
     target = _contrast_target(issue)
-    if issue["measured_contrast"] >= target:
+    if issue["measured_contrast"] >= target + 0.5:
         issue["measured_passes"] = target
         if issue.get("severity") in ("high", "medium"):
             issue["severity"] = "low"
@@ -713,7 +833,9 @@ def cmd_critique(a):
     except ValueError:
         record = _device_record(a.platform)
     a.screen_dp = _screen_dp(a.platform, a.screen_dp or design.get("screen_dp") or (record["logical_w"] if record else None))
-    issues = critique(cur, a.screen_dp, a.platform, ref, a.note, record)
+    direction = _direction_for_image(src)
+    issues = (critique(cur, a.screen_dp, a.platform, ref, a.note, record, direction=direction)
+              if direction.get("system") else critique(cur, a.screen_dp, a.platform, ref, a.note, record))
     log = {"mockup": str(src), "rounds": [{"image": str(src), "issues": issues, "weight": _weight(issues)}]}
     print(f"{src.name}: {len(issues)} issues, weight {_weight(issues)}")
     _print_issues(issues)
@@ -950,10 +1072,22 @@ def _calibrate(d, spec, m, width, scale="auto"):
         if scale == "native":
             print("  ! --scale native: no native anchor widgets (nav bar, FAB, app bar...) found; kept the design scale")
         return
+    median = float(np.median([x["k"] for x in anchors]))
+    anchors = [x for x in anchors if abs(x["k"] - median) <= 0.15 * median]
+    if not anchors:
+        spec["native_scale"] = {"factor": 1.0, "anchors": [], "applied": False}
+        print("  ! native anchors disagree; kept the design scale")
+        return
     k = float(np.median([x["k"] for x in anchors]))
+    if len(anchors) >= 2 and max(x["k"] for x in anchors) > 1.15 * min(x["k"] for x in anchors):
+        spec["native_scale"] = {"factor": 1.0, "anchors": anchors, "applied": False}
+        print("  ! native anchors disagree; kept the design scale")
+        return
     factor = k / design_k
     apply = scale == "native" or (scale == "auto" and abs(factor - 1) > 0.12)
     spec["native_scale"] = {"factor": round(factor, 3), "px_to_dp_native": round(k, 5), "anchors": anchors, "applied": apply}
+    if len(anchors) == 1 and apply:
+        print(f"  ! calibrated from one native anchor ({anchors[0]['component']}); check the scale against the mockup")
     if apply:
         spec["px_to_dp"] = round(k, 5)
         spec["effective_width_dp"] = round(width * k)
