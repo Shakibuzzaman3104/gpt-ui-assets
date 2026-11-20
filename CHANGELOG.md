@@ -2,6 +2,38 @@
 
 All notable changes to gpt-ui-assets. Versions follow [semantic versioning](https://semver.org).
 
+## 5.8.0 (2026-11-20)
+
+### Added
+- **Design-system presets from the platforms' own sources.** Material 3, iOS, macOS, Fluent 2 and web (Carbon spacing)
+  presets carry each system's type scale, minimum text size, spacing steps, radius scale, touch target and breakpoints,
+  read from the Compose token files, the HIG pages, the Fluent token files, `@carbon/layout` and WCAG 2.2. The new
+  `references/design-system.md` lists every number with its source and says which wins when the design, the platform
+  and the scale disagree.
+- **Art directions carry a structured design system.** Each direction now has colour roles with a name and a hex, type
+  steps, spacing steps and radii. On-colours that fail contrast are fixed before rendering, and critique measures every
+  role pair on the mockup, not only the ones the vision model flags.
+- **`tokens` writes light and dark schemes.** The other appearance is derived from tonal palettes (tone = CIELAB L*)
+  instead of copied; measured colours are kept exactly in the appearance they were measured in. Compose, SwiftUI
+  (xcassets with both appearances), Flutter, CSS (`prefers-color-scheme` and `[data-theme]`) and DTCG all get both.
+- **Contrast, type, spacing and radius audits in `tokens`.** Contrast is checked in both appearances with each text
+  style's real size and weight and the platform's large-text rule; type is checked for minimum size, line height,
+  letter spacing and number of sizes; spacing and radii against the preset's steps, and nested corners for concentricity.
+
+### Changed
+- `--snap-grid` snaps to the target platform's spacing and radius steps.
+- Shapes can round only some corners (a sheet rounded on top stays that way) on every platform.
+- CSS type is in rem; SwiftUI's fallback font uses text styles so Dynamic Type works; Compose text styles get
+  `…Themed` getters that take their colour from `MaterialTheme.colorScheme`.
+- The DTCG file has separate `primitive` and `role` groups.
+- Critique downgrades a contrast issue only when the measurement passes with at least 0.5 to spare.
+- Native-scale calibration drops an anchor more than 15% off the median and keeps the design scale when two anchors
+  disagree; a single anchor still calibrates, with a warning.
+- A font match's reliability is judged by the family chosen, and letter spacing outside the guideline range is rejected.
+
+### Fixed
+- Right and bottom screen margins and the gap above an element were measured from the wrong edge.
+
 ## 5.7.0 (2026-11-10)
 
 ### Added
