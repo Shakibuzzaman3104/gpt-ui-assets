@@ -164,6 +164,22 @@ def test_lint_flags_prices_platforms_play_words_and_alt():
     assert flagged == {"t1", "t2"}, flagged
 
 
+def test_accent_and_proof_lint():
+    assert K._plain("Your *music* is *safe* and *sound") == "Your music is safe and sound"
+    sb = {"slots": [{"id": "a", "caption": "*Your music is* safe*", "proof": True, "alt": "Music"}],
+          "proof": [{"value": "4.8", "label": "rating"}, {"value": "$5", "label": "price"}]}
+    issues = K._lint(sb)
+    assert any("unbalanced accent marker" in msg for _, _, msg in issues)
+    assert any("accent one or two words" in msg for _, _, msg in issues)
+    assert any("proof '4.8 rating' needs backing" in msg for _, _, msg in issues)
+    assert any(level == "FAIL" and "price" in msg for level, _, msg in issues)
+    assert not any("4.8 rating" in msg for _, _, msg in K._lint(sb, "Rating 4.8"))
+    many = {"slots": [{"id": str(i), "caption": f"Keep *it* {i}", "alt": "x"} for i in range(4)]}
+    assert any("every caption has accent words" in msg for _, _, msg in K._lint(many))
+    many["slots"][3]["caption"] = "Keep it plain"
+    assert not any("every caption has accent words" in msg for _, _, msg in K._lint(many))
+
+
 def test_lint_warns_on_callouts_at_the_screen_ends():
     slot = lambda sid, box: {"id": sid, "capture": "x", "caption": "Fast", "sub": "", "alt": "ok",
                              "calls": [{"capture": "x", "box": box}]}
@@ -343,6 +359,48 @@ def test_headlines_share_the_largest_size_that_fits():
                     assert key != "play-phone" or rep_tag <= K.TAGLINE_FIT + 0.005, (name, s)
     for key in ("ios-phone", "play-phone"):
         assert sizes["short", key] > sizes["long", key] * 1.15, sizes  # short copy earns a bigger headline
+
+
+def test_hero_accent_and_proof_render():
+    try:
+        import playwright.sync_api  # noqa: F401
+    except ImportError:
+        print("  skip build: no playwright")
+        return
+    if not K._chrome():
+        print("  skip build: no Chrome")
+        return
+    with tempfile.TemporaryDirectory() as d:
+        src = Path(d) / "src"
+        src.mkdir()
+        _screen().save(src / "home.png")
+        _run(["capture", d, "--from", str(src)])
+        sb = _storyboard(d, [
+            {"id": "hero", "capture": "home", "caption": "Your *music* is safe", "hero": True, "proof": True, "alt": "Music"},
+            {"id": "two", "capture": "home", "caption": "All your music together", "alt": "Library"},
+            {"id": "three", "capture": "home", "caption": "Listen anywhere", "alt": "Player"}])
+        sb["proof"] = [{"value": "4.8", "label": "rating", "stars": True}, {"value": "200k+", "label": "listeners"}]
+        sb["claims"] = "4.8 rating and 200k+ listeners"
+        (Path(d) / "storyboard.json").write_text(json.dumps(sb))
+        _run(["build", d, "--no-webfonts"])
+        rep = json.loads((Path(d) / "build" / "report.json").read_text())
+        ios, play = rep["targets"]["ios-phone"]["shots"], rep["targets"]["play-phone"]["shots"]
+        assert ios[0]["h1_px"] > max(s["h1_px"] for s in ios[1:])
+        assert abs(ios[1]["h1_px"] - ios[2]["h1_px"]) < 0.1
+        hero = ios[0]
+        assert hero["proof"] and hero["proof"]["y"] + hero["proof"]["h"] < hero["screen_box"]["y"]
+        assert hero["caption_box"]["y"] + hero["caption_box"]["h"] < hero["screen_box"]["y"]
+        assert all(s["proof"] is None for s in play)
+        assert not any(s["hero"] for s in play) and abs(play[0]["h1_px"] - play[1]["h1_px"]) < 0.1
+        assert hero["contrast"].get("acc") is not None or any("accent colour too faint" in n for n in rep["notes"])
+        assert hero["fidelity"] and hero["fidelity"]["mean"] <= K.FID_MEAN_MAX and hero["fidelity"]["p99"] <= K.FID_P99_MAX
+        _run(["check", d])
+        assert not any(x["level"] == "FAIL" for x in json.loads((Path(d) / "build" / "check.json").read_text()))
+        box = hero["proof"]
+        _run(["build", d, "--no-webfonts", "--no-caption", "--stores", "ios"])
+        bare = Image.open(Path(d) / hero["file"]).convert("L").crop(
+            (int(box["x"]), int(box["y"]), int(box["x"] + box["w"]), int(box["y"] + box["h"])))
+        assert max(bare.getextrema()) - min(bare.getextrema()) < 40, "proof row must hide with the caption"
 
 
 def test_build_and_check_render_a_real_set():

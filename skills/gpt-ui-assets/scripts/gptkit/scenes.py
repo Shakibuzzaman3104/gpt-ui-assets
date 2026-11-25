@@ -553,7 +553,15 @@ def _scene_lines(slot):
             if len(words) > 2:
                 i = min(range(1, len(words)), key=lambda n: abs(len(' '.join(words[:n])) - len(' '.join(words[n:]))))
                 lines = [' '.join(words[:i]), ' '.join(words[i:])]
+                if lines[0].count("*") % 2:
+                    lines = [lines[0] + "*", "*" + lines[1]]
     return [dict(text=x, size=1) if isinstance(x, str) else {"size": 1, **x} for x in lines]
+
+
+def _runs(text, ink, accent):
+    """(text, ink) runs of a headline line; *marked* words take the accent colour."""
+    return [(part[1:-1], accent) if len(part) > 2 and part[0] == part[-1] == "*" else (part.replace("*", ""), ink)
+            for part in re.split(r"(\*[^*\n]+\*)", text) if part.replace("*", "")]
 
 
 def _font(family, weight, size, notes):
@@ -591,19 +599,21 @@ def _headline(canvas, slot, sb, notes, with_size=False):
     margin = settings.get("margin", 0.064) * W
     while True:
         fonts = [_font(family, settings.get("weight", 900), max(1, round(size * line["size"])), notes) for line in lines]
-        if size <= 1 or all(f.getlength(line["text"]) <= W - 2 * margin for f, line in zip(fonts, lines)):
+        if size <= 1 or all(f.getlength(store._plain(line["text"])) <= W - 2 * margin for f, line in zip(fonts, lines)):
             break
         size -= 1
     align = settings.get("align", "left")
     y = settings.get("top", 0.042) * H
     top = y
-    items = []
+    items, marked = [], any("*" in line["text"] for line in lines)
     for i, (line, font) in enumerate(zip(lines, fonts)):
         text = line["text"]
-        x = margin if align == "left" else (W - font.getlength(text)) / 2
+        x = margin if align == "left" else (W - font.getlength(store._plain(text))) / 2
         col = line.get("color")
-        ink = accent if col == "accent" else color if col == "color" else store._store_hex(col, color) if col else (accent if i >= settings.get("accent_from", 1) else color)
-        items.append((text, font, x, y, ink))
+        ink = accent if col == "accent" else color if col == "color" else store._store_hex(col, color) if col else (accent if i >= settings.get("accent_from", 1) and not marked else color)
+        for run, run_ink in _runs(text, ink, accent):
+            items.append((run, font, x, y, run_ink))
+            x += font.getlength(run)
         y += size * line["size"] * settings.get("line_gap", 0.94)
     sub = slot.get("scene_sub", slot.get("sub", ""))
     if sub:

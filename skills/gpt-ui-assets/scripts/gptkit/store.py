@@ -42,6 +42,7 @@ TARGETS = {
 FEATURE_SIZE = (1024, 500)
 MAX_BYTES = 8 * 1024 * 1024
 CONTRAST_MIN = 4.5
+ACCENT_MIN, HERO_MAX = 3.0, 21.0
 FID_MEAN_MAX, FID_P99_MAX = 2.5, 20.0
 SEARCH_SCALE, SEARCH_MIN_PT = 0.261, 9.0  # an iPhone search result shows a portrait shot at ~0.26 of its width
 TAGLINE_MAX = 0.20  # Play: taglines under 20% of the image
@@ -64,6 +65,11 @@ ANDROID_WORDS = re.compile(r"\b(android|google play|play store|pixel|galaxy)\b",
 TUTORIAL = re.compile(r"\b(?:tap|swipe|click)\s+(?:the|a|an|on|to|here|through|left|right|up|down)\b|"
                       r"\bstep\s?(?:\d+|one|two|three)\b|\bhow to\b", re.I)
 APPLE_WORDS = re.compile(r"\b(iphone|ipad|ios|app store|apple)\b", re.I)
+ACCENT = re.compile(r"\*([^*\n]+)\*")
+
+
+def _plain(text):
+    return ACCENT.sub(r"\1", text or "").replace("*", "")
 
 
 def _sh(args, binary=False, timeout=60):
@@ -393,8 +399,10 @@ def cmd_store_research(a):
               "would brief a new app in this category: the slot-1 type (benefit headline + UI, brand statement, social "
               "proof, key art, lifestyle photo, before/after), caption voice and case, caption position, frame style "
               "(device frame, frameless cards, full-bleed), background treatment, palette, density, use of zoomed "
-              "callouts, what most do (common), what to avoid, and 5-8 concrete recommendations. Describe only what "
-              "is visible; one entry per app in apps.")
+              "callouts, what most do (common), what to avoid, and 5-8 concrete recommendations. Also note how big "
+              "slot 1's headline is, accent-coloured words, proof (laurels, ratings, user counts), people or mascots, "
+              "phones cut by the canvas edge, UI cards lifted out of the frame, and art running across the seams "
+              "between slots. Describe only what is visible; one entry per app in apps.")
     pb = ask([prompt, *[Image.open(s) for s in sheets]], schema=PLAYBOOK_SCHEMA, name="playbook", model=a.model)
     pb["term"], pb["country"] = a.term, a.country
     (Path(a.dir) / "playbook.json").write_text(json.dumps(pb, indent=1))
@@ -416,7 +424,7 @@ def cmd_store_research(a):
 _BOX = {"type": "array", "items": _N}
 STORYBOARD_SCHEMA = _obj({
     "app": _S, "category": _S, "voice": _S, "promise": _S,
-    "brand": _obj({"colors": _SA, "ink_dark": _S, "ink_light": _S, "head_font": _S, "body_font": _S,
+    "brand": _obj({"colors": _SA, "accent": _S, "ink_dark": _S, "ink_light": _S, "head_font": _S, "body_font": _S,
                    "art_style": _S, "lettering_style": _S}),
     "slots": {"type": "array", "items": _obj({
         "id": _S, "capture": _S, "caption": _S, "sub": _S, "caption_play": _S, "sub_play": _S,
@@ -424,7 +432,8 @@ STORYBOARD_SCHEMA = _obj({
         "ink": {"type": "string", "enum": ["dark", "light"]},
         "calls": {"type": "array", "items": _obj({"capture": _S, "box": _BOX})},
         "cards": {"type": "array", "items": _obj({"capture": _S, "box": _BOX})},
-        "plate_brief": _S, "alt": _S, "why": _S})},
+        "plate_brief": _S, "alt": _S, "why": _S, "hero": _B, "proof": _B})},
+    "proof": {"type": "array", "items": _obj({"value": _S, "label": _S, "stars": _B})},
     "feature": _obj({"subtitle": _S, "plate_brief": _S}),
     "privacy": {"type": "array", "items": _obj({"capture": _S, "what": _S})},
     "notes": _SA})
@@ -437,11 +446,21 @@ Rules:
 - Slots 1-3 are the ad: they show in search results and are all most visitors see. One idea per slot.
 - promise: one line, what the app does and the outcome its users want, for whom. Slot 1 says it, so a shopper who
   sees only slot 1 knows what the app is. Slots 2-3 back it up as a story (the key moment, then the payoff), not a
-  tutorial: no "tap", "swipe" or "step 1".
+  tutorial: no "tap", "swipe" or "step 1". Slot 1 is a poster: its strongest reason, readable in half a second. Most
+  visitors arrive from a video, an ad or a friend already believing something about the app, so slot 1 confirms that
+  belief in their words ("Your awakening starts here" for fans of the genre), not a category label ("The best AI
+  fitness app"). Lead with the feeling or outcome the app delivers (Family chaos, solved.), never a list of features.
 - caption: 2-6 words selling the outcome people want (calmer nights, money that arrives), not the feature's name,
   in words users would say and in the app's own voice. Shorter is better: a short caption is set bigger. No outcome
-  the app can't back (cures, guaranteed results). sub: one short sentence, at most 12 words, naming the feature
-  that delivers it.
+  the app can't back (cures, guaranteed results). Mark the one or two words that carry the promise with asterisks
+  (Restore *anything* instantly); they are set in brand.accent. Accent slot 1 and at most two other slots: an
+  accent on every caption stops standing out. sub: one short sentence, at
+  most 12 words, naming the feature that delivers it.
+- hero: true on slot 1 when its caption is 2-5 words: it is set two to three times larger than the other slots with
+  the phone lower and cut by the bottom edge. Only slot 1.
+- proof: up to 3 short facts from the allowed claims only ({{"value": "4.8", "label": "rating", "stars": true}},
+  {{"value": "200k+", "label": "anglers"}}: the label in the app's own noun for its users); set proof: true on slot 1.
+  None when no claims are allowed. It shows on the App Store only.
 - caption_play/sub_play: the same idea for Google Play with no ranking, award, price or promo words (best, #1, top,
   new, free, sale, million) and no calls to action (download, play now). Repeat caption/sub when they already comply.
 - No prices anywhere. No claims (#1, best, award, million users) unless they are in the allowed claims above.
@@ -449,7 +468,8 @@ Rules:
   the caption; calls[].box is [x0,y0,x1,y1] as fractions 0-1 of that capture, a full-width band reads best; keep it
   between 18% and 85% of the capture's height, at most 45% tall and no thinner than about 3.5:1), or fan
   (2-3 screens as tilted cards, cards[0] is the hero; boxes as fractions, the region worth showing). Use fan at most
-  once, and only with several captures. Leave calls/cards empty when unused.
+  once, and only with several captures. Leave calls/cards empty when unused. Break the rhythm: identical framed slots
+  blur together, so give at least one of slots 2-4 a callout of the element that proves its caption.
 - capture: the capture name that slot shows. Prefer screens doing their job with real content (a list with items, a
   result, a game mid-play) over near-empty ones (a blank form, a bare question, a loading state).
 - plate_brief: the background scene in the app's own art style; the top third must stay calm for the caption. For an
@@ -458,7 +478,8 @@ Rules:
   unless they are the app's own art. ink: dark text on a light
   plate top, light text on a dark one.
 - alt: what the screenshot shows, under 140 characters, not starting with "Image of".
-- brand: colours (hex) taken from the captures, ink_dark (a deep brand tone for text) and ink_light (a near-white or
+- brand: colours (hex) taken from the captures, accent (a vivid brand colour that stands out from the plates, for
+  accent words), ink_dark (a deep brand tone for text) and ink_light (a near-white or
   cream from the app), the closest Google Fonts to the app's display and body type, art_style (one line describing
   the app's illustration look) and lettering_style (one line: how display lettering in this style would look).
 - feature: a Google Play feature graphic subtitle (2-5 words) and its plate_brief (calm centre for the logo).
@@ -471,11 +492,29 @@ Rules:
 def _lint(sb, claims=""):
     """[(level, slot id, message)] for store copy rules; level is FAIL or WARN."""
     out = []
-    allowed = (claims or "").lower()
-    for s in sb.get("slots", []):
+    allowed = (str(sb.get("claims") or "") + " " + (claims or "")).lower()
+    for p in sb.get("proof") or []:
+        value, label = p.get("value", ""), p.get("label", "")
+        if PRICE.search(f"{value} {label}"):
+            out.append(("FAIL", "proof", f"proof {value!r} contains a price"))
+        if not value or value.lower() not in allowed:
+            out.append(("WARN", "proof", f"proof '{value} {label}' needs backing; pass it in --claims (Apple 2.3.14)"))
+    slots = sb.get("slots", [])
+    accented = sum(bool(ACCENT.search(s.get("caption") or "")) for s in slots)
+    if len(slots) >= 4 and accented == len(slots):
+        out.append(("WARN", "set", "every caption has accent words; keep them on slot 1 and one or two others so they stand out"))
+    for s in slots:
         sid = s.get("id", "?")
-        ios_text = " ".join(x for x in (s.get("caption"), s.get("sub")) if x)
-        play_text = " ".join(x for x in (s.get("caption_play") or s.get("caption"), s.get("sub_play") or s.get("sub")) if x)
+        ios_text = " ".join(_plain(x) for x in (s.get("caption"), s.get("sub")) if x)
+        play_text = " ".join(_plain(x) for x in (s.get("caption_play") or s.get("caption"), s.get("sub_play") or s.get("sub")) if x)
+        for name in ("caption", "caption_play"):
+            text = s.get(name) or ""
+            if text.count("*") % 2:
+                out.append(("WARN", sid, f"{name}: unbalanced accent marker"))
+            if sum(len(m.group(1).split()) for m in ACCENT.finditer(text)) > len(_plain(text).split()) / 2:
+                out.append(("WARN", sid, f"{name}: accent one or two words, not the whole line"))
+        if s.get("proof") and not sb.get("proof"):
+            out.append(("WARN", sid, "proof requested but the storyboard has no proof list"))
         for store, text in (("ios", ios_text), ("play", play_text)):
             if PRICE.search(text):
                 out.append(("FAIL", sid, f"{store}: a price in the copy ({PRICE.search(text).group(0)!r}); stores reject prices (Apple 2.3.7)"))
@@ -494,8 +533,8 @@ def _lint(sb, claims=""):
         if TUTORIAL.search(ios_text):
             out.append(("WARN", sid, f"{TUTORIAL.search(ios_text).group(0)!r} reads as a tutorial; show what the user "
                                      "gets, not how to use the app"))
-        if len((s.get("caption") or "").split()) > 7:
-            out.append(("WARN", sid, f"caption has {len(s['caption'].split())} words; 2-6 read at search size"))
+        if len(_plain(s.get("caption")).split()) > 7:
+            out.append(("WARN", sid, f"caption has {len(_plain(s['caption']).split())} words; 2-6 read at search size"))
         if len((s.get("sub") or "").split()) > 14:
             out.append(("WARN", sid, f"sub has {len(s['sub'].split())} words; keep it under 12"))
         for c in s.get("calls") or []:
@@ -545,8 +584,8 @@ def _storyboard_md(sb, issues):
           f"Voice: {sb.get('voice', '')}  ", f"Category: {sb.get('category', '')}", "",
           "| # | Slot | Capture | Arch | Caption | Sub | Play caption | Alt |", "|---|---|---|---|---|---|---|---|"]
     for i, s in enumerate(sb["slots"], 1):
-        md.append(f"| {i} | {s['id']} | {s['capture']} | {s.get('arch', 'framed')} | {_mdcell(s['caption'])} | "
-                  f"{_mdcell(s.get('sub', ''))} | {_mdcell(s.get('caption_play') or s['caption'])} | {_mdcell(s.get('alt', ''))} |")
+        md.append(f"| {i} | {s['id']} | {s['capture']} | {s.get('arch', 'framed')} | {_mdcell(_plain(s['caption']))} | "
+                  f"{_mdcell(s.get('sub', ''))} | {_mdcell(_plain(s.get('caption_play') or s['caption']))} | {_mdcell(s.get('alt', ''))} |")
     if sb.get("notes"):
         md += ["", "## Notes", *[f"- {n}" for n in sb["notes"]]]
     md += ["", "## Copy lint", *([f"- {lv} {sid}: {m}" for lv, sid, m in issues] or ["- clean"])]
@@ -616,6 +655,8 @@ def cmd_store_plan(a):
             s["arch"] = "framed"
         if s.get("arch") == "fan" and len(s["cards"]) < 2:
             s["arch"] = "framed"
+        if s.get("hero") and (i > 2 or any(x.get("hero") for x in sb["slots"][:i])):
+            s["hero"] = False
     sb["claims"] = a.claims or ""
     sb["slots"] = sb.get("slots", [])[:10]
     issues = _lint(sb, a.claims)
@@ -625,7 +666,7 @@ def cmd_store_plan(a):
     print(f"store plan: {len(sb['slots'])} slots -> {out} (edit captions, boxes and order there, then `store plan "
           f"{d} --lint`)")
     for i, s in enumerate(sb["slots"], 1):
-        print(f"  {i}. {s['id']:<12} {s.get('arch', 'framed'):<8} {s['caption']}")
+        print(f"  {i}. {s['id']:<12} {s.get('arch', 'framed'):<8} {_plain(s['caption'])}")
     _print_lint(issues)
 
 
@@ -713,6 +754,7 @@ def _plate_job(name, ref, prompt, size, a, tries):
 
 
 def _letter_job(name, text, style, a):
+    text = _plain(text)
     log = []
     for t in range(1, a.tries + 1):
         try:
@@ -761,9 +803,9 @@ def cmd_store_art(a):
                            ART_PROMPT.format(style=brand.get("art_style") or "its own illustration style",
                                              scene=s["plate_brief"]), "1152x2496"))
         if a.lettering:
-            texts = {f"letter_{s['id']}": s["caption"]}
-            if (s.get("caption_play") or s["caption"]) != s["caption"]:
-                texts[f"letter_{s['id']}_play"] = s["caption_play"]
+            texts = {f"letter_{s['id']}": _plain(s["caption"])}
+            if _plain(s.get("caption_play") or s["caption"]) != _plain(s["caption"]):
+                texts[f"letter_{s['id']}_play"] = _plain(s["caption_play"])
             letters += [(n, t) for n, t in texts.items() if a.force or not (d / "art" / f"{n}.png").exists()]
     if a.feature and (a.force or not (d / "art" / "plate_feature.png").exists()):
         c = _primary(caps, sb["slots"][0]["capture"])
@@ -828,8 +870,14 @@ body{position:relative;-webkit-font-smoothing:antialiased}
 .isle{position:absolute;left:50%;transform:translateX(-50%);width:29%;top:2.4%;aspect-ratio:3.4;border-radius:99px;background:#050505}
 .call{position:absolute;left:50%;transform:translateX(-50%);background-repeat:no-repeat}
 body.bare .cap h1,body.bare .cap p{color:transparent!important;text-shadow:none!important}
+body.bare .cap h1 .acc,body.bare .proof{color:transparent!important}
+body.bare .proof svg{visibility:hidden}
 body.bare .cap img{visibility:hidden}
-body.no-caption .cap{visibility:hidden}
+body.no-caption .cap,body.no-caption .proof{visibility:hidden}
+.proof{position:absolute;left:50%;transform:translateX(-50%);display:flex;align-items:center;justify-content:center}
+.proof .item{display:flex;align-items:center;text-align:center}
+.proof .value{font-family:__HEAD__;font-weight:900;line-height:1}
+.proof .label{font-family:__BODY__;font-weight:700;letter-spacing:.06em;text-transform:uppercase}
 body.fid .over{visibility:hidden}
 </style></head>
 <body>
@@ -844,9 +892,14 @@ fetch(q.get('data')||'data.json').then(r=>r.json()).then(D=>{
   html.push(`<div class="plate" style="${S.plate?`background-image:url(${S.plate})`:`background:${B.gradient}`}"></div>`);
   if(!S.letter) html.push(`<div class="scrim" style="background:${I.scrim}"></div>`);
   const capTop=H*(W>H?.045:.052), capW=Math.min(.88*W,106*u);
+  const hero=S.hero&&!S.letter&&S.arch!=='fan';
+  const caption=esc(S.cap).replace(/\*([^*\n]+)\*/g,(_,v)=>S.acc_off?v:`<span class="acc" style="color:${B.accent}">${v}</span>`).replace(/\*/g,'');
   const pill=S.pill?`;background:${I.pill};padding:${2.2*u}px ${3.4*u}px;border-radius:${4*u}px`:'';
   if(S.letter) html.push(`<div class="cap over" style="top:${capTop}px;width:${capW}px"><img id="letter" src="${S.letter}" style="max-height:${H*.17}px;filter:drop-shadow(0 ${.6*u}px ${.8*u}px ${B.shadow})"></div>`);
-  else html.push(`<div class="cap over" style="top:${capTop}px;width:${capW}px${pill}"><h1 style="color:${I.h};font-size:${(T.fs||D.fit_max)*u}px">${esc(S.cap)}</h1>${S.sub?`<p style="color:${I.p};font-size:${4.1*u}px">${esc(S.sub)}</p>`:''}</div>`);
+  else html.push(`<div class="cap over" style="top:${capTop}px;width:${capW}px${pill}"><h1 style="color:${I.h};font-size:${(hero?D.hero_max:(T.fs||D.fit_max))*u}px">${caption}</h1>${S.sub?`<p style="color:${I.p};font-size:${4.1*u}px">${esc(S.sub)}</p>`:''}</div>`);
+  const leaf=[[27,99,-58],[14,86,-40],[6,69,-22],[4,51,-6],[8,33,10],[16,17,26],[33,2,40]];
+  const branch=`<svg width="${4.6*u}" height="${11*u}" viewBox="-4 -8 50 118" fill="${I.h}" style="margin:0 ${1.2*u}px;flex:none"><path d="M40 106C10 88 6 40 30 4" fill="none" stroke="${I.h}" stroke-width="2.4" stroke-linecap="round"/>${leaf.map(([x,y,r])=>`<ellipse cx="${x}" cy="${y}" rx="4.6" ry="10" transform="rotate(${r} ${x} ${y})"/>`).join('')}</svg>`;
+  if(S.proof?.length) html.push(`<div class="proof over" style="gap:${5*u}px;color:${I.h}">${S.proof.map(p=>`<div class="item">${branch}<div>${p.stars?`<div style="font-size:${2.4*u}px">★★★★★</div>`:''}<div class="value" style="font-size:${7.5*u}px">${esc(p.value)}</div><div class="label" style="font-size:${2.3*u}px">${esc(p.label)}</div></div><div style="transform:scaleX(-1)">${branch}</div></div>`).join('')}</div>`);
   const devTop=H*(S.letter?.245:.262);
   const crop=(c,w)=>{const [x0,y0,x1,y1]=c.box,k=w/(x1-x0);
     return `width:${w}px;height:${(y1-y0)*k}px;background-image:url(${c.src});background-size:${c.w*k}px ${c.h*k}px;background-position:${-x0*k}px ${-y0*k}px`;};
@@ -864,7 +917,7 @@ fetch(q.get('data')||'data.json').then(r=>r.json()).then(D=>{
     const sc=S.screen, cut=card?sc.status:0, asp=(sc.h-cut)/sc.w;
     const fr=card?null:(phone?{p:.0325,r:'16.5%/7.6%',s:'14%/6.5%'}:{p:.03,r:'6.2%/4.6%',s:'3.8%/2.8%'}), p=fr?fr.p:0;
     const pct=phone?(card?(S.letter?70:68):(S.letter?82:80)):(card?66:74);
-    const D=Math.min(pct*wu,(H*1.10-devTop)/(asp*(1-2*p)+2*p));
+    const D=hero?pct*wu:Math.min(pct*wu,(H*1.10-devTop)/(asp*(1-2*p)+2*p));
     const img=`<img id="shot" src="${sc.src}" style="${cut?`margin-top:-${cut/sc.w*100}%`:''}">`;
     if(card) html.push(`<div class="dev scr" id="scr" style="width:${D}px;top:${devTop}px;border-radius:${phone?'7.5%/3.5%':'4%/3%'};box-shadow:0 ${3.5*u}px ${6*u}px ${B.shadow},0 0 0 ${.6*u}px ${B.ring}">${img}</div>`);
     else html.push(`<div class="dev" style="width:${D}px;top:${devTop}px;padding:${p*D}px;border-radius:${fr.r};background:${B.bezel};box-shadow:${shadow},inset 0 0 0 ${.35*u}px rgba(255,255,255,.25)"><div class="scr" id="scr" style="border-radius:${fr.s}">${img}${sc.island?'<div class="isle over"></div>':''}</div></div>`);
@@ -877,8 +930,15 @@ fetch(q.get('data')||'data.json').then(r=>r.json()).then(D=>{
     if(h1){let fs=parseFloat(h1.style.fontSize);const lh=()=>h1.getBoundingClientRect().height/(fs*1.02);
       const capEl=h1.parentElement, share=()=>{const b=[tight(h1),tight(document.querySelector('.cap p'))].filter(Boolean);
         return (Math.max(...b.map(t=>t.x+t.w))-Math.min(...b.map(t=>t.x)))*(Math.max(...b.map(t=>t.y+t.h))-Math.min(...b.map(t=>t.y)))/(W*H);};
-      const over=()=>lh()>2.05||capEl.getBoundingClientRect().bottom>devTop-1.8*u||(T.tag_max&&share()>T.tag_max);
+      const over=()=>lh()>(hero?3.05:2.05)||capEl.getBoundingClientRect().bottom>(hero?H*.42:devTop-1.8*u)||(T.tag_max&&share()>T.tag_max);
       while(over()&&fs>6*u){fs-=.2*u;h1.style.fontSize=fs+'px';}}
+    const capEl=document.querySelector('.cap'), proof=document.querySelector('.proof');
+    if(proof) proof.style.top=(capEl.getBoundingClientRect().bottom+2.5*u)+'px';
+    if(hero||proof){const top=(proof||capEl).getBoundingClientRect().bottom+3*u, dev=document.querySelector('.dev');
+      if(dev){dev.style.top=top+'px';if(!hero){const sc=S.screen, cut=card?sc.status:0, asp=(sc.h-cut)/sc.w, p=card?0:(phone?.0325:.03);
+        const pct=phone?(card?(S.letter?70:68):(S.letter?82:80)):(card?66:74);
+        dev.style.width=Math.min(pct*wu,(H*1.10-top)/(asp*(1-2*p)+2*p))+'px';}}
+      else if(proof) document.querySelectorAll('.fan').forEach(el=>el.style.top=(parseFloat(el.style.top)+top-H*(S.letter?.28:.30))+'px');}
     if(S.arch==='callout'){const r=document.getElementById('shot').getBoundingClientRect(), k=r.width/S.screen.w;
       S.calls.forEach(c=>{const bw=c.box[2]-c.box[0], bh=c.box[3]-c.box[1], w=Math.min(94*wu,bw*k*1.2), hh=bh*w/bw;
         const cy=r.top+(c.box[1]+c.box[3])/2*k, el=document.createElement('div');
@@ -890,7 +950,8 @@ fetch(q.get('data')||'data.json').then(r=>r.json()).then(D=>{
     const p=document.querySelector('.cap p'), ht=tight(h1), pt=tight(p);
     const text=[ht,pt].filter(Boolean), tag=text.length?(()=>{const x0=Math.min(...text.map(t=>t.x)),y0=Math.min(...text.map(t=>t.y)),
       x1=Math.max(...text.map(t=>t.x+t.w)),y1=Math.max(...text.map(t=>t.y+t.h));return {x:x0,y:y0,w:x1-x0,h:y1-y0};})():rect(document.getElementById('letter'));
-    window.REPORT={screen:rect(document.getElementById('scr')),shot:rect(document.getElementById('shot')),
+    const accs=[...document.querySelectorAll('.acc')].map(tight).filter(Boolean), acc=accs.length?(()=>{const x=Math.min(...accs.map(r=>r.x)),y=Math.min(...accs.map(r=>r.y));return {x,y,w:Math.max(...accs.map(r=>r.x+r.w))-x,h:Math.max(...accs.map(r=>r.y+r.h))-y};})():null;
+    window.REPORT={screen:rect(document.getElementById('scr')),shot:rect(document.getElementById('shot')),acc,proof:rect(proof),
       h1:h1?{...ht,font:parseFloat(h1.style.fontSize)}:null,sub:p?{...pt,font:parseFloat(p.style.fontSize)}:null,
       tagline:tag,calls:[...document.querySelectorAll('.call')].map(rect),
       floats:[...document.querySelectorAll('.float')].map(e=>({...rect(e),front:e.dataset.front==='1'}))};
@@ -951,6 +1012,7 @@ def _store_palette(brand):
     light = _store_hex(brand.get("ink_light"), (255, 248, 238))
     cols = [_store_hex(c, None) for c in brand.get("colors") or []]
     cols = [c for c in cols if c] or [_mix(light, dark, 0.15), _mix(light, dark, 0.35)]
+    accent = _store_hex(brand.get("accent"), cols[1] if len(cols) > 1 else cols[0])
     deep = _mix(dark, (0, 0, 0), 0.25)
     bezel = _store_hex(brand.get("bezel"), _scale(dark, 1.55))
     ink = {"dark": {"h": _css(dark), "p": _css(_mix(dark, (255, 255, 255), 0.12)),
@@ -962,6 +1024,7 @@ def _store_palette(brand):
     two = cols + cols[:1] if len(cols) == 1 else cols
     return {"ink": ink, "brand": {
         "gradient": f"linear-gradient(180deg,{_css(two[0])},{_css(two[1])})", "bg": _css(two[0]),
+        "accent": _css(accent), "accent_rgb": list(accent),
         "shadow": _css(_mix(dark, (0, 0, 0), 0.3), .4), "ring": _css(light, .92),
         "bezel": (f"linear-gradient(150deg,{_css(_scale(bezel, 1.7))},{_css(bezel)} 38%,{_css(_scale(bezel, 1.55))} 68%,"
                   f"{_css(_scale(bezel, .81))})")}}
@@ -1056,8 +1119,8 @@ def _slot_data(d, sb, s, key, caps, variant, frame, notes):
     sub = (s.get("sub_play") or s.get("sub") or "") if play else (s.get("sub") or "")
     letter = None
     if variant == "lettering":
-        for n in ([f"letter_{s['id']}_play"] if play and caption != s["caption"] else []) + [f"letter_{s['id']}"]:
-            if (Path(d) / "art" / f"{n}.png").exists() and (n.endswith("_play") or caption == s["caption"]):
+        for n in ([f"letter_{s['id']}_play"] if play and _plain(caption) != _plain(s["caption"]) else []) + [f"letter_{s['id']}"]:
+            if (Path(d) / "art" / f"{n}.png").exists() and (n.endswith("_play") or _plain(caption) == _plain(s["caption"])):
                 letter = rel(f"art/{n}.png")
                 break
         if not letter:
@@ -1073,8 +1136,11 @@ def _slot_data(d, sb, s, key, caps, variant, frame, notes):
     plate = s.get("plate") or f"plate_{s['id']}"
     plate_file = Path(d) / "art" / f"{plate}.png"
     w, h = main["size"]
+    if play and s.get("proof"):
+        notes.add(f"{key}: proof row left out on Play (its listing rules keep ratings, awards and download counts off graphics)")
     return {"id": s["id"], "arch": arch, "ink": s.get("ink") if s.get("ink") in ("dark", "light") else "dark",
-            "cap": caption, "sub": sub, "letter": letter, "pill": bool(s.get("pill")),
+            "cap": caption, "sub": sub, "letter": letter, "pill": bool(s.get("pill")), "hero": bool(s.get("hero")) and not play,
+            "proof": (sb.get("proof") or [])[:3] if s.get("proof") and not play else [],
             "plate": rel(f"art/{plate}.png") if plate_file.exists() else None,
             "frame": "card" if store_frame == "card" else "device",
             "screen": {"src": rel(main["file"]), "w": w, "h": h, "status": main.get("status_bar", 0),
@@ -1194,6 +1260,17 @@ def _contrast(bare, r, ink_rgb, dark, dpr):
     return round(float(_contrast_ratio(float(_wcag(ink_rgb)), worst)), 2)
 
 
+def _accent_contrast(bare, r, ink_rgb, dpr):
+    if not r or r["w"] < 1 or r["h"] < 1:
+        return None
+    x0, y0 = max(0, int(r["x"] * dpr)), max(0, int(r["y"] * dpr))
+    x1, y1 = min(bare.width, int((r["x"] + r["w"]) * dpr)), min(bare.height, int((r["y"] + r["h"]) * dpr))
+    if x1 <= x0 or y1 <= y0:
+        return None
+    lum = _wcag(np.asarray(bare.crop((x0, y0, x1, y1))).reshape(-1, 3))
+    return round(float(min(_contrast_ratio(float(_wcag(ink_rgb)), v) for v in np.percentile(lum, [5, 95]))), 2)
+
+
 def _fidelity(fid, rep, cap_img, dpr):
     """Mean / p99 CIELAB dE between the visible screen in a render with overlays hidden and the capture itself."""
     s, sh = rep.get("screen"), rep.get("shot")
@@ -1279,7 +1356,7 @@ def cmd_store_build(a):
     build.mkdir(exist_ok=True)
     pal = _store_palette(sb.get("brand", {}))
     link, head, body = _fonts_link(sb.get("brand", {}), a.webfonts)
-    notes, data = set(), {"ink": pal["ink"], "brand": pal["brand"], "fit_max": HEAD_MAX, "targets": {}}
+    notes, data = set(), {"ink": pal["ink"], "brand": pal["brand"], "fit_max": HEAD_MAX, "hero_max": HERO_MAX, "targets": {}}
     for key in targets:
         rows = {}
         for s in slots:
@@ -1315,7 +1392,7 @@ def cmd_store_build(a):
             out.mkdir(exist_ok=True)
             shutil.rmtree(build / "bare" / key, ignore_errors=True)
             fits = [(r.layout(pname, f"t={key}&s={sid}" + (f"&data={dname}" if a.locale else ""), size).get("h1") or {})
-                    .get("font") for sid, sd in td["slots"].items() if not sd["letter"]]
+                    .get("font") for sid, sd in td["slots"].items() if not sd["letter"] and not sd["hero"]]
             fits = [f for f in fits if f]
             if fits:  # one headline size per set: the largest every caption fits at
                 td["fs"] = math.floor(min(fits) / (min(size[0], size[1] * 0.5625) / 100) * 10) / 10
@@ -1337,8 +1414,19 @@ def cmd_store_build(a):
                         contrast = {"h1": _contrast(bare, rep.get("h1"), ink_rgb[0], sd["ink"] == "dark", dpr),
                                     "sub": _contrast(bare, rep.get("sub"), ink_rgb[1], sd["ink"] == "dark", dpr),
                                     "pill": True}
+                    if rep.get("acc"):
+                        contrast["acc"] = _accent_contrast(bare, rep["acc"], pal["brand"]["accent_rgb"], dpr)
+                        if contrast["acc"] is not None and contrast["acc"] < ACCENT_MIN:
+                            sd["acc_off"] = True
+                            notes.add(f"{key}: {sid} accent colour too faint on its background; caption set in one colour")
+                            write_data()
+                            bare, rep = r.shot(pname, q + "&mode=bare", size, dpr)
                 if sd["letter"]:
-                    bare = r.shot(pname, q + "&mode=bare", size, 1)[0]
+                    bare, rep = r.shot(pname, q + "&mode=bare", size, dpr)
+                if rep.get("proof"):
+                    if contrast is None:
+                        contrast = {}
+                    contrast["proof"] = _contrast(bare, rep["proof"], ink_rgb[0], sd["ink"] == "dark", dpr)
                 (build / "bare" / key).mkdir(parents=True, exist_ok=True)
                 bare.resize((BARE_W, round(bare.height * BARE_W / bare.width)), Image.LANCZOS).save(
                     build / "bare" / key / f"{i:02d}_{sid}.jpg", quality=88)
@@ -1354,13 +1442,15 @@ def cmd_store_build(a):
                 cover = sum(_rect_overlap(x, sr) for x in fl if x["front"]) / (sr["w"] * sr["h"]) if fl and sr else 0
                 entries.append({"file": str(f.relative_to(d)), "slot": sid, "size": list(img.size), "bytes": f.stat().st_size,
                                 "mode": "RGB", "screen_box": {k: v * dpr for k, v in rep["screen"].items()} if rep.get("screen") else None,
-                                "arch": sd["arch"], "lettering": bool(sd["letter"]), "contrast": contrast,
+                                "arch": sd["arch"], "lettering": bool(sd["letter"]), "contrast": contrast, "hero": sd["hero"],
+                                "proof": {k: v * dpr for k, v in rep["proof"].items()} if rep.get("proof") else None,
+                                "caption_box": {k: v * dpr for k, v in rep["tagline"].items()} if rep.get("tagline") else None,
                                 "fidelity": fid, "h1_px": (rep.get("h1") or {}).get("font"),
                                 "tagline_share": round(tag["w"] * tag["h"] / (size[0] * size[1]), 3) if tag else None,
                                 "alt": slot.get("alt", ""), "pill": sd["pill"], "floats": len(fl),
                                 "float_cover": round(cover, 3), "float_on_caption": bool(tag and any(_rect_overlap(x, tag) for x in fl))})
                 c = contrast or {}
-                print(f"  {key} {i:02d} {sid:<12} " + (f"contrast {c.get('h1')}/{c.get('sub')}" if contrast else "lettering")
+                print(f"  {key} {i:02d} {sid:<12} " + (f"contrast {c.get('h1')}/{c.get('sub')}/{c.get('acc')}/{c.get('proof')}" if contrast else "lettering")
                       + (f"  dE {fid['mean']}/{fid['p99']}" if fid else "") + ("  pill" if sd["pill"] else ""))
             files = [d / e["file"] for e in entries]
             (out / "alt.txt").write_text("".join(f"{Path(e['file']).name}\t{e['alt']}\n" for e in entries))
@@ -1483,7 +1573,7 @@ def _idea_check(d, build, rep, sb, model):
     ideas = (seen.get("slots") or []) + [{"idea": ""}] * 3
     judge = ask([JUDGE_PROMPT.format(
         intent=intent, app=seen.get("app", ""), audience=seen.get("audience", ""),
-        slots="\n".join(f"Screenshot {i}: {c.get('caption', '')}. {c.get('sub', '')}" for i, c in enumerate(caps, 1)),
+        slots="\n".join(f"Screenshot {i}: {_plain(c.get('caption', ''))}. {c.get('sub', '')}" for i, c in enumerate(caps, 1)),
         seen="\n".join(f"Screenshot {i}: {ideas[i - 1].get('idea', '')}" for i in range(1, len(caps) + 1)))],
         schema=JUDGE_SCHEMA, name="idea-judge", model=model)
     (build / "idea.json").write_text(json.dumps({"target": key, "intent": intent, "seen": seen, "judge": judge}, indent=1))
@@ -1519,6 +1609,8 @@ def cmd_store_check(a):
             continue
         want = (spec["css"][0] * spec["dpr"], spec["css"][1] * spec["dpr"])
         shots = t.get("shots", [])
+        if sum(bool(e.get("hero")) for e in shots) > 1:
+            add("WARN", key, "more than one hero slot")
         n = len(shots)
         if spec["store"] == "ios":
             if not 1 <= n <= 10:
@@ -1533,6 +1625,10 @@ def cmd_store_check(a):
                 add("WARN", key, f"{n} screenshots; Play's large-format surfaces need at least {need}")
         for i, e in enumerate(shots):
             where = f"{key} {Path(e['file']).name}"
+            if e.get("hero") and i >= 3:
+                add("WARN", where, "hero slot is outside the first three shots")
+            if e.get("proof") and e.get("screen_box") and _rect_overlap(e["proof"], e["screen_box"]):
+                add("WARN", where, "proof row overlaps the screen")
             f = d / e["file"]
             if not f.exists():
                 add("FAIL", where, "file missing; re-run build")
@@ -1550,6 +1646,8 @@ def cmd_store_check(a):
             if fid and (fid["mean"] > FID_MEAN_MAX or fid["p99"] > FID_P99_MAX):
                 add("FAIL", where, f"the app UI drifted from the capture (dE mean {fid['mean']}, p99 {fid['p99']})")
             c = e.get("contrast") or {}
+            if c.get("proof") is not None and c["proof"] < 3.0:
+                add("WARN", where, f"proof contrast {c['proof']}:1 (needs 3.0:1)")
             for part in ("h1", "sub"):
                 if c.get(part) is not None and c[part] < CONTRAST_MIN:
                     add("FAIL" if part == "h1" else "WARN", where, f"{'headline' if part == 'h1' else 'subhead'} contrast "

@@ -2,6 +2,27 @@
 
 All notable changes to gpt-ui-assets. Versions follow [semantic versioning](https://semver.org).
 
+## 5.9.0 (2026-11-25)
+
+### Added
+- **Hero first frame (App Store only).** `"hero": true` on slot 1 gives its headline its own size (up to 3 lines,
+  about 1.6x the set's shared size), moves the phone below it and lets the phone run off the bottom edge. Hero slots
+  stay out of the set-wide headline fit; `check` warns on a hero outside the first three shots or more than one per
+  set. Play keeps its slot 1 at the set's size so the UI stays first.
+- **Accent words.** `*word*` in a caption sets those words in `brand.accent`, in built shots and in painted-scene
+  headlines. Build measures the accent against its background and falls back to one colour below 3:1; lint warns on
+  unbalanced markers and over-accented captions.
+- **Proof row (App Store only).** A top-level `proof` list (value, label, stars) and `"proof": true` on a slot draw
+  laurels under the headline. Each value must be in `--claims`; a price fails. Play sets leave the row out.
+
+### Changed
+- `store plan` writes slot 1 as a poster that confirms what warm visitors already believe, marks accent words, sets
+  `hero`, `proof` and `brand.accent`, and asks for a callout on slots 2-4 to break the rhythm.
+- `store research` also codes headline size, accent words, proof, people, cropped phones, lifted UI cards and art
+  that crosses the seams between slots.
+- `references/store.md` adds what a studio's ~150 sets and concepts and ten before/after redesigns show, with shares
+  measured over 109 of them, and how to use custom product pages per audience (70 per app since October 2025).
+
 ## 5.8.0 (2026-11-20)
 
 ### Added

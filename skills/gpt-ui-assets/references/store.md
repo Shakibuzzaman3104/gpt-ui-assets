@@ -142,6 +142,54 @@ proof of what converts; the app's own test (product page optimization, Play list
   recommendation placement), and mini-game or ad footage passed off as gameplay (neither store's "app in use" rule
   allows it).
 
+What a design studio's work shows. In November 2026 we read 143 LinkedIn posts by The Screenshot First Company, a
+studio that has designed App Store sets for 300+ apps. That covers about 150 sets and concepts (some are unused
+directions), its nine stated rules and
+ten before → after redesigns. The uplifts it reports (Arise 13% → 23% conversion, Earth.fm about 12%, Bump about 5%)
+are single-app vendor case studies with no published control, so take them as direction, not proof. Four vision
+readers coded 109 of the single-app sets; the shares below come from them. Its redesigns change the same things again
+and again:
+- **Slot 1 is a poster, not a screenshot.** Only 24% of the sets open with a plain headline over a phone. The rest
+  lead with a giant headline (19%), the app's output (14%), a person (14%), a mascot or key art (12%), or proof (9%).
+  The headline is 2-5 words, set larger than the rest of the set, and fills about a quarter of the frame (a fifth to
+  a third), for example "Your music is safe", "Fish ID App" or "Family chaos, solved.". The phone gets smaller, sits
+  low and is cut off by the bottom edge, or gives way entirely. It must read in half a second at search size, so tiny text goes. In the kit this is `hero: true`.
+- **Confirm, don't explain.** Most visitors arrive from a TikTok, an ad or a friend and already believe something about
+  the app. Slot 1 confirms that belief in their words. Arise, an anime-style fitness app, went from "The Best AI
+  Fitness App" to "Your awakening starts here", a line its fans recognise. When the traffic is warm, write for the fan,
+  not the stranger.
+- **The feeling before the feature.** Name the pain solved ("Family chaos, solved.", "Forget about forgetting") or the
+  outcome ("Find calm"), not the feature list ("Covering all regions of the world").
+- **Accent one or two words** in a second colour or weight (44% of the sets): "Restore *anything* instantly", "The
+  *Sleep* of your dreams", "*Train* like an anime hero". Sentence case is the most common (47%); all caps is rare
+  (8%) and belongs to loud worlds such as games and sport. In the kit it is `*word*` in the caption.
+- **Proof early, on slot 1** (66% of the sets): laurels around a rating, a user count in the app's own noun ("200k+ anglers", "1M
+  hunters", "6M+ happy users"), "as seen on TikTok". Only true numbers you can check (Apple 2.3.14). Use it on the App
+  Store only: Play keeps ratings, awards and download counts off its graphics. In the kit it is `proof`.
+- **Context over another mockup** (people or faces in 69% of the sets, a mascot or 3D prop in 63%): a person using the app, the place it is used, faces for social, dating, language,
+  kids and wellness apps. Adding a familiar face to slot 1 was one of Earth.fm's three changes.
+- **Break the rhythm.** Five centred phones of the same size blur together. The sets vary the phone's scale (71%)
+  and crop it at a canvas edge (69%), tilt it on some slots (43%), and move the headline below the phone on some
+  slots (43%). They mix a phone slot with a key-art slot or a frameless full-bleed one, and lift UI cards out of the
+  frame at a larger scale (89%, the most common technique of all; `callout`).
+- **One job per screen**, and a specific world over the category's default look. Fitness listings blur together:
+  green palette, a person stretching, "Track your workouts". Lightning-blue anime, a football pitch or a jungle stands
+  out.
+- **The set reads as one picture** (63% of the sets): the same background, pitch or light runs under every slot. A word, mascot or
+  object crosses the seam between slots 1 and 2 so the search row reads as one image. Paint it into the plates or
+  scenes; the kit cannot yet carry one object across a seam.
+- **Bright beats murky.** Most redesigns swapped dark, low-contrast backgrounds for saturated colour, and dropped long
+  captions for short ones.
+- **The brand rides along**: a small logo or wordmark at the top of slot 1 when the headline doesn't name the app, or
+  "with Catchr" in slot 2. A mascot or the app icon can be the hero object, for example Voila's polaroid icon
+  enlarged into the scene.
+- **One page per audience.** Most apps have several kinds of visitors: ad clicks, UGC viewers, searchers for one use
+  case, people who need trust. Apple allows 70 custom product pages per app (since October 2025), each with its own
+  screenshots, promotional text, keywords and URL. A page with keywords can show in search for those keywords instead
+  of the default page. Sleepiest's pages lead with "Bedtime stories" for parents and "The Sleep of your dreams" with a
+  sleep score for adults. To make one, plan a second project folder from the same captures, with `--app` naming that
+  audience and where they come from, and suggest it to the user. One default set can't speak to everyone.
+
 Archetypes:
 - `framed`: the whole screen in a device (iOS) or a frameless card (Play).
 - `callout`: framed, plus 1-2 enlarged crops of the element that proves the caption. Each sits over its own place on
@@ -157,6 +205,18 @@ around the screen, as on many top listings. Each slot's `floats` (or `floats_pla
 the screen, the default) or `front`, and `blur` px for depth. Keep them off the caption and on the screen's edges:
 `check` warns when one touches the caption or when front floats hide more than 3% of the screen. Use the app's art
 only, 1-3 per slot, and leave a slot or two without.
+
+Headline and proof keys (any archetype but `fan`):
+- `*word*` in `caption` / `caption_play` sets those words in `brand.accent` (default: the second brand colour). Build
+  measures the accent against what lies under it and falls back to one colour below 3:1. Mark one or two words, not
+  the whole line; lint warns on unbalanced markers and over-accented captions. Scene headlines read the same markers.
+- `"hero": true` gives a slot its own headline size: up to 3 lines and about 1.6x the set's size, kept out of the
+  shared fit, with the phone moved below it and allowed to run off the bottom edge. Use it on slot 1 only; check warns
+  when a hero is not in the first three or when there are two. App Store only: Play asks for the UI first, so its
+  slot 1 keeps the set's size and a whole card.
+- `proof` at the top level (up to 3 `{"value", "label", "stars"}`) and `"proof": true` on a slot draw a laurel row
+  under the headline, on the App Store only (Play leaves it out). Every value must be in `--claims`; lint warns
+  otherwise and fails on a price.
 
 Copy lint (also run by `check`):
 - **FAIL**: prices (Apple 2.3.7), another platform's names on iOS (2.3.10), alt text over 140 characters.

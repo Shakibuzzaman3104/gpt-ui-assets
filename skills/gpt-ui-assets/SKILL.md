@@ -179,8 +179,11 @@ python3 $K compare ui-assets/build/home shot.png               # also flags wron
   `references/store-styles/` (`full-creative.jpg`, `flat-normal.jpg`, `mixed.jpg`, `mixed-bedside.jpg`) and ask which style the user wants:
   **full creative** (every slot a painted scene), **flat & normal** (upright phones on clean backgrounds), **mixed**
   (both in one set), or **something else** they describe. Skip it only when the request already says. The style
-  shapes the App Store set; the Play set stays frameless in the same type and colours. Then show the
-  hero in the chosen style before painting the rest of the set.
+  shapes the App Store set; the Play set stays frameless in the same type and colours. Whatever the style, slot 1 is
+  a poster (`hero`, accent words, proof the developer can back), and the set breaks its own rhythm. Ask where the
+  visitors come from: when it's ads or short video, slot 1 confirms what they already believe, and a second audience
+  is a custom product page, not a compromise in the default set. Then show the hero in the chosen style before
+  painting the rest of the set.
 - Walk the user through `blueprint.md`, especially the MVP cut, before designing every screen.
 - App-icon concepts, animation routes and whether to ship platform icons (Material Symbols / SF Symbols) instead of the
   generated SVGs are the user's call. Present the options with the review sheet.
